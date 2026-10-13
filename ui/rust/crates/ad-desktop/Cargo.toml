@@ -1,0 +1,22 @@
+[package]
+name = "ad-desktop"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "aetherdesk-rust-preview"
+path = "src/main.rs"
+
+[dependencies]
+ad-desktop-model = { path = "../ad-desktop-model" }
+eframe.workspace = true
+ad-ssh = { path = "../../../../core/rust/crates/ad-ssh" }
+tokio = { version = "1.35", features = ["full"] }
+tokio-util = "0.7"
+serde_json.workspace = true
+zeroize = "1"
+vt100 = "=0.16.2"
+
+[dev-dependencies]
+tempfile = "3"

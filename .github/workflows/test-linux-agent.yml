@@ -1,0 +1,100 @@
+name: Test AetherDesk Linux Agent
+
+permissions:
+  contents: read
+
+on:
+  push:
+    branches: [ main, master, 'codex/**' ]
+  pull_request:
+    branches: [ main, master, 'codex/**' ]
+  workflow_dispatch:
+
+jobs:
+  linux-agent:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Setup Rust
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        components: clippy, rustfmt
+
+    - name: Install compositor and media dependencies
+      run: >-
+        sudo apt-get update && sudo apt-get install -y --no-install-recommends
+        libwayland-dev libxkbcommon-dev libudev-dev libinput-dev libgbm-dev
+        libseat-dev libdrm-dev libegl1-mesa-dev libgles2-mesa-dev libpixman-1-dev
+        mesa-vulkan-drivers
+        libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev
+        gstreamer1.0-tools gstreamer1.0-plugins-base gstreamer1.0-plugins-good
+        gstreamer1.0-plugins-bad gstreamer1.0-plugins-ugly gstreamer1.0-libav
+        xwayland xfwm4 dbus-x11 fonts-dejavu-core openssh-sftp-server
+        meson ninja-build patch libxfont-dev libxkbfile-dev libxau-dev libxdmcp-dev
+        xtrans-dev libtirpc-dev libxshmfence-dev x11-xkb-utils libssl-dev
+
+    - name: Build bundled Xwayland with real virtual monitor outputs
+      run: |
+        sudo bash tools/build-xwayland.sh /opt/aetherdesk-xwayland
+        echo "/opt/aetherdesk-xwayland/bin" >> "$GITHUB_PATH"
+        echo "LD_LIBRARY_PATH=/opt/aetherdesk-xwayland/lib" >> "$GITHUB_ENV"
+
+    - name: Test process-local VPN and OpenSSH SFTP transfers
+      working-directory: core/rust
+      run: cargo test --locked -p ad-vpn -p ad-ssh
+
+    - name: Verify formatting
+      working-directory: core/rust
+      run: >-
+        cargo fmt --check -p agent-wayland -p agent-input -p agent-encoder
+        -p agent-supervisor -p ad-stream-protocol -p ad-qos-controller
+        -p ad-display-decoder -p ad-display-renderer -p ad-stream-client
+        -p ad-remote-session
+
+    - name: Lint Linux agent
+      working-directory: core/rust
+      run: >-
+        cargo clippy --locked -p agent-wayland -p agent-input -p agent-encoder
+        -p agent-supervisor -p ad-stream-protocol -p ad-qos-controller
+        -p ad-display-decoder -p ad-display-renderer -p ad-stream-client
+        -p ad-remote-session
+        --features ad-stream-client/display-stream,ad-remote-session/rendering
+        --all-targets --no-deps -- -D warnings
+
+    - name: Test Linux agent
+      working-directory: core/rust
+      run: >-
+        cargo test --locked -p agent-wayland -p agent-input -p agent-encoder
+        -p agent-supervisor -p ad-stream-protocol -p ad-qos-controller
+        -p ad-display-decoder -p ad-display-renderer -p ad-stream-client
+        -p ad-remote-session
+        --features ad-stream-client/display-stream,ad-remote-session/rendering
+        -- --test-threads=1
+
+    - name: Build persistent agent
+      working-directory: core/rust
+      run: >-
+        cargo build --locked --release -p agent-supervisor -p ad-stream-client
+        -p ad-display-renderer --features ad-stream-client/display-stream
+
+    - name: Verify deployable agent entry point
+      working-directory: core/rust
+      run: target/release/ad-agent --version
+
+    - name: Build checksum-verified agent runtime bundle
+      run: |
+        chmod +x tools/package-linux-agent.sh
+        tools/package-linux-agent.sh core/rust/target/release/ad-agent agent-bundle
+        LD_LIBRARY_PATH="$PWD/agent-bundle/libs" ldd agent-bundle/ad-agent
+
+    - name: Upload Linux agent runtime bundle
+      if: github.event_name != 'pull_request'
+      uses: actions/upload-artifact@v4
+      with:
+        name: aetherdesk-linux-agent-${{ runner.arch }}
+        path: agent-bundle/
+        retention-days: 30

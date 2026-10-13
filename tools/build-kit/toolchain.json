@@ -1,0 +1,25 @@
+{
+  "flutter": "3.47.1",
+  "gstreamer": "1.28.6",
+  "vcxsrv": {
+    "version": "21.1.16.1",
+    "archive": {
+      "url": "https://github.com/marchaesen/vcxsrv/releases/download/21.1.16.1/vcxsrv-64.21.1.16.1.installer.exe",
+      "sha256": "df7fed8f49665d0592528ab6be9d07111ea73c6848283d128b77690e05b8f90b"
+    },
+    "source": {
+      "url": "https://codeload.github.com/marchaesen/vcxsrv/tar.gz/b1c7712a2584b263f44fa24e8c493f4f59c472ea",
+      "sha256": "a73b30db3eb6b60efd181a1cd7fa39bc6df8f0d4c973d6c8416a856b0bf55b28"
+    },
+    "license": {
+      "url": "https://raw.githubusercontent.com/marchaesen/vcxsrv/b1c7712a2584b263f44fa24e8c493f4f59c472ea/COPYING",
+      "sha256": "0b383d5a63da644f628d99c33976ea6487ed89aaa59f0b3257992deac1171e6b"
+    }
+  },
+  "webview2": {
+    "distribution": "Evergreen Standalone x64",
+    "url": "https://go.microsoft.com/fwlink/?linkid=2124701",
+    "minimumBytes": 10000000,
+    "verification": "Valid Microsoft Corporation Authenticode signature; SHA-256 recorded in packaged manifest"
+  }
+}

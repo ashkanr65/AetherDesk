@@ -1,0 +1,18 @@
+[package]
+name = "agent-wayland"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+ad-stream-protocol = { path = "../ad-stream-protocol" }
+thiserror.workspace = true
+tracing.workspace = true
+tokio = { workspace = true, features = ["sync"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+smithay.workspace = true
+libc = "0.2"
+
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+tempfile = "3"

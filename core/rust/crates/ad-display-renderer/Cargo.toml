@@ -1,0 +1,15 @@
+[package]
+name = "ad-display-renderer"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+ad-display-decoder = { path = "../ad-display-decoder" }
+ad-stream-protocol = { path = "../ad-stream-protocol" }
+thiserror.workspace = true
+wgpu.workspace = true
+
+[dev-dependencies]
+pollster = "0.4"

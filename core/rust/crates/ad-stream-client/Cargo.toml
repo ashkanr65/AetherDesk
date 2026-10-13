@@ -1,0 +1,23 @@
+[package]
+name = "ad-stream-client"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[features]
+default = []
+display-stream = ["dep:ad-display-decoder", "dep:ad-qos-controller"]
+
+[dependencies]
+ad-stream-protocol = { path = "../ad-stream-protocol" }
+ad-display-decoder = { path = "../ad-display-decoder", optional = true }
+ad-qos-controller = { path = "../ad-qos-controller", optional = true }
+async-trait.workspace = true
+bytes.workspace = true
+quinn.workspace = true
+russh.workspace = true
+tokio.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+uuid.workspace = true

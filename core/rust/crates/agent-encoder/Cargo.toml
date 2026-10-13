@@ -1,0 +1,17 @@
+[package]
+name = "agent-encoder"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+ad-stream-protocol = { path = "../ad-stream-protocol" }
+thiserror.workspace = true
+tracing.workspace = true
+tokio = { workspace = true, features = ["sync"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+gstreamer.workspace = true
+gstreamer-app.workspace = true
+gstreamer-video.workspace = true
+

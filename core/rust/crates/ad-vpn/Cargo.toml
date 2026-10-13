@@ -1,0 +1,17 @@
+[package]
+name = "ad-vpn"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Process-local WireGuard TCP connections, without OS routes or devices"
+
+[dependencies]
+tokio.workspace = true
+tokio-util.workspace = true
+thiserror.workspace = true
+boringtun = { version = "0.7.1", default-features = false }
+smoltcp = { version = "=0.13.1", default-features = false, features = ["std", "medium-ip", "proto-ipv4", "proto-ipv6", "socket-tcp", "socket-tcp-reno", "socket-udp", "socket-dns", "proto-dns"] }
+base64 = "0.22"
+ipnet = "2"
+rand = "0.8"
+zeroize = "1"

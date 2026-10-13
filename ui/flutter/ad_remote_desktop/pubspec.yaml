@@ -1,0 +1,33 @@
+name: ad_remote_desktop
+description: AetherDesk Windows desktop client.
+publish_to: "none"
+version: 0.1.2+1
+
+environment:
+  sdk: ">=3.11.0 <4.0.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+  ad_stream_surface:
+    path: ../ad_stream_surface
+  webview_windows: 0.4.0
+  desktop_multi_window: 0.3.1
+  window_manager: 0.5.2
+  crypto: ^3.0.6
+  file_selector: ^1.1.0
+  desktop_drop: 0.4.4
+  ffi: ^2.1.4
+  xterm2: ^5.2.0
+
+dev_dependencies:
+  file_selector_platform_interface: ^2.7.0
+  flutter_test:
+    sdk: flutter
+
+flutter:
+  uses-material-design: true
+  assets:
+    - assets/editor/
+    - assets/aetherdesk.png
+    - assets/aetherdesk.ico

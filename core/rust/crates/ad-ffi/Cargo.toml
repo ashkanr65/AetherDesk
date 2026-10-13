@@ -1,0 +1,37 @@
+[package]
+name = "ad-ffi"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "FFI bindings for AetherDesk Windows integration"
+
+[lib]
+crate-type = ["cdylib", "staticlib"]
+name = "ad_ffi"
+
+[dependencies]
+ad-remote-session = { path = "../ad-remote-session" }
+ad-stream-client = { path = "../ad-stream-client" }
+ad-stream-protocol = { path = "../ad-stream-protocol" }
+ad-display-decoder = { path = "../ad-display-decoder" }
+async-trait.workspace = true
+ad-ssh = { path = "../ad-ssh" }
+ad-sftp = { path = "../ad-sftp" }
+ad-vnc = { path = "../ad-vnc" }
+ad-rdp-bridge = { path = "../ad-rdp-bridge" }
+ad-x11-bridge = { path = "../ad-x11-bridge" }
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+chrono.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+libc = "0.2"
+lazy_static = "1.4"
+uuid.workspace = true
+parking_lot.workspace = true
+
+[build-dependencies]
+cbindgen.workspace = true

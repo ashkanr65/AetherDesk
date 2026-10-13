@@ -1,0 +1,44 @@
+# Rust/Cargo
+Cargo.lock
+target/
+**/*.rs.bk
+
+# Dependencies
+**/node_modules/
+**/.dart_tool/
+**/.flutter-plugins-dependencies
+**/.venv/
+**/venv/
+
+# Generated Flutter Windows runner state
+**/windows/flutter/ephemeral/
+**/windows/flutter/generated_plugin_registrant.*
+**/windows/flutter/generated_plugins.cmake
+
+# Build artifacts
+**/build/
+**/dist/
+**/target/
+
+# Logs and temp files
+*.log
+*.tmp
+*.swp
+
+# Environment
+.env
+.env.local
+*.env.*
+
+# Editors
+.vscode/
+.idea/
+**/__pycache__/
+**/*.pyc
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Recreated by the shared EditorAssets stage
+/ui/flutter/ad_remote_desktop/assets/editor/

@@ -1,0 +1,27 @@
+[package]
+name = "agent-supervisor"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+autobins = false
+
+[[bin]]
+name = "ad-agent"
+path = "src/main.rs"
+
+[dependencies]
+ad-stream-protocol = { path = "../ad-stream-protocol" }
+ad-stream-client = { path = "../ad-stream-client" }
+agent-wayland = { path = "../agent-wayland" }
+agent-input = { path = "../agent-input" }
+agent-encoder = { path = "../agent-encoder" }
+thiserror.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+tokio.workspace = true
+uuid.workspace = true
+ring.workspace = true
+subtle.workspace = true
+
+[dev-dependencies]
+tempfile = '3'

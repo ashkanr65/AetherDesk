@@ -1,0 +1,15 @@
+[package]
+name = "agent-input"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+ad-stream-protocol = { path = "../ad-stream-protocol" }
+thiserror.workspace = true
+tracing.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+evdev.workspace = true
+uinput.workspace = true
+

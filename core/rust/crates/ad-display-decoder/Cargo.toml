@@ -1,0 +1,20 @@
+[package]
+name = "ad-display-decoder"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+ad-stream-protocol = { path = "../ad-stream-protocol" }
+ad-qos-controller = { path = "../ad-qos-controller" }
+gstreamer.workspace = true
+gstreamer-app.workspace = true
+gstreamer-video.workspace = true
+ring.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["sync", "time"] }
+tracing.workspace = true
+
+[dev-dependencies]
+agent-encoder = { path = "../agent-encoder" }

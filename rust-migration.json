@@ -1,0 +1,493 @@
+{
+  "schemaVersion": 1,
+  "baselineCommit": "d000a918024618c0d5de519fb08b1ccbf37cc784",
+  "replacementReady": false,
+  "buildPerformed": false,
+  "policy": "No area is verified until behavioral and live-host checks pass. Never mark a prototype as the replacement release.",
+  "features": [
+    {
+      "id": "profiles",
+      "behavior": "Saved sessions, consent, favorites, trash, import/export",
+      "status": "ported_unverified",
+      "reference": "ui/flutter/ad_remote_desktop/lib/session_store.dart"
+    },
+    {
+      "id": "sidebar",
+      "behavior": "Palette, resize, assistant/sidebar preserves workspace",
+      "status": "ported_unverified",
+      "reference": "ui/flutter/ad_remote_desktop/lib/app.dart"
+    },
+    {
+      "id": "input-map",
+      "behavior": "Physical key mapping, lock state, shell editing shortcuts",
+      "status": "ported_unverified",
+      "reference": "ui/flutter/ad_remote_desktop/lib/remote_desktop_view.dart"
+    },
+    {
+      "id": "tabs",
+      "behavior": "Independent duplicate sessions, reorder, close, reconnect",
+      "status": "partial",
+      "reference": "ui/flutter/ad_remote_desktop/lib/session_tabs.dart"
+    },
+    {
+      "id": "ssh",
+      "behavior": "Password/key/passphrase, trust approval, changed-key rejection, PTY",
+      "status": "pending",
+      "reference": "core/rust/crates/ad-ssh/src/client.rs"
+    },
+    {
+      "id": "terminal",
+      "behavior": "ANSI/VT, scrollback, selection, clipboard, semantic colour, search",
+      "status": "pending",
+      "reference": "ui/flutter/ad_remote_desktop/lib/workspace.dart"
+    },
+    {
+      "id": "sftp",
+      "behavior": "Dual panes, editable paths, menus, drag/drop, parallel/resume transfers",
+      "status": "pending",
+      "reference": "ui/flutter/ad_remote_desktop/lib/workspace.dart"
+    },
+    {
+      "id": "editor",
+      "behavior": "Native popup, dirty-close safeguards, Monaco/LSP/diff/save conflict",
+      "status": "pending",
+      "reference": "ui/flutter/ad_remote_desktop/lib/editor/editor_workspace.dart"
+    },
+    {
+      "id": "desktop",
+      "behavior": "H264 display, low-latency input, DPI, resize, multi-monitor, docking",
+      "status": "pending",
+      "reference": "ui/flutter/ad_stream_surface/windows/desktop_windows.h"
+    },
+    {
+      "id": "session-lifecycle",
+      "behavior": "Retained reconnect, confirmed end session, cleanup of host processes",
+      "status": "pending",
+      "reference": "ui/flutter/ad_remote_desktop/lib/remote_desktop.dart"
+    },
+    {
+      "id": "x11",
+      "behavior": "Bundled X server, authentication/cookie isolation, cleanup",
+      "status": "pending",
+      "reference": "ui/flutter/ad_remote_desktop/lib/x11_server.dart"
+    },
+    {
+      "id": "credentials",
+      "behavior": "Windows vault, DPAPI, master password, API deletion",
+      "status": "pending",
+      "reference": "ui/flutter/ad_remote_desktop/lib/credential_vault.dart"
+    },
+    {
+      "id": "assistant",
+      "behavior": "Provider/model search, free+paid, HTTP/SSE retries, history, images",
+      "status": "pending",
+      "reference": "tools/assistant-runtime/server.py"
+    },
+    {
+      "id": "assistant-tools",
+      "behavior": "Windows+SSH scopes, approvals, actions, capture, tool install/run",
+      "status": "pending",
+      "reference": "ui/flutter/ad_remote_desktop/lib/assistant/workspace_tools.dart"
+    },
+    {
+      "id": "tools",
+      "behavior": "Versioned manifests, parameters, revisions, execution, approval",
+      "status": "pending",
+      "reference": "ui/flutter/ad_remote_desktop/lib/tools/tool_registry.dart"
+    },
+    {
+      "id": "logs",
+      "behavior": "App/Host/Audit/Problems filters, follow, export, redaction, rotation",
+      "status": "pending",
+      "reference": "ui/flutter/ad_remote_desktop/lib/app_log.dart"
+    },
+    {
+      "id": "packaging",
+      "behavior": "Installer+portable offline dependencies, version and verified gates",
+      "status": "pending",
+      "reference": "tools/build-kit/Build-Worker.ps1"
+    }
+  ],
+  "referenceFiles": [
+    {
+      "path": "tools/assistant-runtime/server.py",
+      "sha256": "1ce857ac0d61a80c3b9029a7bca130209dcd2c3a61cff941de0f92439adafcb4"
+    },
+    {
+      "path": "tools/assistant-runtime/test_server.py",
+      "sha256": "9b548228102c8ccf2de293261f4249382104428e75567fe0a55df4676432461e"
+    },
+    {
+      "path": "ui/flutter/ad_remote_desktop/assets/aetherdesk.ico",
+      "sha256": "7ddd6e7b68c71c6bf5ade540dd2893692721eb194594ffa071f137f74e7837bb"
+    },
+    {
+      "path": "ui/flutter/ad_remote_desktop/assets/aetherdesk.png",
+      "sha256": "2a09ffe190d6b9d2bb9f13f34af18cdce1b6685407e978b1d5cc08d2d64932e6"
+    },
+    {
+      "path": "ui/flutter/ad_remote_desktop/lib/app.dart",
+      "sha256": "f0801ca7da9e9e10d5486841f10fcf5a900fbdcf30b75c80dd3f45f9f9908800"
+    },
+    {
+      "path": "ui/flutter/ad_remote_desktop/lib/app_log.dart",
+      "sha256": "fa5dfcafad1fde720135c87794ee03708322f6f12fd89905fd507e1771de9ccd"
+    },
+    {
+      "path": "ui/flutter/ad_remote_desktop/lib/app_theme.dart",
+      "sha256": "0849ae2bd44c6542fe83740eb8bf5d0fe12a6bf6348548b87fd174bf02b0a43e"
+    },
+    {
+      "path": "ui/flutter/ad_remote_desktop/lib/app_version.dart",
+      "sha256": "07228336ecc31dae363dc2095b760e317582caafc3c40b3bfb31429b312b3404"
+    },
+    {
+      "path": "ui/flutter/ad_remote_desktop/lib/assistant/assistant_api.dart",
+      "sha256": "f8f53b502a360853d3fa605d42dea9e00f7b99456e974a6ca512eaef219dfc25"
+    },
+    {
+      "path": "ui/flutter/ad_remote_desktop/lib/assistant/assistant_controller.dart",
+      "sha256": "748976d40aee6b1cb4172ec080ba7a0c06d9eddf8b3466abd40b5cc7bc19df84"
+    },
+    {
+      "path": "ui/flutter/ad_remote_desktop/lib/assistant/assistant_models.dart",
+      "sha256": "f995a915fa3614a18562c67db970a396eded278e8abaa6f5c19b6b6fd00c2868"
+    },
+    {
+      "path": "ui/flutter/ad_remote_desktop/lib/assistant/assistant_page.dart",
+      "sha256": "330308cde290d399ddcff204b500acb1a0b0b65cd3d404d32335dfe438c3576a"
+    },
+    {
+      "path": "ui/flutter/ad_remote_desktop/lib/assistant/assistant_runtime.dart",
+      "sha256": "18c700675990630a61eafad426f03fa1ef335300909447e217b44f7ff8f7a735"
+    },
+    {
+      "path": "ui/flutter/ad_remote_desktop/lib/assistant/screen_capture.dart",
+      "sha256": "c029f474735d30146dff386c5fdd7c149477a22e64482edffcd38ad56ddde4b2"
+    },
+    {
+      "path": "ui/flutter/ad_remote_desktop/lib/assistant/workspace_tools.dart",
+      "sha256": "fde362bfc96e77aec135726aa0817448e6d8c0fbc034c4fcbb5c1f2ae28d5b7b"
+    },
+    {
+      "path": "ui/flutter/ad_remote_desktop/lib/audit_log.dart",
+      "sha256": "b09234a55d5a079138e10e45658228d2109c58328fe733c470e0d559163f6351"
+    },
+    {
+      "path": "ui/flutter/ad_remote_desktop/lib/credential_vault.dart",
+      "sha256": "843909b5e1fc818bd7e951fd0d06bddcf482e110797867e73b9aafe7fd35c921"
+    },
+    {
+      "path": "ui/flutter/ad_remote_desktop/lib/editor/editor_language_service.dart",
+      "sha256": "c065d7ff511e3bd063c32ff950d84af974e7a7f8a06221db31136f959556af4d"
+    },
+    {
+      "path": "ui/flutter/ad_remote_desktop/lib/editor/editor_popup_client.dart",
+      "sha256": "4cee3a4921fe52638a2e5d11db6fa5597b7632e924edc78ad52d173503846e19"
+    },
+    {
+      "path": "ui/flutter/ad_remote_desktop/lib/editor/editor_popup_close.dart",
+      "sha256": "7007f62158f32d1b7345d2fe3d4f57c87f38e032440e1fb3434dc7ea3508774d"
+    },
+    {
+      "path": "ui/flutter/ad_remote_desktop/lib/editor/editor_popup_host.dart",
+      "sha256": "b5a8e75ce3e5728f0356af14c69109a714af103915407d620c662451fab74cbf"
+    },
+    {
+      "path": "ui/flutter/ad_remote_desktop/lib/editor/editor_popup_protocol.dart",
+      "sha256": "dc3d5740033b389c0af99ce44d32cf91b20710f745f4287ea0ddf1568d72c290"
+    },
+    {
+      "path": "ui/flutter/ad_remote_desktop/lib/editor/editor_workspace.dart",
+      "sha256": "d11d324c52d82b9631f1cc73c96bd436b2850fd7709208506ba941d3bfe5720f"
+    },
+    {
+      "path": "ui/flutter/ad_remote_desktop/lib/file_workspace/document_session.dart",
+      "sha256": "9e8aa060eca11e8a1bca8f4a7875989bd2608f29995d609ccfa26c2882d2e5e7"
+    },
+    {
+      "path": "ui/flutter/ad_remote_desktop/lib/file_workspace/file_action_policy.dart",
+      "sha256": "a4c137b1d5835d8fdc616a0ccaeb625fab880d7c18d5ab91579ca200c4ac2d7f"
+    },
+    {
+      "path": "ui/flutter/ad_remote_desktop/lib/file_workspace/file_associations.dart",
+      "sha256": "42397d1fa191718ca017b8168e983d5a9fd81f9aba4350e0a6ffcd9314939d7f"
+    },
+    {
+      "path": "ui/flutter/ad_remote_desktop/lib/file_workspace/file_context_menu.dart",
+      "sha256": "7eca93bd49f8fcded0f5d719e18bc6b21cbab59c3c4e9e7aa2d46de2e5b8fb05"
+    },
+    {
+      "path": "ui/flutter/ad_remote_desktop/lib/file_workspace/file_open_controller.dart",
+      "sha256": "cdf801ea609439d4b198d646b5483b0cb0fb4384eaebf375007159be4040ac32"
+    },
+    {
+      "path": "ui/flutter/ad_remote_desktop/lib/file_workspace/local_app_launcher.dart",
+      "sha256": "050d8a4c6cc8185612d2bcdfde88443cff6c302e4fcb90db219ccbdf248760e4"
+    },
+    {
+      "path": "ui/flutter/ad_remote_desktop/lib/file_workspace/remote_file_repository.dart",
+      "sha256": "fcc7cc39f18e99c628d7863cfa812ecb0b7e2beaa03ceca35741495c4cc30f3d"
+    },
+    {
+      "path": "ui/flutter/ad_remote_desktop/lib/file_workspace/transfer_queue.dart",
+      "sha256": "da9fb0f9aaf9c9a9e1cfb4eb0d206cf52de68c72cb605c9223e2426303d83d64"
+    },
+    {
+      "path": "ui/flutter/ad_remote_desktop/lib/file_workspace/windows_file_properties.dart",
+      "sha256": "e99fc27b2bec6fdd1d54865dd15c64207191b0f7916c5d2599de1def9e79efac"
+    },
+    {
+      "path": "ui/flutter/ad_remote_desktop/lib/main.dart",
+      "sha256": "0800945fbc2a04a50557f96418aec9c963447d8e3809340919c8c17108d881a8"
+    },
+    {
+      "path": "ui/flutter/ad_remote_desktop/lib/native_bridge.dart",
+      "sha256": "603a331a2927fa0ac54990474fcc0dba7b77b8e69ef82ebbe5018eaa8d1ef93d"
+    },
+    {
+      "path": "ui/flutter/ad_remote_desktop/lib/notifications.dart",
+      "sha256": "5a8707ee3230d68d54e754653b765b0c54272c1dec9132b3036df8808a33576a"
+    },
+    {
+      "path": "ui/flutter/ad_remote_desktop/lib/remote_desktop.dart",
+      "sha256": "73861bacb9c43dc118f4a4e12906036410d0e9c61fa29e187346cd460355c72c"
+    },
+    {
+      "path": "ui/flutter/ad_remote_desktop/lib/remote_desktop_view.dart",
+      "sha256": "e45036de8a2dd114135f9dcc5bdea4f44d3450c8a1b8b2728e8a0c1730ad1e70"
+    },
+    {
+      "path": "ui/flutter/ad_remote_desktop/lib/remote_directory.dart",
+      "sha256": "8fd6df615bb0d8c6f91384d8576398ae6e7cdc405dac26c7d800112b4ba06e6f"
+    },
+    {
+      "path": "ui/flutter/ad_remote_desktop/lib/session_store.dart",
+      "sha256": "e65eed6e822fe129068ff74c93662f56304bd899929b99205385391e654af162"
+    },
+    {
+      "path": "ui/flutter/ad_remote_desktop/lib/session_tabs.dart",
+      "sha256": "d544b3f8b1ea0d12d3e3b4b45b9829d1e7ca86332bc8846264d5174b86bbdf5b"
+    },
+    {
+      "path": "ui/flutter/ad_remote_desktop/lib/terminal_clipboard.dart",
+      "sha256": "3e2373bbf6a09830b40af7567a483d151cebf707918f872432efa6383dbaa865"
+    },
+    {
+      "path": "ui/flutter/ad_remote_desktop/lib/terminal_output.dart",
+      "sha256": "045070feddaeab72f5a83fd38e78ba2ff9ed4022de34bcbc9197f7741c6ead9e"
+    },
+    {
+      "path": "ui/flutter/ad_remote_desktop/lib/terminal_settings.dart",
+      "sha256": "756b2712dd22eb0cb4702d0470ae2524ec3565ecf9e106082e52e039cb9f5153"
+    },
+    {
+      "path": "ui/flutter/ad_remote_desktop/lib/terminal_shortcuts.dart",
+      "sha256": "ec77ee6749a2de1faae0fd8e5de8a805eaf710ddc863a9c55c121e746d3bca7a"
+    },
+    {
+      "path": "ui/flutter/ad_remote_desktop/lib/terminal_theme.dart",
+      "sha256": "19c875ef22864a96d9ee7216e34cd7c4da718c415945dff05e5a1cbd044be6c9"
+    },
+    {
+      "path": "ui/flutter/ad_remote_desktop/lib/tools/tool_registry.dart",
+      "sha256": "c9f05ce9fd34b690ca03a4a58022abd09cecfd6eddc112424b6282a4695f9637"
+    },
+    {
+      "path": "ui/flutter/ad_remote_desktop/lib/tools/tools_panel.dart",
+      "sha256": "6bd48ddeda801e76580979edebb2e61a9e8f51ea3dd2a81f21b5611309560b99"
+    },
+    {
+      "path": "ui/flutter/ad_remote_desktop/lib/workspace.dart",
+      "sha256": "7c01f1c17b53b4ada786aa6e77604025ddc08a1e459f5861aba5425cdccdfd6d"
+    },
+    {
+      "path": "ui/flutter/ad_remote_desktop/lib/x11_server.dart",
+      "sha256": "2ff8c68e317d7b0e5272acb5b79580daaa9b326068764b7caf479eb591cc472d"
+    },
+    {
+      "path": "ui/flutter/ad_remote_desktop/pubspec.lock",
+      "sha256": "955f5a5f913aec969091f02821d5d48c0a3e44ea5ba1c31f2938bd0f78d965c0"
+    },
+    {
+      "path": "ui/flutter/ad_remote_desktop/pubspec.yaml",
+      "sha256": "6057bb0ef3aa3676c346289eea7b6443d5ad90c8d60d691f4f523a99b3828396"
+    },
+    {
+      "path": "ui/flutter/ad_remote_desktop/test/app_log_test.dart",
+      "sha256": "8d80b1004ee38b7b163c65d44f3ed6e20631a6848e5e773c395f314d8d74db10"
+    },
+    {
+      "path": "ui/flutter/ad_remote_desktop/test/assistant_controller_test.dart",
+      "sha256": "3d903e1c8530ea12dd64870ce91686393beb2c1584526184168085ffcd339997"
+    },
+    {
+      "path": "ui/flutter/ad_remote_desktop/test/assistant_integration_test.dart",
+      "sha256": "4d1bb9c098566b6491a87babe5dfedfd9be472346bf53838e0850691cae60226"
+    },
+    {
+      "path": "ui/flutter/ad_remote_desktop/test/assistant_page_test.dart",
+      "sha256": "92593891e58c2681affb1d9a2dc4bef361ca7f5de449bcfbb6c9c7eac5520a03"
+    },
+    {
+      "path": "ui/flutter/ad_remote_desktop/test/assistant_screen_capture_test.dart",
+      "sha256": "f657ffffaa03e4f94efe12c3a92c7f981dc630976f8dac62fa7eaa440f5f1b0d"
+    },
+    {
+      "path": "ui/flutter/ad_remote_desktop/test/assistant_workspace_tools_test.dart",
+      "sha256": "080eacc779401fe75266ee5d147f928b39081ec4a3dd3b74403c9e5cfe3e8c11"
+    },
+    {
+      "path": "ui/flutter/ad_remote_desktop/test/audit_log_test.dart",
+      "sha256": "44ce1a97df400150cc653c5c08a4e00225e41fbf9137cbe154c6b59bf6f3cc50"
+    },
+    {
+      "path": "ui/flutter/ad_remote_desktop/test/capabilities_test.dart",
+      "sha256": "f455fd59947eb796d0ac49d4671c63a1c30edeef53e0d8b0858ea77baa18f79c"
+    },
+    {
+      "path": "ui/flutter/ad_remote_desktop/test/editor_language_service_test.dart",
+      "sha256": "fb1f5e05c9f1e214ee7024dbf9e78fab5e613a230960b47ebcbc59ac70b7b853"
+    },
+    {
+      "path": "ui/flutter/ad_remote_desktop/test/editor_popup_client_test.dart",
+      "sha256": "1fabf99aea880b36edeee31568bd42944d8e89df7a472d3dcbe35239ca1eb7e3"
+    },
+    {
+      "path": "ui/flutter/ad_remote_desktop/test/editor_popup_close_test.dart",
+      "sha256": "2680f6d64770428d28728548e304eea7eec8aaddb448a417cc127b1cb5803ac5"
+    },
+    {
+      "path": "ui/flutter/ad_remote_desktop/test/editor_popup_owner_test.dart",
+      "sha256": "a18044f9a587c5ff0512de76f6df1a010ee5d9e5c1c4cae092101e22e014cc07"
+    },
+    {
+      "path": "ui/flutter/ad_remote_desktop/test/editor_shutdown_test.dart",
+      "sha256": "cb8be6240b0c524f4d57f8ae492f5f2585da2cdc9002767d1b84b50a12a608be"
+    },
+    {
+      "path": "ui/flutter/ad_remote_desktop/test/editor_snapshot_test.dart",
+      "sha256": "220a0fc35d0b425d6ca4200d77116aded4d42d22a10701138b052530be53a278"
+    },
+    {
+      "path": "ui/flutter/ad_remote_desktop/test/file_reload_test.dart",
+      "sha256": "f5618a4360e392158a2e985f8856837931a8190d2513fe42938d274e099d5090"
+    },
+    {
+      "path": "ui/flutter/ad_remote_desktop/test/file_workspace_review_test.dart",
+      "sha256": "ba16d073f1caf78b027623bd97cb4711f8535a075876fd1e1171f562f23c04f3"
+    },
+    {
+      "path": "ui/flutter/ad_remote_desktop/test/file_workspace_ui_test.dart",
+      "sha256": "7f0865c95f07b293a86100de033b64734ea471ca7c3fb7508826acee4ed5a566"
+    },
+    {
+      "path": "ui/flutter/ad_remote_desktop/test/notifications_test.dart",
+      "sha256": "e52da1dac72c1a87e0b470df912c7802869ae5e74d0518674e9431315d4b327b"
+    },
+    {
+      "path": "ui/flutter/ad_remote_desktop/test/remote_desktop_test.dart",
+      "sha256": "aa596ca8e90486068be2bbf87931719714190209d531c0f90f80a9b2f42acb0d"
+    },
+    {
+      "path": "ui/flutter/ad_remote_desktop/test/remote_directory_test.dart",
+      "sha256": "e2b37db7e5c8cb582874fe585e133c69760f1901f43c5b8d209228e320aa5c64"
+    },
+    {
+      "path": "ui/flutter/ad_remote_desktop/test/session_tabs_test.dart",
+      "sha256": "354540c8df2ebd460a5eaa42ade0a58418e5df777c224203181d4d76364b6874"
+    },
+    {
+      "path": "ui/flutter/ad_remote_desktop/test/sftp_explorer_test.dart",
+      "sha256": "bffb76902d9e4e13f15e4d48d24d7ce736fbe851ee9343543f828c40cb6f3643"
+    },
+    {
+      "path": "ui/flutter/ad_remote_desktop/test/terminal_clipboard_test.dart",
+      "sha256": "d9ff33abf4f9f7b4fa50ed641d298a7efbe4e57d5a79db7a52a75fc1175bea0e"
+    },
+    {
+      "path": "ui/flutter/ad_remote_desktop/test/terminal_output_test.dart",
+      "sha256": "ee2007b2a557c0a3b1822c63f9f8adee9c60b95ae6d38ae3148cf11f3a5c09f7"
+    },
+    {
+      "path": "ui/flutter/ad_remote_desktop/test/terminal_shortcuts_test.dart",
+      "sha256": "9841c457a8f994395763fd7fe60360e3456c2435c2dc6a0843827910a171bf0d"
+    },
+    {
+      "path": "ui/flutter/ad_remote_desktop/test/terminal_theme_test.dart",
+      "sha256": "dbfcd77fd2bfd5eefd92b194e1be132c9417c29cb1e344e75df649899bb32813"
+    },
+    {
+      "path": "ui/flutter/ad_remote_desktop/test/tool_registry_test.dart",
+      "sha256": "4c7043c60cb7dec1d3850306171e565f81ff9b86e770f2e294a12004e81fa3d8"
+    },
+    {
+      "path": "ui/flutter/ad_remote_desktop/test/tools_panel_test.dart",
+      "sha256": "eb6af73182a3e7d72864cbb516741264bbf0549b855cae16e73f684a8c9e9ba2"
+    },
+    {
+      "path": "ui/flutter/ad_remote_desktop/test/transfer_queue_test.dart",
+      "sha256": "0d1965a932e0e93c10f235114babd1ba7218ac88e5cfc1bf5ca91be564c4c7ef"
+    },
+    {
+      "path": "ui/flutter/ad_remote_desktop/test/x11_server_test.dart",
+      "sha256": "4cb208ab1f2c6efa8710ad5891e6e63596de2019246ab744286490df034c81d2"
+    },
+    {
+      "path": "ui/flutter/ad_remote_desktop/windows/CMakeLists.txt",
+      "sha256": "ff5ecfcfa7c0cbe6617547997babdcd4e0e6a6b08f0b19d21ef574131265f0ae"
+    },
+    {
+      "path": "ui/flutter/ad_remote_desktop/windows/runner/CMakeLists.txt",
+      "sha256": "e2b28abdd5aae0ebf989b4b4a76963d704bc644067f0477d1d317dc898ccdcb4"
+    },
+    {
+      "path": "ui/flutter/ad_stream_surface/lib/ad_stream_surface.dart",
+      "sha256": "a310cd9fcffbeaf268bcde2d7b38620d8481ed6b7a33db62fc0e4ffb20419190"
+    },
+    {
+      "path": "ui/flutter/ad_stream_surface/pubspec.yaml",
+      "sha256": "3ff5e56afb9dd26d3f28a1ff0b45b9d64dbe8106ccdf0ce61d8ac99e018ee8af"
+    },
+    {
+      "path": "ui/flutter/ad_stream_surface/windows/CMakeLists.txt",
+      "sha256": "20fcb3b0024a62138c7e42d5c8fe5d00ce440f204933320fa2b4290d7ab1ce8d"
+    },
+    {
+      "path": "ui/flutter/ad_stream_surface/windows/ad_stream_surface_plugin.cpp",
+      "sha256": "0fd3ddb013af993f5bae0c76e7f94c34c184bf8efdf1da1affb4604c7d24a595"
+    },
+    {
+      "path": "ui/flutter/ad_stream_surface/windows/desktop_log.h",
+      "sha256": "ea78e30e3603aa0d3a0fd81ed8600dc386794d4994d23ae67dbf766d6e48af73"
+    },
+    {
+      "path": "ui/flutter/ad_stream_surface/windows/desktop_platform.h",
+      "sha256": "9fd8822b12b8fad3458067fabe737ff17b42c1028edf51054ee86a732c45c9a9"
+    },
+    {
+      "path": "ui/flutter/ad_stream_surface/windows/desktop_platform_test.cpp",
+      "sha256": "9833fe924a84336c759f7a75c384e6a190134e5419499ff3a7501112d2c88b7a"
+    },
+    {
+      "path": "ui/flutter/ad_stream_surface/windows/desktop_windows.h",
+      "sha256": "871fd0f92649dcad492d475ec1de6a257fc8f97be55e62b35c3c652de392ee6c"
+    },
+    {
+      "path": "ui/flutter/ad_stream_surface/windows/desktop_windows_test.cpp",
+      "sha256": "8c78ffa5e79ddbc0fb1417dbe6098bc9bd2f2abe034b2534672db89e7284e3c4"
+    },
+    {
+      "path": "ui/flutter/ad_stream_surface/windows/include/ad_stream_surface/ad_stream_surface_plugin_c_api.h",
+      "sha256": "8d2e20586b6d3f7cce58f11512f76569e7325861be8d21649a64fbaac5512cbb"
+    },
+    {
+      "path": "ui/flutter/ad_stream_surface/windows/stream_surface_shutdown_test.cpp",
+      "sha256": "120918c4da447868e41e6074d1d584b3cc29f4f9c5eac18648f9c2add5647ca3"
+    },
+    {
+      "path": "ui/flutter/ad_stream_surface/windows/tests/CMakeLists.txt",
+      "sha256": "f7ed8bb8154080acb73400eb2f199cb7fa3c86c8d8aa8ad9b25df1232adee47d"
+    }
+  ]
+}

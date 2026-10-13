@@ -1,0 +1,98 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/ad-core",
+    "crates/ad-config",
+    "crates/ad-events",
+    "crates/ad-session",
+    "crates/ad-credential",
+    "crates/ad-plugin-host",
+    "crates/ad-telemetry",
+    "crates/ad-ssh",
+    "crates/ad-vpn",
+    "crates/ad-sftp",
+    "crates/ad-tunnel",
+    "crates/ad-terminal",
+    "crates/ad-terminal-render",
+    "crates/ad-display",
+    "crates/ad-stream-protocol",
+    "crates/ad-stream-client",
+    "crates/ad-display-decoder",
+    "crates/ad-display-renderer",
+    "crates/ad-qos-controller",
+    "crates/ad-remote-session",
+    "crates/agent-wayland",
+    "crates/agent-input",
+    "crates/agent-encoder",
+    "crates/agent-supervisor",
+    "crates/ad-rdp-bridge",
+    "crates/ad-vnc",
+    "crates/ad-x11-bridge",
+    "crates/ad-app",
+    "crates/ad-cli-tool",
+    "crates/ad-ffi",
+]
+
+[workspace.package]
+version = "0.1.2"
+edition = "2021"
+authors = ["AetherDesk Team"]
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/aetherdesk/aetherdesk"
+homepage = "https://aetherdesk.dev"
+
+[workspace.dependencies]
+# Async runtime
+tokio = { version = "1.35", features = ["full"] }
+tokio-util = "0.7"
+async-trait = "0.1"
+futures = "0.3"
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+bincode = "1.3"
+
+# Error handling
+thiserror = "1.0"
+anyhow = "1.0"
+
+# Logging and tracing
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# SSH
+russh = { version = "0.63.1", default-features = false, features = ["flate2", "ring", "rsa"] }
+
+# Crypto
+ring = "0.17"
+subtle = "2.6"
+rustls = "0.21"
+
+# FFI bindings
+ffi-support = "0.4"
+cbindgen = "0.26"
+
+# Testing
+proptest = "1.4"
+criterion = "0.5"
+
+# Common utilities
+bytes = "1.5"
+quinn = { version = "0.11", default-features = false, features = ["runtime-tokio", "rustls-ring"] }
+smithay = { version = "0.7", default-features = false, features = ["backend_drm", "backend_gbm", "desktop", "renderer_pixman", "wayland_frontend", "xwayland"] }
+evdev = "0.13"
+uinput = "0.1"
+gstreamer = "0.25"
+gstreamer-app = "0.25"
+gstreamer-video = "0.25"
+wgpu = "30"
+parking_lot = "0.12"
+uuid = { version = "1.6", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+
+[profile.release]
+# increase_speed.md P1 #15: the encode/copy hot paths leave performance on
+# the table without LTO. Packaging must never ship target/debug.
+lto = "thin"
+codegen-units = 1

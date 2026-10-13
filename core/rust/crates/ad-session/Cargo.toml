@@ -1,0 +1,18 @@
+[package]
+name = "ad-session"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Session management for AetherDesk"
+
+[dependencies]
+ad-core = { path = "../ad-core" }
+ad-config = { path = "../ad-config" }
+ad-events = { path = "../ad-events" }
+ad-ssh = { path = "../ad-ssh" }
+tokio.workspace = true
+parking_lot.workspace = true
+tracing.workspace = true
+serde.workspace = true
+uuid.workspace = true

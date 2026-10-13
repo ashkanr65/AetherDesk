@@ -1,0 +1,16 @@
+[package]
+name = "ad-cli-tool"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "ad-cli-tool"
+path = "src/main.rs"
+
+[dependencies]
+ad-ssh = { path = "../ad-ssh" }
+ad-config = { path = "../ad-config" }
+ad-events = { path = "../ad-events" }
+tokio = { version = "1", features = ["full"] }
+anyhow = "1.0"
+rpassword = "7.3"

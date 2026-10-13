@@ -1,0 +1,14 @@
+[package]
+name = "ad-rdp-bridge"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+ad-display = { path = "../ad-display" }
+async-trait.workspace = true
+tokio.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+tracing.workspace = true

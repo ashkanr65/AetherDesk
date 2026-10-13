@@ -1,0 +1,16 @@
+[package]
+name = "ad-events"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Event bus and messaging for AetherDesk"
+
+[dependencies]
+ad-core = { path = "../ad-core" }
+tokio.workspace = true
+parking_lot.workspace = true
+tracing.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+futures.workspace = true

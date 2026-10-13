@@ -1,0 +1,44 @@
+# glibc 2.28 baseline: compatible with Rocky/Alma/RHEL 8 and newer hosts.
+FROM almalinux:8 AS builder
+
+RUN dnf install -y dnf-plugins-core epel-release \
+    && dnf config-manager --set-enabled powertools \
+    && dnf install -y https://download1.rpmfusion.org/free/el/rpmfusion-free-release-8.noarch.rpm \
+    && dnf install -y --setopt=install_weak_deps=False \
+      ca-certificates curl patch gcc gcc-c++ make git pkgconf-pkg-config python3 xfwm4 dbus-x11 dejavu-sans-fonts \
+      wayland-devel libxkbcommon-devel systemd-devel libinput-devel \
+      mesa-libgbm-devel libdrm-devel mesa-libEGL-devel mesa-libGLES-devel pixman-devel \
+      gstreamer1-devel gstreamer1-plugins-base-devel gstreamer1-plugins-base \
+      gstreamer1-plugins-good gstreamer1-plugins-bad-free gstreamer1-plugins-ugly \
+      python39 python39-pip ninja-build xz libX11-devel libXfont2-devel libxkbfile-devel \
+      libXau-devel libXdmcp-devel xorg-x11-proto-devel xorg-x11-xtrans-devel \
+      openssl-devel libtirpc-devel libxshmfence-devel xorg-x11-xkb-utils xkeyboard-config zlib-devel \
+    && dnf clean all
+
+# XWayland 23.1+ supplies the surface association protocol used by Smithay.
+# Build against glibc 2.28 rather than bundling the incompatible RHEL 8 server.
+RUN python3.9 -m venv /opt/aetherdesk-build-tools \
+    && /opt/aetherdesk-build-tools/bin/pip install --no-cache-dir meson==1.3.2
+ENV PATH=/opt/aetherdesk-build-tools/bin:$PATH
+COPY tools/build-xwayland.sh tools/xwayland-monitors.patch /tmp/
+RUN bash /tmp/build-xwayland.sh /opt/aetherdesk-xwayland
+ENV PATH=/opt/aetherdesk-xwayland/bin:$PATH
+ENV LD_LIBRARY_PATH=/opt/aetherdesk-xwayland/lib
+
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+    | sh -s -- -y --profile minimal --default-toolchain stable
+ENV PATH=/root/.cargo/bin:$PATH
+
+WORKDIR /src
+COPY core/rust /src/core/rust
+COPY tools/package-linux-agent.sh /src/tools/package-linux-agent.sh
+COPY tools/x11-icons.py /src/tools/x11-icons.py
+RUN cargo build --locked --release --manifest-path core/rust/Cargo.toml \
+      -p agent-supervisor \
+    && install -d -m 1777 /tmp/.X11-unix \
+    && cargo test --locked --release --manifest-path core/rust/Cargo.toml \
+      -p agent-wayland -- --test-threads=1 \
+    && bash tools/package-linux-agent.sh core/rust/target/release/ad-agent /src/agent-bundle
+
+FROM scratch AS artifact
+COPY --from=builder /src/agent-bundle/ /

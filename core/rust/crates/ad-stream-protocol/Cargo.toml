@@ -1,0 +1,16 @@
+[package]
+name = "ad-stream-protocol"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Wire types and framing for the Aether Remote Presentation Protocol"
+
+[dependencies]
+async-trait.workspace = true
+bincode.workspace = true
+bytes = { workspace = true, features = ["serde"] }
+ring.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+uuid.workspace = true

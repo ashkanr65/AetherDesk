@@ -1,0 +1,35 @@
+[package]
+name = "ad-remote-session"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Agent deployment, ARPP lifecycle, clipboard, file bridge, and shell integration"
+
+[features]
+default = []
+rendering = [
+    "ad-stream-client/display-stream",
+    "dep:ad-display-decoder",
+    "dep:ad-display-renderer",
+    "dep:ad-qos-controller",
+    "dep:wgpu",
+]
+
+[dependencies]
+ad-core = { path = "../ad-core" }
+ad-ssh = { path = "../ad-ssh" }
+ad-stream-client = { path = "../ad-stream-client" }
+ad-stream-protocol = { path = "../ad-stream-protocol" }
+ad-display-decoder = { path = "../ad-display-decoder", optional = true }
+ad-display-renderer = { path = "../ad-display-renderer", optional = true }
+ad-qos-controller = { path = "../ad-qos-controller", optional = true }
+async-trait.workspace = true
+ring.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+uuid.workspace = true
+wgpu = { workspace = true, optional = true }

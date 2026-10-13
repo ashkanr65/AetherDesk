@@ -1,0 +1,28 @@
+[package]
+name = "ad-ssh"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "SSH client implementation for AetherDesk"
+
+[dependencies]
+ad-vpn = { path = "../ad-vpn" }
+ad-core = { path = "../ad-core" }
+ad-events = { path = "../ad-events" }
+ad-config = { path = "../ad-config" }
+tokio.workspace = true
+tokio-util.workspace = true
+russh.workspace = true
+tracing.workspace = true
+thiserror.workspace = true
+futures.workspace = true
+parking_lot.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+dirs-next = "2.0"
+ring.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+tempfile = "3"

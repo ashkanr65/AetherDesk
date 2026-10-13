@@ -1,0 +1,277 @@
+name: Build AetherDesk for Windows
+
+permissions:
+  contents: read
+
+on:
+  push:
+    branches: [ main, master, 'codex/**' ]
+  pull_request:
+    branches: [ main, master, 'codex/**' ]
+  workflow_dispatch:
+
+jobs:
+  linux-agent-bundle:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    steps:
+    - uses: actions/checkout@v4
+    - name: Synchronize release version for Linux agent
+      run: python3 -X utf8 tools/version.py
+    - name: Test movable Linux build paths
+      run: bash tools/build-kit/Test-Linux-Paths.sh
+    - name: Build and verify RHEL 8 compatible Linux agent
+      run: >-
+        docker build --progress=plain -f agent/linux/Dockerfile.bundle
+        --output type=local,dest=agent-bundle .
+    - uses: actions/upload-artifact@v4
+      with:
+        name: embedded-linux-agent
+        path: agent-bundle/
+        retention-days: 7
+
+  build-windows:
+    needs: linux-agent-bundle
+    runs-on: windows-2022
+    outputs:
+      signing_enabled: ${{ steps.signing.outputs.enabled }}
+      portable_artifact: ${{ steps.signing.outputs.portable_artifact }}
+      release_version: ${{ steps.toolchain.outputs.version }}
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Read source-owned toolchain versions
+      id: toolchain
+      run: ./tools/build-kit/Windows-Stages.ps1 -Stage Toolchain
+
+    - name: Setup editor build tools
+      uses: actions/setup-node@v4
+      with:
+        node-version: 22
+        cache: npm
+        cache-dependency-path: ui/editor/package-lock.json
+
+    - name: Build embedded offline code editor
+      run: ./tools/build-kit/Windows-Stages.ps1 -Stage EditorAssets
+
+    - name: Test release version synchronization
+      run: python -X utf8 tools/test_version.py
+
+    - name: Test movable Windows build paths
+      run: ./tools/build-kit/Test-Build-Paths.ps1
+
+    - name: Verify shared build recipe and process exit status
+      run: ./tools/build-kit/Test-Recipe-Exit.ps1
+      
+    - name: Setup Rust
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        toolchain: stable
+        target: x86_64-pc-windows-msvc
+        
+    - name: Setup Flutter
+      uses: subosito/flutter-action@v2
+      with:
+        flutter-version: ${{ steps.toolchain.outputs.flutter }}
+        channel: 'stable'
+        cache: true
+        
+    - name: Enable Windows desktop support
+      run: flutter config --enable-windows-desktop
+
+    - name: Verify Windows build toolchain
+      run: |
+        flutter --version
+        flutter doctor -v
+
+    - name: Validate Flutter source and regression tests
+      run: ./tools/build-kit/Windows-Stages.ps1 -Stage CheckUI
+
+    - name: Test native monitor layout, fullscreen, and keyboard handling
+      run: ./tools/build-kit/Windows-Stages.ps1 -Stage NativeTests
+
+    - name: Generate Flutter Windows runner
+      run: ./tools/build-kit/Windows-Stages.ps1 -Stage PrepareRunner
+        
+    - name: Build Flutter Windows App
+      run: ./tools/build-kit/Windows-Stages.ps1 -Stage BuildUI
+        
+    - name: Install pinned GStreamer decoder SDK
+      shell: pwsh
+      run: |
+        $installer = Join-Path $env:RUNNER_TEMP "gstreamer.exe"
+        $gst = Join-Path $env:RUNNER_TEMP "gstreamer"
+        $version = '${{ steps.toolchain.outputs.gstreamer }}'
+        Invoke-WebRequest "https://gstreamer.freedesktop.org/data/pkg/windows/$version/msvc/gstreamer-1.0-msvc-x86_64-$version.exe" -OutFile $installer
+        $process = Start-Process -FilePath $installer -WindowStyle Hidden -Wait -PassThru -ArgumentList @('/VERYSILENT', '/NORESTART', '/CURRENTUSER', '/TYPE=devel', "/DIR=$gst")
+        if ($process.ExitCode -ne 0) { throw "GStreamer setup failed: $($process.ExitCode)" }
+        "GSTREAMER_ROOT=$gst" | Out-File $env:GITHUB_ENV -Append
+        "PKG_CONFIG_PATH=$gst/lib/pkgconfig" | Out-File $env:GITHUB_ENV -Append
+        "$gst/bin" | Out-File $env:GITHUB_PATH -Append
+        & "$gst/bin/gst-inspect-1.0.exe" h264parse
+        & "$gst/bin/gst-inspect-1.0.exe" avdec_h264
+
+    - name: Test Rust SSH, display, streaming, and FFI boundaries
+      run: ./tools/build-kit/Windows-Stages.ps1 -Stage TestCore
+      
+    - name: Build Rust FFI library (Release)
+      run: ./tools/build-kit/Windows-Stages.ps1 -Stage BuildCore
+
+    - name: Download matching Linux agent
+      uses: actions/download-artifact@v4
+      with:
+        name: embedded-linux-agent
+        path: embedded-linux-agent/
+
+    - name: Collect Release Files
+      run: |
+        $release = Join-Path $PWD "release_package"
+        $flutterBuild = Join-Path $PWD "ui/flutter/ad_remote_desktop/build/windows/x64/runner/Release"
+        New-Item -ItemType Directory -Force -Path $release | Out-Null
+        Copy-Item -Path (Join-Path $flutterBuild "*") -Destination $release -Recurse -Force
+        Copy-Item -LiteralPath "core/rust/target/x86_64-pc-windows-msvc/release/ad_ffi.dll" -Destination $release
+        Copy-Item -Path "$env:GSTREAMER_ROOT/bin/*.dll" -Destination $release
+        Copy-Item -LiteralPath "$env:GSTREAMER_ROOT/lib/gstreamer-1.0" -Destination $release -Recurse
+        Copy-Item -LiteralPath "$env:GSTREAMER_ROOT/libexec/gstreamer-1.0/gst-plugin-scanner.exe" -Destination $release
+        $agent = Join-Path $release "agent/linux-x86_64"
+        New-Item -ItemType Directory -Force -Path $agent | Out-Null
+        Copy-Item -Path "embedded-linux-agent/*" -Destination $agent -Recurse
+        if (Test-Path "$env:GSTREAMER_ROOT/share/licenses") {
+          Copy-Item -LiteralPath "$env:GSTREAMER_ROOT/share/licenses" -Destination $release -Recurse
+        }
+        & "$env:GSTREAMER_ROOT/bin/gst-inspect-1.0.exe" --version
+
+    - name: Bundle and verify standalone AI Assistant runtime
+      run: |
+        ./tools/build-kit/Bundle-Assistant.ps1 -Destination release_package
+        python -X utf8 tools/build-kit/Verify-Assistant.py --package release_package
+        if ($LASTEXITCODE -ne 0) { throw "Assistant runtime verification failed: $LASTEXITCODE" }
+        ./tools/build-kit/Test-Assistant.ps1 -Package release_package
+
+    - name: Bundle private X11 runtime without installing VcXsrv
+      run: ./tools/build-kit/Bundle-X11.ps1 -Destination release_package
+
+    - name: Bundle offline editor runtime and verify editor assets
+      run: |
+        ./tools/build-kit/Bundle-Editor-Runtime.ps1 -Destination release_package
+        python -X utf8 tools/build-kit/Verify-Editor.py --package release_package
+        $version = & ./tools/build-kit/Release-Version.ps1
+        @{ version=$version.version; build=$version.build; revision=$env:GITHUB_SHA } | ConvertTo-Json | Set-Content release_package/build-info.json
+
+    - name: Verify portable native runtime without the SDK
+      run: python .github/scripts/verify-windows-runtime.py release_package
+
+    - name: Detect Windows signing credentials
+      id: signing
+      if: github.event_name != 'pull_request'
+      env:
+        WINDOWS_SIGNING_CERTIFICATE: ${{ secrets.WINDOWS_SIGNING_CERTIFICATE }}
+        WINDOWS_SIGNING_PASSWORD: ${{ secrets.WINDOWS_SIGNING_PASSWORD }}
+      run: |
+        if ([string]::IsNullOrWhiteSpace($env:WINDOWS_SIGNING_CERTIFICATE) -or
+            [string]::IsNullOrWhiteSpace($env:WINDOWS_SIGNING_PASSWORD)) {
+          "enabled=false" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          "portable_artifact=AetherDesk-${{ steps.toolchain.outputs.version }}-windows-unsigned" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          Write-Warning @'
+        Windows signing credentials are not configured. The build will continue,
+        but Windows App Control may reject the unsigned portable package. Configure
+        WINDOWS_SIGNING_CERTIFICATE and WINDOWS_SIGNING_PASSWORD to produce a build
+        intended for unrestricted distribution.
+        '@
+        } else {
+          "enabled=true" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          "portable_artifact=AetherDesk-${{ steps.toolchain.outputs.version }}-windows" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+        }
+
+    - name: Sign and verify portable Windows binaries
+      if: steps.signing.outputs.enabled == 'true'
+      env:
+        WINDOWS_SIGNING_CERTIFICATE: ${{ secrets.WINDOWS_SIGNING_CERTIFICATE }}
+        WINDOWS_SIGNING_PASSWORD: ${{ secrets.WINDOWS_SIGNING_PASSWORD }}
+      run: >-
+        ./.github/scripts/sign-windows-binaries.ps1
+        -Path release_package
+        -CertificateBase64 $env:WINDOWS_SIGNING_CERTIFICATE
+        -CertificatePassword $env:WINDOWS_SIGNING_PASSWORD
+        
+    - name: Verify AI runtime integrity after signing
+      run: python -X utf8 tools/build-kit/Verify-Assistant.py --package release_package --files-only
+
+    - name: Upload Windows EXE Artifact
+      if: github.event_name != 'pull_request'
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ steps.signing.outputs.portable_artifact }}
+        path: release_package/
+        retention-days: 30
+
+  build-installer:
+    needs: build-windows
+    if: github.event_name != 'pull_request'
+    runs-on: windows-2022
+    
+    steps:
+    - name: Checkout release scripts
+      uses: actions/checkout@v4
+
+    - name: Download Windows Build
+      uses: actions/download-artifact@v4
+      with:
+        name: ${{ needs.build-windows.outputs.portable_artifact }}
+        path: installer_files/
+        
+    - name: Verify AI runtime files for installer
+      run: python -X utf8 tools/build-kit/Verify-Assistant.py --package installer_files --files-only
+
+    - name: Create Inno Setup Script
+      shell: pwsh
+      run: |
+        $releaseVersion = & ./tools/build-kit/Release-Version.ps1
+        @"
+        [Setup]
+        AppName=AetherDesk
+        AppVersion=$($releaseVersion.version)
+        VersionInfoVersion=$($releaseVersion.normalized).$($releaseVersion.build)
+        DefaultDirName={pf}\AetherDesk
+        DefaultGroupName=AetherDesk
+        OutputDir=output
+        OutputBaseFilename=AetherDesk-$($releaseVersion.version)-Setup
+        SetupIconFile=$env:GITHUB_WORKSPACE\ui\flutter\ad_remote_desktop\assets\aetherdesk.ico
+        UninstallDisplayIcon={app}\aetherdesk.exe
+        
+        [Files]
+        Source: "installer_files\*"; DestDir: "{app}"; Flags: recursesubdirs createallsubdirs
+        
+        [Icons]
+        Name: "{group}\AetherDesk"; Filename: "{app}\aetherdesk.exe"
+
+        #include "$env:GITHUB_WORKSPACE\tools\build-kit\Editor-Runtime.iss"
+        "@ | Out-File -FilePath "installer.iss" -Encoding ASCII
+        
+    - name: Install Inno Setup
+      run: |
+        choco install innosetup -y
+        
+    - name: Build Installer
+      run: |
+        & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer.iss
+
+    - name: Sign and verify Windows installer
+      if: needs.build-windows.outputs.signing_enabled == 'true'
+      env:
+        WINDOWS_SIGNING_CERTIFICATE: ${{ secrets.WINDOWS_SIGNING_CERTIFICATE }}
+        WINDOWS_SIGNING_PASSWORD: ${{ secrets.WINDOWS_SIGNING_PASSWORD }}
+      run: >-
+        ./.github/scripts/sign-windows-binaries.ps1
+        -Path output
+        -CertificateBase64 $env:WINDOWS_SIGNING_CERTIFICATE
+        -CertificatePassword $env:WINDOWS_SIGNING_PASSWORD
+        
+    - name: Upload Installer Artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: AetherDesk-${{ needs.build-windows.outputs.release_version }}-${{ needs.build-windows.outputs.signing_enabled == 'true' && 'installer' || 'installer-unsigned' }}
+        path: output/
+        retention-days: 30
