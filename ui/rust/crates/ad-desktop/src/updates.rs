@@ -169,6 +169,21 @@ async fn check(highest: [u64; 4]) -> Result<Option<Candidate>, String> {
         .send()
         .await
         .map_err(|_| "Cannot reach GitHub. Check your connection.")?;
+    if response.status() == reqwest::StatusCode::NOT_FOUND {
+        // A new public downloads repository can legitimately have no release yet.
+        let repository_response = request(&client, &format!("/repos/{repo}"), false)
+            .timeout(Duration::from_secs(30))
+            .send()
+            .await
+            .map_err(|_| "Cannot reach GitHub")?;
+        let repository: serde_json::Value =
+            serde_json::from_slice(&limited(repository_response, 1024 * 1024).await?)
+                .map_err(|_| "Invalid repository response")?;
+        if repository["private"] == false {
+            return Ok(None);
+        }
+        return Err("The public update repository is unavailable".into());
+    }
     let release: Release = serde_json::from_slice(&limited(response, 1024 * 1024).await?)
         .map_err(|_| "Invalid release response")?;
     if release.draft || release.prerelease {

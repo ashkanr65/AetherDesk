@@ -477,7 +477,7 @@ build were run. Visual acceptance remains after rebuilding/restarting the client
 | AH1 | Settings → Updates and automatic checks | Source implemented: checks on, downloads off, explicit install confirmation, notes/progress, notification, persisted and reverified downloads. Public downloads require no GitHub account or shared credential. Native/visual acceptance pending. |
 | AH2 | Signed installer and portable updating | Source implemented: embedded Ed25519 key, expiry/version/target/path/size/hash checks; isolated helper DLLs; active-work gating; existing Inno installer identity; portable backup/journal and first-launch recovery. Installer failure logs retained. Full installer/portable and interrupted-upgrade acceptance pending; not claimed power-loss-proof. |
 | AH3 | Publisher identity and public distribution | Configured: local signing key protected in Windows Credential Manager and encrypted Actions secret in private AetherDesk-Rust. Public ashkanr65/AetherDesk created with download-only README. Former project retained as private archived AetherDesk-Legacy-Private-20261019. No source or binary published publicly. |
-| AH4 | Release tooling and private source push | Manual Rust release workflow and publisher-only signing/verification/draft-upload tools implemented. Both application workspace locks retained for reproducible builds. Source push and final offline checks follow. No release build/workflow triggered. Authenticode certificate and live acceptance remain outstanding. |
+| AH4 | Release tooling and private source push | Manual Rust release workflow and publisher-only signing/verification/draft-upload tools implemented. Both application workspace locks retained for reproducible builds. Source pushed to private main; no release build/workflow triggered. Authenticode certificate and live acceptance remain outstanding. |
 | AH5 | Repair source-change failure during packaging | Stages 2–6 now run their recipe from the verified stage-1 snapshot; checkout edits enter the next build. Snapshot tampering and mixed initial snapshots still fail. Offline fixture passed for live edits versus snapshot changes. The old step-4 log was a concurrent-edit guard, not failed X11; its X11 regression passed. |
 
 The user authorized GitHub setup/public downloads and source push. They retained
@@ -494,6 +494,11 @@ scan found no key material. Native compiler, actual installer/portable upgrades,
 multi-instance locking and restart recovery remain pending. No binary is published.
 
 The user's later instruction requires all source pushes on main. The temporary
-local review branch was never pushed; its commits will be transferred to main and
+local review branch was never pushed; its commits were transferred to main and
 the local branch removed. Legacy Flutter/agent workflows are now manual-only, as
 is the new Rust release workflow, so this main push will not start compilation.
+
+Private main now contains the complete pending Rust source plus updater work.
+The public repository contains only its download README, with no released binary
+or application source. Initial update checks treat an existing public repository
+with no published releases as no update, rather than an authentication failure.
