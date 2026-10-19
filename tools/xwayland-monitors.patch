@@ -12,7 +12,7 @@
  }
  
  void
-@@ -1293,6 +1294,73 @@
+@@ -1293,6 +1294,93 @@
      return TRUE;
  }
  
@@ -37,6 +37,21 @@
 +    RRModePtr mode;
 +    char name[40];
 +
++    const char *details_name = "_AETHERDESK_OUTPUT_DETAILS";
++    if (property == MakeAtom(details_name, strlen(details_name), TRUE)) {
++        if (!fixed || output != fixed->randr_output || value->type != XA_CARDINAL ||
++            value->format != 32 || value->size < 3 || value->size > 48 || value->size % 3)
++            return FALSE;
++        count = value->size / 3;
++        for (i = 0; i < count; ++i) {
++            CARD32 *d = rects + 3 * i;
++            if (d[0] < 10 || d[0] > 10000 || d[1] < 10 || d[1] > 10000 || d[2] < 1000 || d[2] > 240000)
++                return FALSE;
++        }
++        memcpy(fixed->desktop_details, rects, value->size * sizeof(CARD32));
++        fixed->desktop_details_count = count;
++        return TRUE;
++    }
 +    if (property != desktop_layout_atom())
 +        return TRUE;
 +    if (!fixed || output != fixed->randr_output || value->type != XA_CARDINAL ||
@@ -61,14 +76,19 @@
 +            RRCrtcGammaSetSize(fixed->desktop_crtcs[i], 256);
 +            RROutputSetCrtcs(fixed->desktop_outputs[i], &fixed->desktop_crtcs[i], 1);
 +        }
-+        mode = xwayland_cvt(r[2], r[3], 60, 0, 0);
++        /* Virtual refresh cannot exceed the compositor's 60 Hz rendering loop. */
++        unsigned hz = fixed->desktop_details_count > i ? fixed->desktop_details[i][2] : 60000;
++        hz = (hz > 60000 ? 60000 : hz);
++        mode = xwayland_cvt(r[2], r[3], (hz + 500) / 1000, 0, 0);
 +        if (!mode)
 +            return FALSE;
 +        RROutputSetModes(fixed->desktop_outputs[i], &mode, 1, 1);
 +        /* SetModes owns the reference returned by xwayland_cvt. */
 +        RRCrtcNotify(fixed->desktop_crtcs[i], mode, r[0], r[1], RR_Rotate_0,
 +                     NULL, 1, &fixed->desktop_outputs[i]);
-+        RROutputSetPhysicalSize(fixed->desktop_outputs[i], r[2] * 254 / 960, r[3] * 254 / 960);
++        RROutputSetPhysicalSize(fixed->desktop_outputs[i],
++            fixed->desktop_details_count > i ? fixed->desktop_details[i][0] : r[2] * 254 / 960,
++            fixed->desktop_details_count > i ? fixed->desktop_details[i][1] : r[3] * 254 / 960);
 +        RROutputSetConnection(fixed->desktop_outputs[i], RR_Connected);
 +    }
 +    for (i = count; i < fixed->desktop_count; ++i) {
@@ -86,7 +106,7 @@
  /* Create a single RR output/mode used with a fixed geometry */
  Bool
  xwl_screen_init_randr_fixed(struct xwl_screen *xwl_screen)
-@@ -1316,6 +1384,7 @@
+@@ -1316,6 +1404,7 @@
      rp = rrGetScrPriv(xwl_screen->screen);
      rp->rrGetInfo = xwl_randr_get_info;
      rp->rrSetConfig = xwl_randr_set_config_fixed;
@@ -94,7 +114,7 @@
  
      snprintf(name, MAX_OUTPUT_NAME, "XWAYLAND%d",
               xwl_screen_get_next_output_serial(xwl_screen));
-@@ -1355,6 +1424,10 @@
+@@ -1355,6 +1444,10 @@
      xwl_output->xwl_screen = xwl_screen;
      xwl_screen->fixed_output = xwl_output;
      xwl_output->xscale = 1.0;
@@ -107,7 +127,7 @@
  
 --- a/hw/xwayland/xwayland-output.h
 +++ b/hw/xwayland/xwayland-output.h
-@@ -51,6 +51,10 @@
+@@ -51,6 +51,12 @@
      RROutputPtr randr_output;
      RRCrtcPtr randr_crtc;
      RRTransformPtr transform;
@@ -115,6 +135,8 @@
 +    RROutputPtr desktop_outputs[16];
 +    RRCrtcPtr desktop_crtcs[16];
 +    unsigned desktop_count;
++    CARD32 desktop_details[16][3];
++    unsigned desktop_details_count;
  
      /* only for regular outputs */
      struct wl_output *output;

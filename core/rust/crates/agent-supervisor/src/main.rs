@@ -92,6 +92,7 @@ async fn launch(options: Options) -> Result<(), Box<dyn std::error::Error>> {
     let deadline = Instant::now() + START_TIMEOUT;
     loop {
         if let Some(endpoint) = read_live_endpoint(&endpoint_path).await? {
+            println!("AETHERDESK_AGENT_CREATED_V1");
             println!("{endpoint}");
             return Ok(());
         }

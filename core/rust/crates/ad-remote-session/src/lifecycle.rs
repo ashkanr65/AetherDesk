@@ -28,6 +28,8 @@ const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(20);
 pub struct AgentEndpoint {
     pub port: u16,
     pub token: [u8; 32],
+    /// Only a positively identified fresh launch may be rolled back on cancel.
+    pub newly_created: bool,
 }
 
 #[async_trait]
@@ -102,6 +104,9 @@ impl<C: AgentConnection> RemoteSessionLifecycle<C> {
     pub fn state(&self) -> LifecycleState {
         self.state
     }
+    pub fn newly_created(&self) -> bool {
+        self.endpoint.as_ref().is_some_and(|e| e.newly_created)
+    }
 
     pub fn session(&self) -> Option<Arc<ArppSession>> {
         self.session.clone()
@@ -128,7 +133,7 @@ impl<C: AgentConnection> RemoteSessionLifecycle<C> {
         self.validate_parameters(parameters)?;
         self.state = LifecycleState::Deploying;
         let result = self
-            .connect_inner(artifact, runtime, parameters, false)
+            .connect_inner(artifact, runtime, parameters, false, None)
             .await;
         if result.is_err() {
             self.state = LifecycleState::Failed;
@@ -146,10 +151,54 @@ impl<C: AgentConnection> RemoteSessionLifecycle<C> {
         self.validate_parameters(parameters)?;
         self.state = LifecycleState::Deploying;
         let result = self
-            .connect_inner(artifact, runtime, parameters, true)
+            .connect_inner(artifact, runtime, parameters, true, None)
             .await;
         if result.is_err() {
             self.state = LifecycleState::Failed;
+        }
+        result
+    }
+
+    /// Cancellation keeps ownership through launch and closes any partial
+    /// handshake. Never terminate a desktop that existed before this attempt.
+    pub async fn connect_saved_desktop_cancellable(
+        &mut self,
+        artifact: &AgentArtifact,
+        runtime: Option<&AgentRuntimeBundle>,
+        parameters: &SessionParameters,
+        cancel: &tokio_util::sync::CancellationToken,
+    ) -> Result<Arc<ArppSession>, LifecycleError> {
+        self.validate_parameters(parameters)?;
+        self.state = LifecycleState::Deploying;
+        let result = self
+            .connect_inner(artifact, runtime, parameters, true, Some(cancel))
+            .await;
+        if result.is_err() {
+            let cleanup = timeout(Duration::from_secs(18), async {
+                if self.session.is_none() {
+                    if let Some(endpoint) = &self.endpoint {
+                        let transport = timeout(
+                            Duration::from_secs(5),
+                            self.connection.open_transport(endpoint),
+                        )
+                        .await
+                        .map_err(|_| LifecycleError::HandshakeTimeout)??;
+                        self.session = Some(Arc::new(ArppSession::new(transport)));
+                    }
+                }
+                let mode = if self.endpoint.as_ref().is_some_and(|e| e.newly_created) {
+                    DisconnectMode::Terminate
+                } else {
+                    DisconnectMode::Detach
+                };
+                self.disconnect(mode).await
+            })
+            .await;
+            self.state = LifecycleState::Failed;
+            match cleanup {
+                Ok(Ok(())) => {}
+                _ => return Err(LifecycleError::CleanupUnconfirmed(self.session_id)),
+            }
         }
         result
     }
@@ -160,37 +209,70 @@ impl<C: AgentConnection> RemoteSessionLifecycle<C> {
         runtime: Option<&AgentRuntimeBundle>,
         parameters: &SessionParameters,
         saved_desktop: bool,
+        cancel: Option<&tokio_util::sync::CancellationToken>,
     ) -> Result<Arc<ArppSession>, LifecycleError> {
-        let deployment = self
-            .bootstrap
-            .ensure_bundle_deployed(artifact, runtime)
-            .await?;
+        let deployment = cancellable(cancel, async {
+            Ok(self
+                .bootstrap
+                .ensure_bundle_deployed(artifact, runtime)
+                .await?)
+        })
+        .await?;
         self.state = LifecycleState::Connecting;
-        let endpoint = self
-            .connection
-            .launch_agent(&deployment, self.session_id, Some(parameters))
-            .await?;
-        let transport = self.connection.open_transport(&endpoint).await?;
+        // Once launch has started, wait for its bounded response even if the
+        // user cancels. Dropping it could lose a newly created agent's identity.
+        if cancel.is_some_and(|c| c.is_cancelled()) {
+            return Err(LifecycleError::Cancelled);
+        }
+        let endpoint = timeout(
+            Duration::from_secs(35),
+            self.connection
+                .launch_agent(&deployment, self.session_id, Some(parameters)),
+        )
+        .await
+        .map_err(|_| LifecycleError::CleanupUnconfirmed(self.session_id))??;
+        self.endpoint = Some(endpoint.clone());
+        self.deployment = Some(deployment.clone());
+        if cancel.is_some_and(|c| c.is_cancelled()) {
+            return Err(LifecycleError::Cancelled);
+        }
+        // Finish the bounded three-channel opening before observing cancellation,
+        // so cleanup does not race an abandoned, incomplete channel set.
+        let transport = timeout(
+            Duration::from_secs(10),
+            self.connection.open_transport(&endpoint),
+        )
+        .await
+        .map_err(|_| LifecycleError::HandshakeTimeout)??;
         let session = Arc::new(ArppSession::new(transport));
-        let capabilities = client_hello(&session).await?;
+        self.session = Some(session.clone());
+        let capabilities = cancellable(cancel, client_hello(&session)).await?;
         validate_capabilities(&capabilities, parameters)?;
-        if saved_desktop {
-            session
-                .send(ArppMessage::Control(ControlMessage::ResumeSession {
-                    session_id: self.session_id,
-                    last_presented_frame: 0,
-                    cache_epoch: 0,
-                    cache_digest: [0; 32],
-                }))
-                .await?;
-            wait_for_resume_state(&session, self.session_id).await?;
-        } else {
-            session
-                .send(ArppMessage::Control(ControlMessage::StartSession(
-                    parameters.clone(),
-                )))
-                .await?;
-            wait_for_ready(&session, self.session_id, false).await?;
+        cancellable(cancel, async {
+            if saved_desktop {
+                session
+                    .send(ArppMessage::Control(ControlMessage::ResumeSession {
+                        session_id: self.session_id,
+                        last_presented_frame: 0,
+                        cache_epoch: 0,
+                        cache_digest: [0; 32],
+                    }))
+                    .await?;
+                wait_for_resume_state(&session, self.session_id).await?;
+            } else {
+                session
+                    .send(ArppMessage::Control(ControlMessage::StartSession(
+                        parameters.clone(),
+                    )))
+                    .await?;
+                wait_for_ready(&session, self.session_id, false).await?;
+            }
+            Ok(())
+        })
+        .await?;
+
+        if cancel.is_some_and(|c| c.is_cancelled()) {
+            return Err(LifecycleError::Cancelled);
         }
 
         self.deployment = Some(deployment);
@@ -346,6 +428,17 @@ impl<C: AgentConnection> RemoteSessionLifecycle<C> {
     }
 }
 
+async fn cancellable<T>(
+    cancel: Option<&tokio_util::sync::CancellationToken>,
+    operation: impl std::future::Future<Output = Result<T, LifecycleError>>,
+) -> Result<T, LifecycleError> {
+    tokio::select! {
+        biased;
+        _ = async { match cancel { Some(c) => c.cancelled().await, None => std::future::pending().await } } => Err(LifecycleError::Cancelled),
+        result = operation => result,
+    }
+}
+
 async fn client_hello(session: &Arc<ArppSession>) -> Result<Capabilities, LifecycleError> {
     let mut nonce = [0_u8; 32];
     SystemRandom::new()
@@ -457,6 +550,12 @@ pub fn channel_prelude(channel: u8, token: &[u8; 32]) -> Result<[u8; 38], Lifecy
 
 #[derive(Debug, Error)]
 pub enum LifecycleError {
+    #[error("Connection cancelled")]
+    Cancelled,
+    #[error(
+        "Startup cleanup could not be confirmed. Reconnect to retained desktop {0} to check it."
+    )]
+    CleanupUnconfirmed(Uuid),
     #[error("agent deployment failed: {0}")]
     Bootstrap(#[from] AgentBootstrapError),
     #[error("ARPP transport failed: {0}")]

@@ -1,5 +1,8 @@
 # Rust/Cargo
 Cargo.lock
+# The two application workspaces must resolve identically in local and CI builds.
+!/ui/rust/Cargo.lock
+!/core/rust/Cargo.lock
 target/
 **/*.rs.bk
 
@@ -29,6 +32,10 @@ target/
 .env
 .env.local
 *.env.*
+*.p8
+*.p12
+*.pfx
+*.key
 
 # Editors
 .vscode/

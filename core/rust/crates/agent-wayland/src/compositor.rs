@@ -173,6 +173,7 @@ enum CompositorCommand {
         variant: String,
     },
     MonitorLayout {
+        properties: Vec<ad_stream_protocol::MonitorProperties>,
         width: u32,
         height: u32,
         monitors: Vec<ad_stream_protocol::Rectangle>,
@@ -320,11 +321,23 @@ impl HeadlessCompositor {
         height: u32,
         monitors: Vec<ad_stream_protocol::Rectangle>,
     ) -> Result<(), CompositorError> {
-        if !ad_stream_protocol::valid_monitor_layout(width, height, &monitors) {
+        self.set_monitor_configuration(width, height, monitors, vec![])
+    }
+    pub fn set_monitor_configuration(
+        &self,
+        width: u32,
+        height: u32,
+        monitors: Vec<ad_stream_protocol::Rectangle>,
+        properties: Vec<ad_stream_protocol::MonitorProperties>,
+    ) -> Result<(), CompositorError> {
+        if !ad_stream_protocol::valid_monitor_layout(width, height, &monitors)
+            || !ad_stream_protocol::valid_monitor_properties(monitors.len(), &properties)
+        {
             return Err(CompositorError::Input("invalid monitor layout"));
         }
         self.commands
             .send(CompositorCommand::MonitorLayout {
+                properties,
                 width,
                 height,
                 monitors,
@@ -642,12 +655,17 @@ impl AgentCompositorState {
                     width,
                     height,
                     monitors,
+                    properties,
                 } => {
-                    self.resize_output(width, height)?;
+                    // Metadata/monitor-placement changes do not recreate the framebuffer.
+                    if (self.width, self.height) != (width, height) {
+                        self.resize_output(width, height)?;
+                    }
                     if let Some(desktop) = &mut self.host_desktop {
-                        desktop.monitors = Some((width, height, monitors.clone()));
+                        desktop.monitors =
+                            Some((width, height, monitors.clone(), properties.clone()));
                         if let Some(bridge) = &desktop.clipboard {
-                            bridge.set_monitors(width, height, monitors);
+                            bridge.set_monitors(width, height, monitors, properties);
                         }
                     }
                 }

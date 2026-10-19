@@ -9,6 +9,7 @@ struct Peer {
     sent: Arc<AtomicUsize>,
     roles: Arc<parking_lot::Mutex<Vec<(usize, &'static str)>>>,
     shells: HashSet<russh::ChannelId>,
+    scoped: HashSet<russh::ChannelId>,
 }
 
 impl server::Server for Peer {
@@ -85,6 +86,9 @@ impl server::Handler for Peer {
         if self.shells.contains(&channel) {
             session.data(channel, data.to_vec())?;
         }
+        if self.scoped.contains(&channel) && data.starts_with(b"AETHER_RUN") {
+            self.roles.lock().push((self.id, "scoped-gate"));
+        }
         Ok(())
     }
     async fn channel_close(
@@ -93,7 +97,18 @@ impl server::Handler for Peer {
         _: &mut server::Session,
     ) -> Result<(), Self::Error> {
         self.shells.remove(&channel);
+        self.scoped.remove(&channel);
         self.roles.lock().push((self.id, "closed"));
+        Ok(())
+    }
+    async fn channel_eof(
+        &mut self,
+        channel: russh::ChannelId,
+        _: &mut server::Session,
+    ) -> Result<(), Self::Error> {
+        if self.scoped.contains(&channel) {
+            self.roles.lock().push((self.id, "scoped-eof"));
+        }
         Ok(())
     }
     async fn exec_request(
@@ -110,6 +125,8 @@ impl server::Handler for Peer {
             )?;
         } else if command == b"never-exit" {
             // Hold the channel open until client cancellation sends CLOSE.
+        } else if command.starts_with(b"exec bash -c ") {
+            self.scoped.insert(channel);
         } else if command == b"exec 'aetherdesk-test-lsp'" {
             self.shells.insert(channel);
         } else {
@@ -180,6 +197,7 @@ async fn blocked_graphics_cannot_block_terminal_or_remote_input() {
         sent: sent.clone(),
         roles: roles.clone(),
         shells: HashSet::new(),
+        scoped: HashSet::new(),
     };
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
@@ -248,6 +266,58 @@ async fn blocked_graphics_cannot_block_terminal_or_remote_input() {
     })
     .await
     .expect("timed-out exec channels must be explicitly closed");
+
+    assert!(session
+        .execute_scoped_command_output("sleep 600", Duration::from_millis(100))
+        .await
+        .is_err());
+    timeout(Duration::from_secs(3), async {
+        while roles
+            .lock()
+            .iter()
+            .filter(|(_, r)| *r == "scoped-eof")
+            .count()
+            < 1
+        {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("timeout must close the scoped command's stdin lease");
+    let worker_session = session.clone();
+    let job = tokio::spawn(async move {
+        worker_session
+            .execute_scoped_command_output("sleep 600", Duration::from_secs(60))
+            .await
+    });
+    timeout(Duration::from_secs(3), async {
+        while roles
+            .lock()
+            .iter()
+            .filter(|(_, r)| *r == "scoped-gate")
+            .count()
+            < 2
+        {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("command release gate did not reach the SSH server");
+    job.abort();
+    assert!(job.await.unwrap_err().is_cancelled());
+    timeout(Duration::from_secs(3), async {
+        while roles
+            .lock()
+            .iter()
+            .filter(|(_, r)| *r == "scoped-eof")
+            .count()
+            < 2
+        {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("dropped task must release the scoped command's stdin lease");
 
     let language = session
         .start_language_server(LanguageServerConfig {

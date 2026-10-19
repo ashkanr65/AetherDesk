@@ -8,7 +8,7 @@ pub struct FileProgress {
     pub transferred: AtomicU64,
     pub total: AtomicU64,
     cancelled: AtomicBool,
-    committing: AtomicBool,
+    pub(super) committing: AtomicBool,
     creating_stage: AtomicBool,
     wake: Notify,
     stages: parking_lot::Mutex<Vec<String>>,
@@ -27,12 +27,15 @@ impl FileProgress {
             wake.await;
         }
     }
-    fn check(&self) -> CoreResult<()> {
+    pub(super) fn check(&self) -> CoreResult<()> {
         if self.cancelled.load(Ordering::Acquire) && !self.committing.load(Ordering::Acquire) {
             Err(sftp_error("operation cancelled"))
         } else {
             Ok(())
         }
+    }
+    pub fn is_cancelled(&self) -> bool {
+        self.cancelled.load(Ordering::Acquire)
     }
 }
 
@@ -129,7 +132,7 @@ impl SshSession {
     }
 }
 
-fn validate_path(path: &str) -> CoreResult<()> {
+pub(super) fn validate_path(path: &str) -> CoreResult<()> {
     if path.is_empty() || path.len() > 32_768 || path.contains('\0') {
         return Err(sftp_error("invalid file path"));
     }
@@ -145,13 +148,22 @@ impl<S: AsyncRead + AsyncWrite + Unpin> SftpProtocol<S> {
         }
         Ok(())
     }
-    async fn path_request(&mut self, packet: u8, path: &str, operation: &str) -> CoreResult<()> {
+    pub(super) async fn path_request(
+        &mut self,
+        packet: u8,
+        path: &str,
+        operation: &str,
+    ) -> CoreResult<()> {
         let mut payload = Vec::new();
         put_string(&mut payload, path.as_bytes())?;
         let (kind, response) = self.request(packet, payload).await?;
         self.expect_ok(kind, &response, operation)
     }
-    async fn attrs(&mut self, path: &str, follow: bool) -> CoreResult<Option<SftpAttrs>> {
+    pub(super) async fn attrs(
+        &mut self,
+        path: &str,
+        follow: bool,
+    ) -> CoreResult<Option<SftpAttrs>> {
         let mut payload = Vec::new();
         put_string(&mut payload, path.as_bytes())?;
         let (kind, response) = self
@@ -169,7 +181,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> SftpProtocol<S> {
         }
         Ok(Some(PacketCursor::new(&response).read_attrs()?))
     }
-    async fn realpath(&mut self, path: &str) -> CoreResult<String> {
+    pub(super) async fn realpath(&mut self, path: &str) -> CoreResult<String> {
         let mut payload = Vec::new();
         put_string(&mut payload, path.as_bytes())?;
         let (kind, response) = self.request(16, payload).await?;
@@ -183,7 +195,11 @@ impl<S: AsyncRead + AsyncWrite + Unpin> SftpProtocol<S> {
         String::from_utf8(cursor.read_string()?.to_vec())
             .map_err(|_| sftp_error("path is not UTF-8"))
     }
-    async fn metadata(&mut self, path: &str, fingerprint: bool) -> CoreResult<RemoteFileMetadata> {
+    pub(super) async fn metadata(
+        &mut self,
+        path: &str,
+        fingerprint: bool,
+    ) -> CoreResult<RemoteFileMetadata> {
         let attrs = self
             .attrs(path, false)
             .await?
@@ -211,7 +227,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> SftpProtocol<S> {
                 .is_some_and(|v| v == "1"),
         })
     }
-    async fn fingerprint(&mut self, path: &str) -> CoreResult<String> {
+    pub(super) async fn fingerprint(&mut self, path: &str) -> CoreResult<String> {
         let handle = self.open_file(path, SSH_FXF_READ).await?;
         let mut context = ring::digest::Context::new(&ring::digest::SHA256);
         let mut offset = 0_u64;
@@ -246,7 +262,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> SftpProtocol<S> {
             .map(|byte| format!("{byte:02x}"))
             .collect())
     }
-    async fn chmod(&mut self, path: &str, mode: u32) -> CoreResult<()> {
+    pub(super) async fn chmod(&mut self, path: &str, mode: u32) -> CoreResult<()> {
         if mode > 0o7777 {
             return Err(sftp_error("invalid permissions"));
         }
@@ -257,7 +273,12 @@ impl<S: AsyncRead + AsyncWrite + Unpin> SftpProtocol<S> {
         let (kind, response) = self.request(9, payload).await?;
         self.expect_ok(kind, &response, "set permissions")
     }
-    async fn rename(&mut self, source: &str, destination: &str, replace: bool) -> CoreResult<()> {
+    pub(super) async fn rename(
+        &mut self,
+        source: &str,
+        destination: &str,
+        replace: bool,
+    ) -> CoreResult<()> {
         let mut payload = Vec::new();
         let packet = if replace {
             if self
@@ -516,8 +537,20 @@ impl<S: AsyncRead + AsyncWrite + Unpin> SftpProtocol<S> {
         let mut entries = None;
         match request.operation.as_str() {
             "stat" => metadata = Some(self.metadata(&request.path, false).await?),
+            "statOptional" => {
+                if self.attrs(&request.path, false).await?.is_some() {
+                    metadata = Some(self.metadata(&request.path, false).await?);
+                }
+            }
             "revision" => metadata = Some(self.metadata(&request.path, true).await?),
-            "list" => entries = Some(self.read_dir(&request.path).await?),
+            "list" => {
+                let directory = self.metadata(&request.path, false).await?;
+                if directory.kind != "directory" {
+                    return Err(sftp_error("Choose a directory"));
+                }
+                entries = Some(self.read_dir(&directory.canonical_path).await?);
+                metadata = Some(directory);
+            }
             "download" => {
                 let before = self.metadata(&request.path, true).await?;
                 if before.kind != "file" {
@@ -614,7 +647,7 @@ mod tests {
         tokio::process::Child,
         tokio::task::JoinHandle<()>,
     ) {
-        let mut child = tokio::process::Command::new("/usr/lib/openssh/sftp-server")
+        let mut child = tokio::process::Command::new(sftp_test_server_path())
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::null())

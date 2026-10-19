@@ -16,16 +16,24 @@ use crate::compositor::{AgentCompositorState, CompositorError};
 
 pub(crate) struct HostDesktop {
     child: Child,
+    terminal_flow_control: Option<crate::terminal_flow_control::TerminalFlowControl>,
     ready: Receiver<Result<u32, String>>,
     started: Instant,
     cookie: [u8; 16],
     pub(crate) clipboard: Option<crate::host_clipboard::HostClipboard>,
     pub(crate) authority: PathBuf,
-    pub(crate) monitors: Option<(u32, u32, Vec<ad_stream_protocol::Rectangle>)>,
+    pub(crate) monitors: Option<(
+        u32,
+        u32,
+        Vec<ad_stream_protocol::Rectangle>,
+        Vec<ad_stream_protocol::MonitorProperties>,
+    )>,
 }
 
 impl Drop for HostDesktop {
     fn drop(&mut self) {
+        // Stop PTY inspection before retiring this desktop's private identity.
+        drop(self.terminal_flow_control.take());
         let _ = self.child.kill();
         let _ = self.child.wait();
         let _ = std::fs::remove_file(&self.authority);
@@ -95,6 +103,7 @@ impl AgentCompositorState {
         let (sender, ready) = mpsc::channel();
         self.host_desktop = Some(HostDesktop {
             child,
+            terminal_flow_control: None,
             ready,
             started: Instant::now(),
             cookie,
@@ -138,6 +147,11 @@ impl AgentCompositorState {
                         .truncate(true)
                         .open(&desktop.authority)?;
                     write_authority(&mut auth, &display_number.to_string(), &desktop.cookie)?;
+                    desktop.terminal_flow_control =
+                        Some(crate::terminal_flow_control::TerminalFlowControl::start(
+                            display_number,
+                            desktop.authority.clone(),
+                        )?);
                     desktop.clipboard = Some(crate::host_clipboard::HostClipboard::start(
                         display_number,
                         desktop.cookie,
@@ -148,10 +162,10 @@ impl AgentCompositorState {
                     {
                         clipboard.set(selection.clone());
                     }
-                    if let (Some(bridge), Some((width, height, monitors))) =
+                    if let (Some(bridge), Some((width, height, monitors, properties))) =
                         (&desktop.clipboard, &desktop.monitors)
                     {
-                        bridge.set_monitors(*width, *height, monitors.clone());
+                        bridge.set_monitors(*width, *height, monitors.clone(), properties.clone());
                     }
                     self.xdisplay = Some(display_number);
                     tracing::info!(
@@ -591,7 +605,19 @@ mod tests {
                 height: 600,
             },
         ];
-        compositor.set_monitors(1920, 600, regions.clone()).unwrap();
+        let properties: Vec<_> = (0..3)
+            .map(|i| ad_stream_protocol::MonitorProperties {
+                name: format!("Client display {}", i + 1),
+                dpi: 120,
+                width_mm: 400 + i * 10,
+                height_mm: 250,
+                refresh_millihz: 60000,
+                primary: i == 0,
+            })
+            .collect();
+        compositor
+            .set_monitor_configuration(1920, 600, regions.clone(), properties.clone())
+            .unwrap();
         let deadline = Instant::now() + Duration::from_secs(5);
         loop {
             let monitors = smithay::reexports::x11rb::protocol::randr::get_monitors(
@@ -637,6 +663,18 @@ mod tests {
                     .unwrap()
                     .reply()
                     .unwrap();
+                let index = regions
+                    .iter()
+                    .position(|r| r.x == crtc.x as u32 && r.y == crtc.y as u32)
+                    .unwrap();
+                assert_eq!(
+                    info.mm_width, properties[index].width_mm,
+                    "client physical width was not exposed through RandR"
+                );
+                assert_eq!(
+                    info.mm_height, properties[index].height_mm,
+                    "client physical height was not exposed through RandR"
+                );
                 actual.push((crtc.x, crtc.y, crtc.width, crtc.height));
             }
         }

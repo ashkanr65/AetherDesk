@@ -2,13 +2,14 @@
   "schemaVersion": 1,
   "baselineCommit": "d000a918024618c0d5de519fb08b1ccbf37cc784",
   "replacementReady": false,
-  "buildPerformed": false,
+  "buildPerformed": true,
+  "acceptanceComplete": false,
   "policy": "No area is verified until behavioral and live-host checks pass. Never mark a prototype as the replacement release.",
   "features": [
     {
       "id": "profiles",
       "behavior": "Saved sessions, consent, favorites, trash, import/export",
-      "status": "ported_unverified",
+      "status": "partial",
       "reference": "ui/flutter/ad_remote_desktop/lib/session_store.dart"
     },
     {
@@ -32,79 +33,79 @@
     {
       "id": "ssh",
       "behavior": "Password/key/passphrase, trust approval, changed-key rejection, PTY",
-      "status": "pending",
+      "status": "partial",
       "reference": "core/rust/crates/ad-ssh/src/client.rs"
     },
     {
       "id": "terminal",
       "behavior": "ANSI/VT, scrollback, selection, clipboard, semantic colour, search",
-      "status": "pending",
+      "status": "partial",
       "reference": "ui/flutter/ad_remote_desktop/lib/workspace.dart"
     },
     {
       "id": "sftp",
       "behavior": "Dual panes, editable paths, menus, drag/drop, parallel/resume transfers",
-      "status": "pending",
+      "status": "partial",
       "reference": "ui/flutter/ad_remote_desktop/lib/workspace.dart"
     },
     {
       "id": "editor",
       "behavior": "Native popup, dirty-close safeguards, Monaco/LSP/diff/save conflict",
-      "status": "pending",
+      "status": "partial",
       "reference": "ui/flutter/ad_remote_desktop/lib/editor/editor_workspace.dart"
     },
     {
       "id": "desktop",
       "behavior": "H264 display, low-latency input, DPI, resize, multi-monitor, docking",
-      "status": "pending",
+      "status": "partial",
       "reference": "ui/flutter/ad_stream_surface/windows/desktop_windows.h"
     },
     {
       "id": "session-lifecycle",
       "behavior": "Retained reconnect, confirmed end session, cleanup of host processes",
-      "status": "pending",
+      "status": "partial",
       "reference": "ui/flutter/ad_remote_desktop/lib/remote_desktop.dart"
     },
     {
       "id": "x11",
       "behavior": "Bundled X server, authentication/cookie isolation, cleanup",
-      "status": "pending",
+      "status": "partial",
       "reference": "ui/flutter/ad_remote_desktop/lib/x11_server.dart"
     },
     {
       "id": "credentials",
       "behavior": "Windows vault, DPAPI, master password, API deletion",
-      "status": "pending",
+      "status": "partial",
       "reference": "ui/flutter/ad_remote_desktop/lib/credential_vault.dart"
     },
     {
       "id": "assistant",
       "behavior": "Provider/model search, free+paid, HTTP/SSE retries, history, images",
-      "status": "pending",
+      "status": "partial",
       "reference": "tools/assistant-runtime/server.py"
     },
     {
       "id": "assistant-tools",
       "behavior": "Windows+SSH scopes, approvals, actions, capture, tool install/run",
-      "status": "pending",
+      "status": "partial",
       "reference": "ui/flutter/ad_remote_desktop/lib/assistant/workspace_tools.dart"
     },
     {
       "id": "tools",
       "behavior": "Versioned manifests, parameters, revisions, execution, approval",
-      "status": "pending",
+      "status": "partial",
       "reference": "ui/flutter/ad_remote_desktop/lib/tools/tool_registry.dart"
     },
     {
       "id": "logs",
       "behavior": "App/Host/Audit/Problems filters, follow, export, redaction, rotation",
-      "status": "pending",
+      "status": "partial",
       "reference": "ui/flutter/ad_remote_desktop/lib/app_log.dart"
     },
     {
       "id": "packaging",
       "behavior": "Installer+portable offline dependencies, version and verified gates",
-      "status": "pending",
+      "status": "partial",
       "reference": "tools/build-kit/Build-Worker.ps1"
     }
   ],
@@ -489,5 +490,6 @@
       "path": "ui/flutter/ad_stream_surface/windows/tests/CMakeLists.txt",
       "sha256": "f7ed8bb8154080acb73400eb2f199cb7fa3c86c8d8aa8ad9b25df1232adee47d"
     }
-  ]
+  ],
+  "featureInventory": "rust-feature-inventory.json"
 }

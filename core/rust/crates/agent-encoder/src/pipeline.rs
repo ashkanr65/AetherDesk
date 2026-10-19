@@ -190,13 +190,24 @@ impl EncoderPipeline {
                     let height = format
                         .get::<i32>("height")
                         .map_err(|_| gst::FlowError::Error)?;
+                    // Older h264parse builds keep the previous frame duration
+                    // on the first packet after a rate change, even though its
+                    // SPS/caps already advertise the new rate. Use this sample's
+                    // negotiated rate so queued packets keep their own cadence.
+                    let duration_ns = format
+                        .get::<gst::Fraction>("framerate")
+                        .ok()
+                        .filter(|rate| rate.numer() > 0 && rate.denom() > 0)
+                        .map(|rate| 1_000_000_000_u64 * rate.denom() as u64 / rate.numer() as u64)
+                        .or_else(|| buffer.duration().map(|time| time.nseconds()))
+                        .unwrap_or(0);
                     let packet = EncodedPacket {
                         width: u32::try_from(width).map_err(|_| gst::FlowError::Error)?,
                         height: u32::try_from(height).map_err(|_| gst::FlowError::Error)?,
                         sequence: sequence.fetch_add(1, Ordering::Relaxed),
                         codec,
                         presentation_time_ns: buffer.pts().map(|time| time.nseconds()).unwrap_or(0),
-                        duration_ns: buffer.duration().map(|time| time.nseconds()).unwrap_or(0),
+                        duration_ns,
                         key_frame: !buffer.flags().contains(gst::BufferFlags::DELTA_UNIT),
                         data: map.as_slice().to_vec(),
                     };

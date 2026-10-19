@@ -145,11 +145,28 @@ impl VideoDecoder {
             .downcast::<gst_app::AppSrc>()
             .map_err(|_| DecoderError::ElementType("appsrc"))?;
         let parser = gst::ElementFactory::make(selection.parser).build()?;
-        let decoder = gst::ElementFactory::make(selection.element).build()?;
+        let decoder = gst::ElementFactory::make(selection.element)
+            .name("arpp-video-decoder")
+            .build()?;
         if selection.element == "avdec_h264" {
             // Slice workers can parallelize one update without waiting for a
-            // future frame. Frame threading is unsuitable for idle desktops.
-            decoder.set_property_from_str("thread-type", "slice");
+            // future frame. Older libav plugins (including AlmaLinux 8) lack
+            // thread-type, so use one worker there to avoid frame-thread delay.
+            let supports_slice_threads =
+                decoder
+                    .find_property("thread-type")
+                    .is_some_and(|property| {
+                        gst::glib::Value::deserialize("slice", property.value_type()).is_ok()
+                    });
+            if supports_slice_threads {
+                decoder.set_property_from_str("thread-type", "slice");
+            } else if decoder.find_property("max-threads").is_some() {
+                decoder.set_property("max-threads", 1_i32);
+            } else {
+                return Err(DecoderError::Pipeline(
+                    "installed avdec_h264 has no supported low-latency threading control".into(),
+                ));
+            }
         }
         let queue = gst::ElementFactory::make("queue")
             .property("max-size-buffers", 2_u32)
@@ -228,11 +245,17 @@ impl VideoDecoder {
                     {
                         return Err(gst::FlowError::Error);
                     }
-                    let mut pixels = vec![0_u8; row_bytes * info.height() as usize];
-                    for row in 0..info.height() as usize {
-                        pixels[row * row_bytes..(row + 1) * row_bytes].copy_from_slice(
-                            &source[row * source_stride..row * source_stride + row_bytes],
-                        );
+                    // Fill once from the mapped frame; avoid zeroing a large
+                    // multi-monitor buffer immediately before overwriting it.
+                    let mut pixels = Vec::with_capacity(row_bytes * info.height() as usize);
+                    if source_stride == row_bytes {
+                        pixels.extend_from_slice(&source[..row_bytes * info.height() as usize]);
+                    } else {
+                        for row in 0..info.height() as usize {
+                            pixels.extend_from_slice(
+                                &source[row * source_stride..row * source_stride + row_bytes],
+                            );
+                        }
                     }
                     let metadata = callback_pending
                         .lock()
@@ -874,6 +897,12 @@ mod tests {
             ),
         )
         .unwrap();
+        let element = decoder.pipeline.by_name("arpp-video-decoder").unwrap();
+        if element.find_property("thread-type").is_none() {
+            // Exercise the actual older container runtime, without requiring a
+            // subsequent frame or EOS to release any isolated desktop update.
+            assert_eq!(element.property::<i32>("max-threads"), 1);
+        }
         assert_isolated_h264_updates(decoder).await;
     }
 }

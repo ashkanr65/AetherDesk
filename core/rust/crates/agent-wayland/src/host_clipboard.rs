@@ -27,7 +27,12 @@ const FORMATS: [&str; 6] = [
 
 enum DesktopCommand {
     Clipboard(ClipboardSelection),
-    Monitors(u32, u32, Vec<ad_stream_protocol::Rectangle>),
+    Monitors(
+        u32,
+        u32,
+        Vec<ad_stream_protocol::Rectangle>,
+        Vec<ad_stream_protocol::MonitorProperties>,
+    ),
 }
 
 pub(crate) struct HostClipboard(mpsc::Sender<DesktopCommand>);
@@ -54,10 +59,11 @@ impl HostClipboard {
         width: u32,
         height: u32,
         monitors: Vec<ad_stream_protocol::Rectangle>,
+        properties: Vec<ad_stream_protocol::MonitorProperties>,
     ) {
-        let _ = self
-            .0
-            .send(DesktopCommand::Monitors(width, height, monitors));
+        let _ = self.0.send(DesktopCommand::Monitors(
+            width, height, monitors, properties,
+        ));
     }
 
     pub(crate) fn set(&self, selection: ClipboardSelection) {
@@ -88,6 +94,7 @@ struct Bridge {
     incoming: Option<Transfer>,
     outgoing: HashMap<(Window, Atom), Transfer>,
     monitors: Vec<Atom>,
+    monitor_properties: Vec<ad_stream_protocol::MonitorProperties>,
     pending_monitors: Option<(u32, u32, Vec<ad_stream_protocol::Rectangle>, Instant)>,
     pending_windows: Option<(Vec<ad_stream_protocol::Rectangle>, Instant)>,
     output: tokio::sync::mpsc::Sender<CapturedClipboard>,
@@ -163,6 +170,7 @@ impl Bridge {
             incoming: None,
             outgoing: HashMap::new(),
             monitors: Vec::new(),
+            monitor_properties: Vec::new(),
             pending_monitors: None,
             pending_windows: None,
             output,
@@ -177,7 +185,8 @@ impl Bridge {
                         .connection
                         .set_selection_owner(bridge.window, bridge.clipboard, 0u32)?;
                 }
-                Ok(DesktopCommand::Monitors(width, height, monitors)) => {
+                Ok(DesktopCommand::Monitors(width, height, monitors, properties)) => {
+                    bridge.monitor_properties = properties;
                     bridge.pending_windows = None;
                     bridge.pending_monitors = Some((width, height, monitors, Instant::now()));
                 }
@@ -288,6 +297,61 @@ impl Bridge {
             }
         }
         if let Some(controller) = controller {
+            let details_atom = self
+                .connection
+                .intern_atom(false, b"_AETHERDESK_OUTPUT_DETAILS")?
+                .reply()?
+                .atom;
+            let details: Vec<u8> = monitors
+                .iter()
+                .enumerate()
+                .flat_map(|(index, r)| {
+                    self.monitor_properties
+                        .get(index)
+                        .map(|p| [p.width_mm, p.height_mm, p.refresh_millihz])
+                        .unwrap_or([r.width * 254 / 960, r.height * 254 / 960, 60000])
+                })
+                .flat_map(u32::to_ne_bytes)
+                .collect();
+            randr::change_output_property(
+                &self.connection,
+                controller,
+                details_atom,
+                AtomEnum::CARDINAL.into(),
+                32,
+                PropMode::REPLACE,
+                (details.len() / 4) as u32,
+                &details,
+            )?
+            .check()?;
+            let metadata_atom = self
+                .connection
+                .intern_atom(false, b"_AETHERDESK_DISPLAY_PROPERTIES")?
+                .reply()?
+                .atom;
+            let mut metadata = Vec::new();
+            for properties in &self.monitor_properties {
+                let name = self
+                    .connection
+                    .intern_atom(false, properties.name.as_bytes())?
+                    .reply()?
+                    .atom;
+                metadata.extend_from_slice(&[
+                    name,
+                    u32::from(properties.dpi),
+                    properties.width_mm,
+                    properties.height_mm,
+                    properties.refresh_millihz,
+                    u32::from(properties.primary),
+                ]);
+            }
+            self.connection.change_property32(
+                PropMode::REPLACE,
+                root,
+                metadata_atom,
+                AtomEnum::CARDINAL,
+                &metadata,
+            )?;
             let data: Vec<_> = monitors
                 .iter()
                 .flat_map(|r| [r.x, r.y, r.width, r.height])
@@ -337,14 +401,24 @@ impl Bridge {
                     root,
                     randr::MonitorInfo {
                         name,
-                        primary: index == 0,
+                        primary: monitors.len() == 1
+                            || self
+                                .monitor_properties
+                                .get(index)
+                                .map_or(index == 0, |p| p.primary),
                         automatic: false,
                         x: region.x as i16,
                         y: region.y as i16,
                         width: region.width as u16,
                         height: region.height as u16,
-                        width_in_millimeters: region.width * 254 / 960,
-                        height_in_millimeters: region.height * 254 / 960,
+                        width_in_millimeters: self
+                            .monitor_properties
+                            .get(index)
+                            .map_or(region.width * 254 / 960, |p| p.width_mm),
+                        height_in_millimeters: self
+                            .monitor_properties
+                            .get(index)
+                            .map_or(region.height * 254 / 960, |p| p.height_mm),
                         outputs: vec![output],
                     },
                 )?

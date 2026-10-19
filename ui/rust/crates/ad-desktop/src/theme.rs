@@ -1,0 +1,502 @@
+//! Solid bronze/black and cream/gold native themes. No background textures.
+use ad_desktop_model::profiles::ConnectionType;
+use eframe::egui::{self, Color32, Rect, Stroke, Vec2};
+
+pub fn native_icon() -> std::sync::Arc<egui::IconData> {
+    static ICON: std::sync::OnceLock<std::sync::Arc<egui::IconData>> = std::sync::OnceLock::new();
+    ICON.get_or_init(|| {
+        let image = image::load_from_memory_with_format(
+            include_bytes!("../assets/theme/aetherdesk.png"),
+            image::ImageFormat::Png,
+        )
+        .expect("embedded product icon")
+        .into_rgba8();
+        std::sync::Arc::new(egui::IconData {
+            width: image.width(),
+            height: image.height(),
+            rgba: image.into_raw(),
+        })
+    })
+    .clone()
+}
+pub fn font_definitions() -> egui::FontDefinitions {
+    static FONTS: std::sync::OnceLock<egui::FontDefinitions> = std::sync::OnceLock::new();
+    FONTS.get_or_init(build_font_definitions).clone()
+}
+fn build_font_definitions() -> egui::FontDefinitions {
+    let mut fonts = egui::FontDefinitions::default();
+    if let Some(root) = std::env::var_os("SystemRoot") {
+        if let Ok(bytes) = std::fs::read(std::path::PathBuf::from(root).join("Fonts/segoeui.ttf")) {
+            if bytes.len() < 20 * 1024 * 1024 {
+                fonts.font_data.insert(
+                    "windows-ui".into(),
+                    egui::FontData::from_owned(bytes)
+                        .tweak(egui::FontTweak {
+                            y_offset: -1.0,
+                            ..Default::default()
+                        })
+                        .into(),
+                );
+                fonts
+                    .families
+                    .entry(egui::FontFamily::Proportional)
+                    .or_default()
+                    .insert(0, "windows-ui".into());
+            }
+        }
+    }
+    let mut heading = fonts
+        .families
+        .get(&egui::FontFamily::Proportional)
+        .cloned()
+        .unwrap_or_default();
+    if let Some(root) = std::env::var_os("SystemRoot") {
+        if let Ok(bytes) = std::fs::read(std::path::PathBuf::from(root).join("Fonts/seguisb.ttf")) {
+            if bytes.len() < 20 * 1024 * 1024 {
+                fonts.font_data.insert(
+                    "windows-heading".into(),
+                    egui::FontData::from_owned(bytes)
+                        .tweak(egui::FontTweak {
+                            y_offset: -1.0,
+                            ..Default::default()
+                        })
+                        .into(),
+                );
+                heading.insert(0, "windows-heading".into());
+            }
+        }
+    }
+    fonts
+        .families
+        .insert(egui::FontFamily::Name("ui-heading".into()), heading);
+    fonts
+}
+pub fn heading_font(size: f32) -> egui::FontId {
+    egui::FontId::new(size, egui::FontFamily::Name("ui-heading".into()))
+}
+#[derive(Clone, Copy)]
+pub struct Colors {
+    pub panel: Color32,
+    pub canvas: Color32,
+    pub text: Color32,
+    pub muted: Color32,
+    pub heading: Color32,
+    pub border: Color32,
+    pub selection: Color32,
+    pub selection_text: Color32,
+}
+pub fn colors(dark: bool) -> Colors {
+    let rgb = Color32::from_rgb;
+    if dark {
+        Colors {
+            panel: rgb(19, 20, 19),
+            canvas: rgb(2, 17, 24),
+            text: rgb(222, 213, 195),
+            muted: rgb(179, 168, 146),
+            heading: rgb(201, 186, 155),
+            border: rgb(136, 116, 82),
+            selection: rgb(99, 80, 55),
+            selection_text: rgb(255, 244, 222),
+        }
+    } else {
+        Colors {
+            panel: rgb(244, 237, 220),
+            canvas: rgb(247, 245, 231),
+            text: rgb(48, 42, 30),
+            muted: rgb(105, 89, 60),
+            heading: rgb(111, 81, 32),
+            border: rgb(154, 129, 83),
+            selection: rgb(194, 169, 122),
+            selection_text: rgb(40, 31, 16),
+        }
+    }
+}
+pub fn apply(ctx: &egui::Context, dark: bool) {
+    let c = colors(dark);
+    let mut v = if dark {
+        egui::Visuals::dark()
+    } else {
+        egui::Visuals::light()
+    };
+    v.panel_fill = c.panel;
+    v.window_fill = c.panel;
+    v.extreme_bg_color = if dark {
+        Color32::from_rgb(9, 12, 12)
+    } else {
+        Color32::from_rgb(255, 250, 238)
+    };
+    v.faint_bg_color = c.canvas;
+    v.override_text_color = None;
+    v.widgets.noninteractive.fg_stroke = Stroke::new(1.0_f32, c.text);
+    v.widgets.noninteractive.bg_stroke = Stroke::new(0.8_f32, c.border.gamma_multiply(0.45));
+    v.widgets.inactive.fg_stroke = Stroke::new(1.0_f32, c.text);
+    v.widgets.inactive.bg_fill = c.panel;
+    v.widgets.inactive.weak_bg_fill = c.panel;
+    v.widgets.inactive.bg_stroke = Stroke::new(0.8_f32, c.border.gamma_multiply(0.7));
+    for widget in [
+        &mut v.widgets.hovered,
+        &mut v.widgets.active,
+        &mut v.widgets.open,
+    ] {
+        widget.bg_fill = c.selection;
+        widget.weak_bg_fill = c.selection;
+        widget.fg_stroke = Stroke::new(1.0_f32, c.selection_text);
+        widget.bg_stroke = Stroke::new(1.0_f32, c.border);
+    }
+    v.selection.bg_fill = c.selection;
+    v.selection.stroke = Stroke::new(1.0_f32, c.selection_text);
+    v.hyperlink_color = c.heading;
+    ctx.set_visuals(v);
+    ctx.send_viewport_cmd(egui::ViewportCommand::SetTheme(if dark {
+        egui::SystemTheme::Dark
+    } else {
+        egui::SystemTheme::Light
+    }));
+    ctx.style_mut(|style| {
+        style.spacing.button_padding = egui::vec2(10.0, 5.0);
+        style.spacing.item_spacing = egui::vec2(8.0, 6.0);
+        style
+            .text_styles
+            .insert(egui::TextStyle::Body, egui::FontId::proportional(13.0));
+        style
+            .text_styles
+            .insert(egui::TextStyle::Button, egui::FontId::proportional(13.0));
+    });
+}
+#[derive(Default)]
+pub struct Theme;
+impl Theme {
+    pub fn initialize(&mut self, _ctx: &egui::Context) {}
+    pub fn toolbar(&self, ui: &egui::Ui, dark: bool) {
+        let r = ui.max_rect().expand2(egui::vec2(8.0, 2.0));
+        ui.painter().rect_filled(r, 0, colors(dark).panel);
+        ui.painter().hline(
+            r.x_range(),
+            r.bottom(),
+            Stroke::new(1.0_f32, colors(dark).border),
+        );
+    }
+    pub fn sidebar(&self, ui: &egui::Ui, dark: bool) {
+        ui.painter().rect_filled(
+            ui.max_rect().expand2(egui::vec2(8.0, 2.0)),
+            0,
+            colors(dark).panel,
+        );
+    }
+    pub fn rail(&self, ui: &egui::Ui, dark: bool) {
+        ui.painter().rect_filled(
+            ui.max_rect().expand2(egui::vec2(5.0, 2.0)),
+            0,
+            colors(dark).panel,
+        );
+    }
+    pub fn logo(&self, ui: &egui::Ui, dark: bool, rect: Rect) {
+        icon(ui.painter(), rect.shrink(3.0), 8, colors(dark).heading);
+    }
+    fn card_border(&self, p: &egui::Painter, dark: bool, rect: Rect) {
+        p.rect_stroke(
+            rect,
+            5,
+            Stroke::new(1.0_f32, colors(dark).border),
+            egui::StrokeKind::Inside,
+        );
+    }
+    pub fn home(&self, ui: &mut egui::Ui, dark: bool) -> Option<ConnectionType> {
+        let c = colors(dark);
+        let area = ui.available_rect_before_wrap();
+        let scale = (area.width() / 767.0).clamp(0.65, 1.5);
+        let two_columns = area.width() >= 620.0;
+        let width = (area.width() - 92.0 * scale).max(200.0);
+        ui.painter().rect_filled(area, 0, c.canvas);
+        let mut chosen = None;
+        egui::ScrollArea::vertical().id_salt("welcome-scroll").show(ui, |ui| {
+            let height = if two_columns { 480.0 } else { 680.0 } * scale;
+            let (canvas, _) = ui.allocate_exact_size(egui::vec2(area.width(), height), egui::Sense::hover());
+            let at = |x: f32, y: f32| canvas.min + egui::vec2(x, y) * scale;
+            let band = Rect::from_min_size(at(46.0, 47.0), egui::vec2(width, 34.0 * scale));
+            ui.painter().rect_filled(band, 2, if dark { Color32::from_rgba_unmultiplied(18, 30, 30, 90) } else { Color32::from_rgba_unmultiplied(211, 193, 150, 35) });
+            icon(ui.painter(), Rect::from_center_size(band.left_center() + egui::vec2(20.0 * scale, 0.0), egui::vec2(18.0, 18.0)), 8, c.muted);
+            ui.painter().text(band.left_center() + egui::vec2(45.0 * scale, 0.0), egui::Align2::LEFT_CENTER, "SECURE REMOTE WORKSPACE", egui::FontId::proportional(12.0), c.muted);
+            let heading=ui.painter().layout("Everything remote.\nOne focused workspace.".into(),heading_font(32.0*scale.min(1.1)),c.heading,width);
+            ui.painter().galley(at(46.0,103.0),heading,c.heading);
+            let paragraph = ui.painter().layout("Open every connection in its own independent tab, keep credentials protected by Windows, and move between terminal, files, applications, and desktops without losing context.".into(), egui::FontId::proportional(13.0), c.text, width);
+            ui.painter().galley(at(46.0, 184.0), paragraph, c.text);
+            let action_rect=Rect::from_min_size(at(46.0,238.0),egui::vec2(139.0,28.0));
+            if ui.put(action_rect,egui::Button::new("+  New Connection").corner_radius(18)).on_hover_text("Create a connection (Ctrl+Shift+K)").clicked() { chosen=Some(ConnectionType::SshTerminal); }
+            ui.painter().text(egui::pos2(action_rect.right()+12.0,action_rect.center().y),egui::Align2::LEFT_CENTER,"Shortcut: Ctrl+Shift+K",egui::FontId::proportional(12.0),c.muted);
+            let cards = [
+                (ConnectionType::SshTerminal, "SSH Terminal", "Fast interactive shells with verified host keys.", 0),
+                (ConnectionType::SftpOnly, "SFTP Workspace", "Local and remote files beside every live session.", 1),
+                (ConnectionType::RemoteDesktop, "Remote Desktop", "Linux desktops streamed inside AetherDesk.", 2),
+                (ConnectionType::SshX11, "SSH + X11", "Launch individual Linux GUI applications securely.", 3),
+            ];
+            let gap = 12.0 * scale;
+            let card_width = if two_columns { (width - gap) / 2.0 } else { width };
+            for (kind, title, description, index) in cards {
+                let x = if two_columns && index % 2 == 1 { 46.0 * scale + card_width + gap } else { 46.0 * scale };
+                let y = if two_columns { if index < 2 { 294.0 } else { 371.0 } } else { 294.0 + index as f32 * 89.0 } * scale;
+                let h = if index < 2 { 66.0 } else { 78.0 } * scale;
+                let rect = Rect::from_min_size(canvas.min + egui::vec2(x, y), egui::vec2(card_width, h));
+                let response = ui.interact(rect, ui.id().with(("welcome-service", index)), egui::Sense::click());
+                response.widget_info(||egui::WidgetInfo::labeled(egui::WidgetType::Button,ui.is_enabled(),title));
+                ui.painter().rect_filled(rect, 5, if response.hovered() { c.selection } else { c.panel });
+                self.card_border(ui.painter(), dark, rect);
+                let foreground = if response.hovered() { c.selection_text } else { c.text };
+                icon(ui.painter(), Rect::from_min_size(rect.min + egui::vec2(22.0, 22.0) * scale, egui::vec2(18.0, 18.0)), index, foreground);
+                ui.painter().text(rect.min + egui::vec2(51.0, 17.0) * scale, egui::Align2::LEFT_TOP, title, egui::FontId::proportional(14.0), foreground);
+                if card_width > 310.0 { let dot = egui::pos2(rect.right() - 50.0, rect.top() + 22.0 * scale); ui.painter().circle_filled(dot, 3.0, if index == 0 { Color32::from_rgb(54, 168, 99) } else { Color32::from_rgb(99, 139, 177) }); ui.painter().text(dot + egui::vec2(7.0, 0.0), egui::Align2::LEFT_CENTER, "Ready", egui::FontId::proportional(9.0), foreground); }
+                let text = ui.painter().layout(description.into(), egui::FontId::proportional(12.0), foreground, card_width - 79.0 * scale);
+                ui.painter().galley(rect.min + egui::vec2(51.0, 37.0) * scale, text, foreground);
+                if response.clicked() { chosen = Some(kind); }
+            }
+        });
+        chosen
+    }
+}
+pub fn mode_toggle(ui: &mut egui::Ui, dark: bool) -> bool {
+    let (r, response) = ui.allocate_exact_size(egui::vec2(65.0, 28.0), egui::Sense::click());
+    let c = colors(dark);
+    let centre = r.left_center() + egui::vec2(9.0, 0.0);
+    if dark {
+        ui.painter()
+            .circle_stroke(centre, 5.0, Stroke::new(1.0_f32, c.text));
+        ui.painter()
+            .circle_filled(centre + egui::vec2(3.0, -2.5), 4.5, c.panel);
+    } else {
+        ui.painter()
+            .circle_stroke(centre, 3.0, Stroke::new(1.0_f32, c.text));
+        for i in 0..8 {
+            let axis = Vec2::angled(i as f32 * std::f32::consts::TAU / 8.0);
+            ui.painter().line_segment(
+                [centre + axis * 5.0, centre + axis * 7.0],
+                Stroke::new(1.0_f32, c.text),
+            );
+        }
+    }
+    let pill = Rect::from_center_size(r.center() + egui::vec2(10.0, 0.0), egui::vec2(36.0, 16.0));
+    ui.painter()
+        .rect_filled(pill, 8, if dark { c.selection } else { c.panel });
+    ui.painter().rect_stroke(
+        pill,
+        8,
+        Stroke::new(0.7_f32, c.border),
+        egui::StrokeKind::Inside,
+    );
+    ui.painter().circle_filled(
+        egui::pos2(
+            if dark {
+                pill.right() - 8.0
+            } else {
+                pill.left() + 8.0
+            },
+            pill.center().y,
+        ),
+        5.5,
+        c.heading,
+    );
+    response
+        .on_hover_text(if dark {
+            "Switch to light mode"
+        } else {
+            "Switch to dark mode"
+        })
+        .clicked()
+}
+pub fn rail_button(
+    ui: &mut egui::Ui,
+    index: usize,
+    label: &str,
+    selected: bool,
+    dark: bool,
+) -> egui::Response {
+    let (r, response) = ui.allocate_exact_size(egui::vec2(34.0, 36.0), egui::Sense::click());
+    let c = colors(dark);
+    if selected || response.hovered() {
+        ui.painter().rect_filled(r, 3, c.selection);
+    }
+    if selected {
+        ui.painter()
+            .vline(r.left(), r.y_range(), Stroke::new(3.0_f32, c.border));
+    }
+    icon(
+        ui.painter(),
+        r.shrink2(egui::vec2(9.0, 10.0)),
+        index,
+        if selected || response.hovered() {
+            c.selection_text
+        } else {
+            c.text
+        },
+    );
+    response.on_hover_text(label)
+}
+pub fn icon(p: &egui::Painter, rect: Rect, index: usize, color: Color32) {
+    let stroke = Stroke::new(1.1_f32, color);
+    let point = |x: f32, y: f32| rect.min + rect.size() * egui::vec2(x, y);
+    let line = |a: (f32, f32), b: (f32, f32)| {
+        p.line_segment([point(a.0, a.1), point(b.0, b.1)], stroke);
+    };
+    match index {
+        0 | 5 => {
+            p.rect_stroke(rect, 1, stroke, egui::StrokeKind::Inside);
+            line((0.2, 0.3), (0.4, 0.5));
+            line((0.4, 0.5), (0.2, 0.7));
+            line((0.5, 0.7), (0.8, 0.7));
+        }
+        1 => {
+            p.add(egui::Shape::closed_line(
+                vec![
+                    point(0.0, 0.2),
+                    point(0.35, 0.2),
+                    point(0.45, 0.35),
+                    point(1.0, 0.35),
+                    point(1.0, 1.0),
+                    point(0.0, 1.0),
+                ],
+                stroke,
+            ));
+        }
+        2 => {
+            p.rect_stroke(
+                Rect::from_min_max(point(0.0, 0.0), point(1.0, 0.75)),
+                1,
+                stroke,
+                egui::StrokeKind::Inside,
+            );
+            line((0.5, 0.75), (0.5, 1.0));
+            line((0.25, 1.0), (0.75, 1.0));
+        }
+        3 => {
+            p.rect_stroke(
+                Rect::from_min_max(point(0.0, 0.2), point(0.8, 1.0)),
+                1,
+                stroke,
+                egui::StrokeKind::Inside,
+            );
+            line((0.35, 0.65), (1.0, 0.0));
+            line((0.6, 0.0), (1.0, 0.0));
+            line((1.0, 0.0), (1.0, 0.4));
+        }
+        4 => {
+            for y in [0.2, 0.5, 0.8] {
+                line((0.0, y), (1.0, y));
+            }
+        }
+        6 => {
+            p.rect_stroke(rect, 1, stroke, egui::StrokeKind::Inside);
+            for y in [0.3, 0.5, 0.7] {
+                line((0.2, y), (0.8, y));
+            }
+        }
+        7 => {
+            for angle in [0.0_f32, 1.047, 2.094] {
+                let axis = Vec2::angled(angle) * rect.width() * 0.5;
+                p.line_segment([rect.center() - axis, rect.center() + axis], stroke);
+            }
+            p.circle_filled(rect.center(), 3.0, color);
+        }
+        8 => {
+            p.add(egui::Shape::closed_line(
+                vec![
+                    point(0.5, 0.0),
+                    point(0.9, 0.2),
+                    point(0.85, 0.65),
+                    point(0.5, 1.0),
+                    point(0.15, 0.65),
+                    point(0.1, 0.2),
+                ],
+                stroke,
+            ));
+        }
+        9 => {
+            p.add(egui::Shape::closed_line(
+                vec![
+                    point(0.2, 0.0),
+                    point(0.8, 0.0),
+                    point(0.8, 1.0),
+                    point(0.5, 0.75),
+                    point(0.2, 1.0),
+                ],
+                stroke,
+            ));
+        }
+        10 => {
+            p.add(egui::Shape::closed_line(
+                vec![
+                    point(0.55, 0.0),
+                    point(0.15, 0.6),
+                    point(0.5, 0.55),
+                    point(0.4, 1.0),
+                    point(0.9, 0.35),
+                    point(0.55, 0.4),
+                ],
+                stroke,
+            ));
+        }
+        _ => {
+            p.circle_stroke(rect.center(), rect.width() * 0.3, stroke);
+            for i in 0..8 {
+                let axis = Vec2::angled(i as f32 * std::f32::consts::TAU / 8.0);
+                p.line_segment(
+                    [
+                        rect.center() + axis * rect.width() * 0.3,
+                        rect.center() + axis * rect.width() * 0.5,
+                    ],
+                    stroke,
+                );
+            }
+        }
+    }
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn solid_themes_keep_welcome_controls_and_product_icon() {
+        let ctx = egui::Context::default();
+        ctx.set_fonts(font_definitions());
+        let theme = Theme;
+        for dark in [true, false] {
+            let _ = ctx.run(
+                egui::RawInput {
+                    screen_rect: Some(Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(767.0, 480.0),
+                    )),
+                    ..Default::default()
+                },
+                |ctx| {
+                    apply(ctx, dark);
+                    egui::CentralPanel::default().show(ctx, |ui| {
+                        theme.home(ui, dark);
+                    });
+                },
+            );
+        }
+        let icon = native_icon();
+        assert_eq!(
+            icon.rgba.len(),
+            icon.width as usize * icon.height as usize * 4
+        );
+    }
+    #[test]
+    fn selection_has_visible_foreground_in_both_modes() {
+        fn luminance(c: Color32) -> f32 {
+            let channels = [c.r(), c.g(), c.b()].map(|v| {
+                let v = v as f32 / 255.0;
+                if v <= 0.04045 {
+                    v / 12.92
+                } else {
+                    ((v + 0.055) / 1.055).powf(2.4)
+                }
+            });
+            channels[0] * 0.2126 + channels[1] * 0.7152 + channels[2] * 0.0722
+        }
+        for dark in [true, false] {
+            let c = colors(dark);
+            let a = luminance(c.selection);
+            let b = luminance(c.selection_text);
+            assert!((a.max(b) + 0.05) / (a.min(b) + 0.05) >= 4.5);
+        }
+    }
+}

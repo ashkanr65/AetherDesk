@@ -1,0 +1,50 @@
+[
+  {
+    "role": "error",
+    "pattern": "(?:^|\\s)\\*\\*(?:error|fatal)\\b|\\b(error|failed|failure|fatal|panic|denied|refused|rejected|invalid|unreachable|timed?\\s*out)\\b"
+  },
+  {
+    "role": "warning",
+    "pattern": "(?:^|\\s)\\*\\*warn(?:ing)?\\b|\\b(warn(?:ing)?|deprecated|retrying|degraded|caution)\\b"
+  },
+  {
+    "role": "disconnection",
+    "pattern": "\\b(disconnected|disconnecting|connection\\s+closed|connection\\s+lost|signed\\s+out)\\b"
+  },
+  {
+    "role": "connection",
+    "pattern": "\\b(connected|connecting|connection\\s+established|session\\s+opened|reconnected)\\b"
+  },
+  {
+    "role": "authentication",
+    "pattern": "\\b(authenticat(?:e|ed|ing|ion)|authorized|public\\s+key|host\\s+key|fingerprint|passphrase|credential|mfa|fido2)\\b"
+  },
+  {
+    "role": "fileTransfer",
+    "pattern": "\\b(sftp|upload(?:ed|ing)?|download(?:ed|ing)?|transferr(?:ed|ing)|copied|bytes?\\s+(?:sent|received))\\b"
+  },
+  {
+    "role": "success",
+    "pattern": "\\b(success(?:ful|fully)?|completed|finished|passed|done|ok)\\b"
+  },
+  {
+    "role": "information",
+    "pattern": "(?:^|\\s)\\*\\*info\\b|\\b(info(?:rmation)?|notice|listening|ready|started)\\b"
+  },
+  {
+    "role": "debug",
+    "pattern": "\\b(debug|trace|verbose)\\b"
+  },
+  {
+    "role": "systemMessage",
+    "pattern": "\\b(systemd|kernel|service|daemon|system\\s+message|last\\s+login)\\b"
+  },
+  {
+    "role": "systemMessage",
+    "pattern": "^\\s*(?:#@\\s*(?:begin|end)|@{1,2}file\\s+\\d+:\\s*#\\s*(?:=+|\\d+\\.)|(?:reading|loading|running|starting|creating|checking|analyzing|placing|routing|optimizing|exporting)\\b)"
+  },
+  {
+    "role": "debug",
+    "pattern": "^\\s*@{1,2}file\\s+\\d+:"
+  }
+]

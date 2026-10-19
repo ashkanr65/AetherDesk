@@ -5,7 +5,7 @@ edition.workspace = true
 license.workspace = true
 
 [[bin]]
-name = "aetherdesk-rust-preview"
+name = "aetherdesk"
 path = "src/main.rs"
 
 [dependencies]
@@ -17,6 +17,29 @@ tokio-util = "0.7"
 serde_json.workspace = true
 zeroize = "1"
 vt100 = "=0.16.2"
-
-[dev-dependencies]
+regex = "1"
+syntect = { version = "=5.3.0", default-features = false, features = ["default-fancy"] }
+similar = "=3.2.0"
 tempfile = "3"
+arboard = { version = "=3.6.1", default-features = false }
+
+ad-remote-session = { path = "../../../../core/rust/crates/ad-remote-session" }
+ad-stream-client = { path = "../../../../core/rust/crates/ad-stream-client" }
+ad-stream-protocol = { path = "../../../../core/rust/crates/ad-stream-protocol" }
+ad-display-decoder = { path = "../../../../core/rust/crates/ad-display-decoder" }
+async-trait = "0.1"
+parking_lot = "0.12"
+uuid = { version = "1", features = ["v4", "serde"] }
+rand = "0.8"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+
+serde.workspace = true
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "stream"] }
+ring = "0.17"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+base64 = "0.22"
+image = { version = "0.25", default-features = false, features = ["png"] }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Security", "Win32_System_JobObjects", "Win32_System_Threading", "Win32_UI_Shell", "Win32_UI_Controls_Dialogs", "Win32_System_Com", "Win32_UI_WindowsAndMessaging", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_Input_Ime", "Win32_UI_HiDpi", "Win32_Graphics_Gdi", "Win32_System_LibraryLoader"] }

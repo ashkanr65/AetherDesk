@@ -1,4 +1,4 @@
-﻿[CmdletBinding()]
+[CmdletBinding()]
 param([Parameter(Mandatory=$true)][ValidateRange(0,6)][int]$Step)
 . (Join-Path $PSScriptRoot 'Build-Common.ps1')
 $fingerprint = Get-SourceFingerprint
@@ -6,9 +6,11 @@ $stamp = Get-Date -Format 'yyyyMMdd_HHmmss_fff'
 New-Item -ItemType Directory -Force -Path $logsRoot,$packagesRoot,$stateRoot | Out-Null
 $log = Join-Path $logsRoot ('step-{0:D2}-{1}.txt' -f $Step,$stamp)
 $transcribing = $false
+$stepClock = [Diagnostics.Stopwatch]::StartNew()
 try {
     Start-Transcript -LiteralPath $log | Out-Null
     $transcribing = $true
+    Write-Host ("STEP {0}: {1} | started {2}" -f $Step,(Get-BuildStageName $Step),(Get-Date -Format o))
     Initialize-Toolchain
     $result = ''
     $files = @()
@@ -17,90 +19,95 @@ try {
             & (Join-Path $sourceRoot 'ui\rust\Check-Migration.ps1')
             & (Join-Path $PSScriptRoot 'Test-Recipe.ps1')
             $result = Join-Path $outputRoot 'preflight.json'
-            [ordered]@{mode='development-preview';version=$release.version;build=$release.build;rustc=(& rustc.exe --version);checked=(Get-Date -Format o)} |
+            [ordered]@{mode='native-rust';version=$release.version;build=$release.build;rustc=(& rustc.exe --version);checked=(Get-Date -Format o)} |
                 ConvertTo-Json | Set-Content -LiteralPath $result -Encoding UTF8
             $files = @($result)
         }
         1 {
             $result = Write-Snapshot $fingerprint
-            $manifest = Join-Path $result 'ui\rust\Cargo.toml'
-            $lock = Join-Path $result 'ui\rust\Cargo.lock'
-            $cachedLock = Join-Path $outputRoot ('cache\locks\' + (Get-DependencyFingerprint) + '.lock')
-            if (!(Test-Path -LiteralPath $lock) -and (Test-Path -LiteralPath $cachedLock -PathType Leaf)) {
-                Copy-Item -LiteralPath $cachedLock -Destination $lock
-            }
-            if (!(Test-Path -LiteralPath $lock)) { Invoke-StepTool 'cargo.exe' @('generate-lockfile','--manifest-path',$manifest) }
-            Invoke-StepTool 'cargo.exe' @('metadata','--locked','--no-deps','--format-version','1','--manifest-path',$manifest)
-            New-Item -ItemType Directory -Force -Path (Split-Path $cachedLock -Parent) | Out-Null
-            Copy-Item -LiteralPath $lock -Destination $cachedLock -Force
+            Initialize-WorkspaceLocks $result
             $files = @(Get-ChildItem -LiteralPath $result -Recurse -File | Select-Object -ExpandProperty FullName)
         }
         2 {
             $snapshot = (Require-Record 1 $fingerprint).output
-            $manifest = Join-Path $snapshot 'ui\rust\Cargo.toml'
-            Invoke-StepTool 'cargo.exe' @('fmt','--manifest-path',$manifest,'--all','--check')
-            Invoke-StepTool 'cargo.exe' @('test','--locked','--manifest-path',$manifest,'-p','ad-desktop-model','--target','x86_64-pc-windows-msvc')
+            Invoke-RustWorkspaceTests $snapshot
+            $agent = Join-Path $outputRoot ('agent\linux-x86_64-' + $stamp)
+            Build-NativeAgent $snapshot $agent
             $result = Join-Path $outputRoot 'model-tests.json'
-            [ordered]@{passed=$true;scope='Rust model tests, not full feature parity';checked=(Get-Date -Format o)} |
+            [ordered]@{passed=$true;agent=$agent;regressions=(Join-Path $outputRoot 'reports\windows-regressions.json');scope='Cataloged native UI/core and Linux agent regressions; live feature parity remains unverified';checked=(Get-Date -Format o)} |
                 ConvertTo-Json | Set-Content -LiteralPath $result -Encoding UTF8
-            $files = @($result)
+            $files = @($result,(Join-Path $outputRoot 'reports\windows-regressions.json')) + @(Get-ChildItem -LiteralPath $agent -Recurse -File | Select-Object -ExpandProperty FullName)
         }
         3 {
             $null = Require-Record 2 $fingerprint
             $snapshot = (Require-Record 1 $fingerprint).output
-            Invoke-StepTool 'cargo.exe' @('build','--locked','--release','--manifest-path',(Join-Path $snapshot 'ui\rust\Cargo.toml'),'-p','ad-desktop','--bin','aetherdesk-rust-preview','--target','x86_64-pc-windows-msvc')
-            $result = Join-Path $targetRoot 'x86_64-pc-windows-msvc\release\aetherdesk-rust-preview.exe'
+            Invoke-StepTool 'cargo.exe' @('build','--locked','--release','--manifest-path',(Join-Path $snapshot 'ui\rust\Cargo.toml'),'-p','ad-desktop','--bin','aetherdesk','--target','x86_64-pc-windows-msvc')
+            $result = Join-Path $targetRoot 'x86_64-pc-windows-msvc\release\AetherDesk.exe'
             $files = @($result)
         }
         4 {
             $binary = (Require-Record 3 $fingerprint).output
             $snapshot = (Require-Record 1 $fingerprint).output
-            $result = Join-Path $packagesRoot ('AetherDesk-Rust-preview-' + $release.version + '-build' + $release.build + '_' + $stamp)
+            $result = Join-Path $packagesRoot ('AetherDesk-Rust-' + $release.version + '-build' + $release.build + '_' + $stamp)
             New-Item -ItemType Directory -Path $result | Out-Null
-            Copy-Item -LiteralPath $binary -Destination (Join-Path $result 'aetherdesk-rust-preview.exe')
+            Copy-Item -LiteralPath $binary -Destination (Join-Path $result 'AetherDesk.exe')
             foreach ($name in @('release.json','rust-migration.json')) {
                 Copy-Item -LiteralPath (Join-Path $snapshot $name) -Destination (Join-Path $result $name)
             }
             Copy-Item -LiteralPath (Join-Path $snapshot 'ui\rust\Cargo.lock') -Destination (Join-Path $result 'Cargo.lock')
             Copy-Item -LiteralPath (Join-Path $snapshot 'RUST-MIGRATION.md') -Destination (Join-Path $result 'RUST-MIGRATION.md')
-            @('AetherDesk native Rust development preview.','This preview is NOT the full AetherDesk application.',
-              'Profile/favorites preview and read-only import are available.',
-              'SSH/SFTP/desktop/editor/AI implementations are still being ported.',
-              'Double-click aetherdesk-rust-preview.exe. No Flutter, Node, Python or Rust installation is required to run this preview.',
+            Copy-Item -LiteralPath (Join-Path $snapshot 'RUST-FEATURE-PARITY.md') -Destination (Join-Path $result 'RUST-FEATURE-PARITY.md')
+            @('AetherDesk native Rust client.',
+              'Includes native SSH/SFTP, bundled X11 and remote desktop paths, popup editor, AI/Tools and protected native profiles.',
+              'Feature parity and live behavior remain unverified; some workflows are still incomplete. See RUST-FEATURE-PARITY.md.',
+              'Double-click AetherDesk.exe. No Flutter, Node, Python or Rust installation is required to run AetherDesk Rust.',
               'Windows 10/11 x64 and an OpenGL 3.3-capable graphics driver are required.') |
                 Set-Content -LiteralPath (Join-Path $result 'READ-ME-FIRST.txt') -Encoding UTF8
-            [ordered]@{schemaVersion=1;product='AetherDesk Rust preview';version=$release.version;build=$release.build;fingerprint=$fingerprint;featureEquivalent=$false;runtime='native-rust';built=(Get-Date -Format o)} |
+            [ordered]@{schemaVersion=1;product='AetherDesk Rust';version=$release.version;build=$release.build;fingerprint=$fingerprint;featureEquivalent=$false;runtime='native-rust';built=(Get-Date -Format o)} |
                 ConvertTo-Json | Set-Content -LiteralPath (Join-Path $result 'build-info.json') -Encoding UTF8
             Copy-DependencyNotices (Join-Path $snapshot 'ui\rust\Cargo.toml') $result
-            Verify-PreviewPackage $result
+            $tests = Get-Content -LiteralPath (Require-Record 2 $fingerprint).output -Raw | ConvertFrom-Json
+            Copy-NativeRuntimes $snapshot $tests.agent $result
+            New-Item -ItemType Directory -Path (Join-Path $result 'verification') | Out-Null
+            Copy-Item -LiteralPath $tests.regressions -Destination (Join-Path $result 'verification\windows-regressions.json')
+            Copy-Item -LiteralPath (Join-Path $snapshot 'rust-regressions.json') -Destination (Join-Path $result 'verification\regression-catalog.json')
+            Verify-RustPackage $result -BeforeX11
+            # Exercise the production native manager against the newly bundled
+            # server before either distributable can be marked complete.
+            Test-NativeX11Runtime $snapshot $result
+            Verify-RustPackage $result
             $files = @(Get-ChildItem -LiteralPath $result -Recurse -File | Select-Object -ExpandProperty FullName)
-            Set-Content -LiteralPath (Join-Path $outputRoot 'LATEST-PREVIEW-FOLDER.txt') -Value $result -Encoding UTF8
+            Set-Content -LiteralPath (Join-Path $outputRoot 'LATEST-FOLDER.txt') -Value $result -Encoding UTF8
         }
         5 {
             $package = (Require-Record 4 $fingerprint).output
-            Verify-PreviewPackage $package
+            Verify-RustPackage $package
             $result = Join-Path $packagesRoot ((Split-Path $package -Leaf) + '_' + $stamp + '.zip')
             Add-Type -AssemblyName System.IO.Compression.FileSystem
-            [IO.Compression.ZipFile]::CreateFromDirectory($package,$result,[IO.Compression.CompressionLevel]::Optimal,$true)
+            # Runtime DLLs/agent bundles dominate this archive. Fast compression
+            # avoids spending minutes on a slightly smaller distributable.
+            [IO.Compression.ZipFile]::CreateFromDirectory($package,$result,[IO.Compression.CompressionLevel]::Fastest,$true)
             $files = @($result)
-            Set-Content -LiteralPath (Join-Path $outputRoot 'LATEST-PREVIEW-ZIP.txt') -Value $result -Encoding UTF8
+            Set-Content -LiteralPath (Join-Path $outputRoot 'LATEST-ZIP.txt') -Value $result -Encoding UTF8
         }
         6 {
             $package = (Require-Record 4 $fingerprint).output
-            Verify-PreviewPackage $package
+            Verify-RustPackage $package
             $installerName = (Split-Path $package -Leaf) + '-Setup'
-            $script = Join-Path $outputRoot ('installer\preview-' + $stamp + '.iss')
+            $script = Join-Path $outputRoot ('installer\rust-' + $stamp + '.iss')
             New-Item -ItemType Directory -Force -Path (Split-Path $script -Parent) | Out-Null
             if (@($package,$packagesRoot) | Where-Object { $_ -match '["\r\n]' }) { throw 'Invalid installer path.' }
             @(
                 '[Setup]',
                 'AppId={{ABE535D8-5D63-4A27-902C-752E22C6E7B5}',
-                'AppName=AetherDesk Rust Preview',
+                'AppName=AetherDesk Rust',
                 ('AppVersion=' + $release.normalized),
                 ('VersionInfoVersion=' + $release.normalized + '.' + $release.build),
-                'DefaultDirName={localappdata}\Programs\AetherDesk-Rust-Preview',
-                'DefaultGroupName=AetherDesk Rust Preview',
+                'DefaultDirName={localappdata}\Programs\AetherDesk-Rust',
+                'DefaultGroupName=AetherDesk Rust',
                 'PrivilegesRequired=lowest',
+                'CloseApplications=no',
+                'RestartApplications=no',
                 'MinVersion=10.0',
                 'ArchitecturesAllowed=x64compatible',
                 'ArchitecturesInstallIn64BitMode=x64compatible',
@@ -108,18 +115,24 @@ try {
                 ('OutputBaseFilename=' + $installerName),
                 'Compression=lzma2',
                 'SolidCompression=yes',
-                'UninstallDisplayIcon={app}\aetherdesk-rust-preview.exe',
+                'UninstallDisplayIcon={app}\AetherDesk.exe',
+                ('SetupIconFile=' + (Join-Path ((Require-Record 1 $fingerprint).output) 'ui\rust\crates\ad-desktop\assets\theme\aetherdesk.ico')),
+                '[InstallDelete]',
+                'Type: files; Name: "{app}\aetherdesk-rust.exe"',
+                'Type: files; Name: "{app}\aetherdesk-rust-preview.exe"',
+                'Type: files; Name: "{userprograms}\AetherDesk Rust Preview\AetherDesk Rust Preview.lnk"',
+                'Type: dirifempty; Name: "{userprograms}\AetherDesk Rust Preview"',
                 '[Files]',
                 ('Source: "' + $package + '\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs'),
                 '[Icons]',
-                'Name: "{group}\AetherDesk Rust Preview"; Filename: "{app}\aetherdesk-rust-preview.exe"',
+                'Name: "{group}\AetherDesk Rust"; Filename: "{app}\AetherDesk.exe"',
                 '[Run]',
-                'Filename: "{app}\aetherdesk-rust-preview.exe"; Description: "Open Rust development preview"; Flags: nowait postinstall skipifsilent'
+                'Filename: "{app}\AetherDesk.exe"; Description: "Open AetherDesk Rust"; Flags: nowait postinstall skipifsilent'
             ) | Set-Content -LiteralPath $script -Encoding UTF8
             Invoke-StepTool (Get-Iscc) @($script)
             $result = Join-Path $packagesRoot ($installerName + '.exe')
             $files = @($result,$script)
-            Set-Content -LiteralPath (Join-Path $outputRoot 'LATEST-PREVIEW-INSTALLER.txt') -Value $result -Encoding UTF8
+            Set-Content -LiteralPath (Join-Path $outputRoot 'LATEST-INSTALLER.txt') -Value $result -Encoding UTF8
         }
     }
     if ((Get-SourceFingerprint) -ne $fingerprint) { throw 'Source changed during this step. Retry using the latest source.' }
@@ -128,4 +141,8 @@ try {
 } catch {
     Write-Host "STEP $Step FAILED. Stop; newest log: $log" -ForegroundColor Red
     throw
-} finally { if ($transcribing) { Stop-Transcript | Out-Null } }
+} finally {
+    $stepClock.Stop()
+    Write-Host ("STEP {0} WORKER TIME: {1}" -f $Step,(Format-BuildDuration $stepClock.Elapsed)) -ForegroundColor Cyan
+    if ($transcribing) { Stop-Transcript | Out-Null }
+}

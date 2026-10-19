@@ -1,0 +1,89 @@
+name: Prepare signed AetherDesk Rust update
+
+# Deliberate manual build. Pushing this work never starts a build or release.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  linux-agent:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - name: Normalize the agent release version
+        run: python3 tools/version.py
+      - name: Build and test the complete Linux agent
+        run: |
+          docker build --progress=plain -f agent/linux/Dockerfile.bundle --output type=local,dest=agent-bundle .
+          python3 -c "import json,pathlib; r=json.load(open('release.json')); v=r['version'].split('.'); pathlib.Path('agent-bundle/version.txt').write_text('.'.join(v+['0']*(3-len(v))))"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: verified-rust-linux-agent
+          path: agent-bundle/
+          retention-days: 7
+
+  windows-package:
+    needs: linux-agent
+    runs-on: windows-2022
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install publisher tools
+        shell: pwsh
+        run: |
+          python -m pip install cryptography==46.0.3
+          choco install innosetup -y --no-progress
+      - name: Install the pinned GStreamer development runtime
+        shell: pwsh
+        run: |
+          $version=(Get-Content tools/build-kit/toolchain.json -Raw|ConvertFrom-Json).gstreamer
+          $installer=Join-Path $env:RUNNER_TEMP 'gstreamer.exe'
+          $runtime=Join-Path $env:RUNNER_TEMP 'gstreamer'
+          Invoke-WebRequest "https://gstreamer.freedesktop.org/data/pkg/windows/$version/msvc/gstreamer-1.0-msvc-x86_64-$version.exe" -OutFile $installer
+          $process=Start-Process -FilePath $installer -WindowStyle Hidden -Wait -PassThru -ArgumentList @('/VERYSILENT','/NORESTART','/CURRENTUSER','/TYPE=devel',"/DIR=$runtime")
+          if($process.ExitCode -ne 0){throw 'GStreamer setup failed'}
+          "AETHERDESK_GSTREAMER_ROOT=$runtime" | Out-File $env:GITHUB_ENV -Append
+      - uses: actions/download-artifact@v4
+        with:
+          name: verified-rust-linux-agent
+          path: verified-agent
+      - name: Build and verify native Windows packages
+        shell: pwsh
+        run: |
+          $env:AETHERDESK_VERIFIED_AGENT_BUNDLE=Join-Path $PWD 'verified-agent'
+          $env:AETHERDESK_RUST_OUTPUT_ROOT=Join-Path $env:RUNNER_TEMP 'AetherDesk-output'
+          ./tools/rust-build-kit/Run-Build-Step.ps1
+          if($LASTEXITCODE -ne 0){throw 'Rust package build failed'}
+          "AETHERDESK_RUST_OUTPUT_ROOT=$env:AETHERDESK_RUST_OUTPUT_ROOT" | Out-File $env:GITHUB_ENV -Append
+      - name: Prepare signed update assets
+        shell: pwsh
+        env:
+          UPDATE_SIGNING_KEY: ${{ secrets.UPDATE_SIGNING_KEY }}
+        run: |
+          if(!$env:UPDATE_SIGNING_KEY){throw 'Publisher signing secret is not configured'}
+          $package=(Get-Content (Join-Path $env:AETHERDESK_RUST_OUTPUT_ROOT 'LATEST-FOLDER.txt') -Raw).Trim()
+          $installer=(Get-Content (Join-Path $env:AETHERDESK_RUST_OUTPUT_ROOT 'LATEST-INSTALLER.txt') -Raw).Trim()
+          python tools/rust-build-kit/test_update_release.py
+          if($LASTEXITCODE -ne 0){throw 'Publisher regressions failed'}
+          python tools/rust-build-kit/update_release.py prepare --package $package --installer $installer --output signed-update --notes-file RELEASE-NOTES.md
+          if($LASTEXITCODE -ne 0){throw 'Release signing failed'}
+          python tools/rust-build-kit/update_release.py verify --directory signed-update
+          if($LASTEXITCODE -ne 0){throw 'Release verification failed'}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: aetherdesk-signed-update
+          path: signed-update/
+          retention-days: 14
+
+# Artifacts remain in the private source repository until a maintainer reviews
+# them and runs Publish-Update.ps1. That script creates a draft in the separate
+# public downloads repository; it never uploads source or publishes automatically.

@@ -34,7 +34,23 @@ foreach ($item in $original) {
     })
     if ($matched.Count -ne 1) { throw 'Rust physical key map differs from the reference.' }
 }
-if ($Release -and (!$manifest.replacementReady -or @($manifest.features | Where-Object { $_.status -ne 'verified' }).Count)) {
+$inventory = Get-Content -LiteralPath (Join-Path $repository $manifest.featureInventory) -Raw | ConvertFrom-Json
+if ($inventory.schemaVersion -ne 1 -or !$inventory.features -or !$inventory.sourceFiles) { throw 'The detailed feature inventory is missing.' }
+$ids = @{}
+foreach ($feature in $inventory.features) {
+    if (!$feature.id -or $ids.ContainsKey($feature.id)) { throw 'Feature inventory contains a duplicate or missing ID.' }
+    $ids[$feature.id] = $true
+    if (!$feature.acceptance) { throw "Feature has no acceptance criteria: $($feature.id)" }
+    foreach ($path in @($feature.references) + @($feature.implementation)) {
+        if ([IO.Path]::IsPathRooted($path) -or $path -match '(^|[\\/])\.\.([\\/]|$)' -or
+            !(Test-Path -LiteralPath (Join-Path $repository $path) -PathType Leaf)) { throw "Invalid feature evidence path: $path" }
+    }
+}
+if ($Release -and (!$manifest.replacementReady -or !$inventory.replacementReady -or
+    @($inventory.features | Where-Object { $_.status -notin @('verified','preserved_unavailable') }).Count -or
+    @($manifest.features | Where-Object { $_.status -ne 'verified' }).Count)) {
     throw 'Rust release blocked: full feature parity has not been verified.'
 }
 Write-Host "PASS: frozen references and $($original.Count) physical key mappings. Replacement ready: $($manifest.replacementReady)."
+Write-Host "PASS: $($inventory.features.Count) behavior groups and $($inventory.sourceFiles.Count) original source files inventoried."
+& (Join-Path $repository 'tools/rust-build-kit/Check-Regressions.ps1') -Repository $repository -CheckReferences

@@ -79,42 +79,55 @@ impl AgentServer {
         let supervisor = AgentSupervisor::start(self.config.supervisor.clone()).await?;
         let mut dimensions = (self.initial_width, self.initial_height);
         info!(port = self.endpoint.port, session_id = %supervisor.session_id(), "agent broker ready");
-        let closing_session = loop {
-            let channels = match self.accept_channel_set().await {
-                Ok(channels) => channels,
-                Err(AgentServerError::ChannelTimeout) => {
-                    // A detached desktop has no expiration. The timeout only
-                    // discards incomplete channel sets so their sockets cannot
-                    // consume resources forever.
-                    continue;
+        let claimed = tokio_util::sync::CancellationToken::new();
+        let serving = async {
+            loop {
+                let channels = match self.accept_channel_set().await {
+                    Ok(channels) => channels,
+                    Err(AgentServerError::ChannelTimeout) => {
+                        // A detached desktop has no expiration. The timeout only
+                        // discards incomplete channel sets so their sockets cannot
+                        // consume resources forever.
+                        continue;
+                    }
+                    Err(error) => return Err(error),
+                };
+                match run_client(
+                    &supervisor,
+                    channels,
+                    &self.config.session_directory,
+                    &mut dimensions,
+                    &claimed,
+                )
+                .await
+                {
+                    Ok(ClientDisposition::Detached) => {}
+                    Ok(ClientDisposition::Terminate(session)) => break Ok(session),
+                    Err(error) => warn!(%error, "client dropped; retaining remote session"),
                 }
-                Err(error) => return Err(error),
-            };
-            match run_client(
-                &supervisor,
-                channels,
-                &self.config.session_directory,
-                &mut dimensions,
-            )
-            .await
-            {
-                Ok(ClientDisposition::Detached) => {}
-                Ok(ClientDisposition::Terminate(session)) => break session,
-                Err(error) => warn!(%error, "client dropped; retaining remote session"),
             }
         };
+        // A launch that never reaches Start/Resume must not leave a compositor
+        // behind indefinitely after a cancelled upload/handshake or network loss.
+        // Once claimed, a detached desktop keeps its existing unlimited lifetime.
+        let closing_session =
+            wait_for_claim_or_end(serving, &claimed, Duration::from_secs(60)).await;
         supervisor.shutdown().await?;
         // The desktop is stopped. Log/storage cleanup is best-effort and must
         // never suppress the authoritative acknowledgement of that fact.
         if let Err(error) = remove_tree_if_present(&self.config.session_directory).await {
             warn!(%error, "ended session storage could not be removed");
         }
-        let _ = closing_session
-            .send(ArppMessage::Control(ControlMessage::Close {
-                reason_code: 0,
-                detail: "Remote session ended".into(),
-            }))
-            .await;
+        if let Some(closing_session) = closing_session {
+            let _ = closing_session?
+                .send(ArppMessage::Control(ControlMessage::Close {
+                    reason_code: 0,
+                    detail: "Remote session ended".into(),
+                }))
+                .await;
+        } else {
+            info!("unclaimed startup expired; remote desktop cleaned up");
+        }
         Ok(())
     }
 
@@ -164,11 +177,26 @@ enum ClientDisposition {
     Terminate(Arc<ArppSession>),
 }
 
+async fn wait_for_claim_or_end<T>(
+    serving: impl std::future::Future<Output = T>,
+    claimed: &tokio_util::sync::CancellationToken,
+    grace: Duration,
+) -> Option<T> {
+    tokio::pin!(serving);
+    tokio::select! {
+        biased;
+        result = &mut serving => Some(result),
+        _ = claimed.cancelled() => Some(serving.await),
+        _ = tokio::time::sleep(grace) => None,
+    }
+}
+
 async fn run_client(
     supervisor: &AgentSupervisor,
     channels: [TcpStream; 3],
     session_directory: &Path,
     dimensions: &mut (u32, u32),
+    claimed: &tokio_util::sync::CancellationToken,
 ) -> Result<ClientDisposition, AgentServerError> {
     let [control, input, media] = channels;
     let adapter: Arc<dyn TransportAdapter> = Arc::new(SshTransportAdapter::new(
@@ -296,6 +324,7 @@ async fn run_client(
                             supervisor.resize(width, height).await?;
                             if !attached {
                                 supervisor.attach_client(client_id).await?;
+                                claimed.cancel();
                                 attached = true;
                             }
                             session.send(ArppMessage::Control(ControlMessage::SessionReady {
@@ -307,6 +336,7 @@ async fn run_client(
                             ensure_session(supervisor, session_id)?;
                             if !attached {
                                 supervisor.attach_client(client_id).await?;
+                                claimed.cancel();
                                 attached = true;
                             }
                             session.send(ArppMessage::Control(ControlMessage::ResumeState {
@@ -333,6 +363,11 @@ async fn run_client(
                         ArppMessage::Control(ControlMessage::MonitorLayout { width: w, height: h, monitors }) => {
                             if attached && ad_stream_protocol::valid_monitor_layout(w, h, &monitors) {
                                 supervisor.set_monitors(w, h, monitors).await?; width = w; height = h;
+                            }
+                        }
+                        ArppMessage::Control(ControlMessage::MonitorLayoutWithProperties { width: w, height: h, monitors, properties }) => {
+                            if attached && ad_stream_protocol::valid_monitor_layout(w, h, &monitors) && ad_stream_protocol::valid_monitor_properties(monitors.len(), &properties) {
+                                supervisor.set_monitor_configuration(w, h, monitors, properties).await?; width = w; height = h;
                             }
                         }
                         ArppMessage::Control(ControlMessage::Close { reason_code, .. }) => {
@@ -885,11 +920,86 @@ fn validate_session_directory(path: &Path) -> Result<(), AgentServerError> {
 }
 
 async fn remove_tree_if_present(path: &Path) -> Result<(), AgentServerError> {
+    #[cfg(target_os = "linux")]
+    release_session_gvfs(path).await?;
     match tokio::fs::remove_dir_all(path).await {
         Ok(()) => Ok(()),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(error) => Err(error.into()),
     }
+}
+
+// GVFS may leave a disconnected FUSE mount after its private desktop bus exits.
+// Unmount only the exact mount inside this session, before traversing its files.
+// Never disable GVFS in a running desktop or touch another session's mounts.
+#[cfg(target_os = "linux")]
+async fn release_session_gvfs(session: &Path) -> Result<(), AgentServerError> {
+    let session = match tokio::fs::canonicalize(session).await {
+        Ok(path) => path,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error.into()),
+    };
+    let target = session.join("runtime/gvfs");
+    let mounts = tokio::fs::read_to_string("/proc/self/mountinfo").await?;
+    if !is_session_gvfs_mount(&mounts, &target) {
+        return Ok(());
+    }
+    let mut last_error = None;
+    for program in ["/usr/bin/fusermount3", "/usr/bin/fusermount"] {
+        let mut command = tokio::process::Command::new(program);
+        command
+            .args(["-u", "-z", "--"])
+            .arg(&target)
+            .kill_on_drop(true);
+        match timeout(Duration::from_secs(3), command.output()).await {
+            Ok(Ok(output)) if output.status.success() => return Ok(()),
+            Ok(Err(error)) => last_error = Some(error),
+            _ => last_error = Some(std::io::Error::other("Session GVFS unmount failed")),
+        }
+    }
+    Err(last_error.unwrap().into())
+}
+
+#[cfg(target_os = "linux")]
+fn is_session_gvfs_mount(mountinfo: &str, target: &Path) -> bool {
+    mountinfo.lines().any(|line| {
+        let Some((details, filesystem)) = line.split_once(" - ") else {
+            return false;
+        };
+        if filesystem.split_whitespace().next() != Some("fuse.gvfsd-fuse") {
+            return false;
+        }
+        let Some(encoded) = details.split_whitespace().nth(4) else {
+            return false;
+        };
+        // Kernel mountinfo encodes whitespace and backslashes with octal escapes.
+        let decoded = encoded
+            .replace("\\040", " ")
+            .replace("\\011", "\t")
+            .replace("\\012", "\n")
+            .replace("\\134", "\\");
+        Path::new(&decoded) == target
+    })
+}
+
+#[cfg(all(test, target_os = "linux"))]
+#[test]
+fn gvfs_cleanup_matches_only_the_owned_session_mount() {
+    let target = Path::new("/tmp/owned session/runtime/gvfs");
+    let line = "100 12 0:3 / /tmp/owned\\040session/runtime/gvfs rw - fuse.gvfsd-fuse gvfsd-fuse rw,user_id=1000";
+    assert!(is_session_gvfs_mount(line, target));
+    assert!(!is_session_gvfs_mount(
+        line,
+        Path::new("/tmp/other/runtime/gvfs")
+    ));
+    assert!(!is_session_gvfs_mount(
+        &line.replace("fuse.gvfsd-fuse", "ext4"),
+        target
+    ));
+    assert!(!is_session_gvfs_mount(
+        &line.replace("runtime/gvfs", "runtime/gvfs/child"),
+        target
+    ));
 }
 
 #[derive(Debug, Error)]
@@ -931,6 +1041,28 @@ pub enum AgentServerError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn an_unclaimed_startup_expires() {
+        let claimed = tokio_util::sync::CancellationToken::new();
+        let result = wait_for_claim_or_end(
+            std::future::pending::<()>(),
+            &claimed,
+            Duration::from_millis(10),
+        )
+        .await;
+        assert!(result.is_none());
+    }
+    #[tokio::test]
+    async fn a_claimed_desktop_survives_the_startup_deadline() {
+        let claimed = tokio_util::sync::CancellationToken::new();
+        let serving = async {
+            claimed.cancel();
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            42
+        };
+        let result = wait_for_claim_or_end(serving, &claimed, Duration::from_millis(10)).await;
+        assert_eq!(result, Some(42));
+    }
 
     #[test]
     fn disconnect_releases_only_held_keys_and_buttons_once() {

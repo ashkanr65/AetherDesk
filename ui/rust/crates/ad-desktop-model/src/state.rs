@@ -49,11 +49,22 @@ impl<T> Default for WorkspaceState<T> {
             selected: None,
             sidebar: Sidebar::Sessions,
             sidebar_visible: true,
-            sidebar_width: 314.0,
+            sidebar_width: 214.0,
         }
     }
 }
 impl<T> WorkspaceState<T> {
+    pub fn relative_tab(&self, delta: isize) -> Option<usize> {
+        let count = self.tabs.len();
+        if count == 0 {
+            return None;
+        }
+        let current = self.selected.unwrap_or(0).min(count - 1);
+        Some(
+            (current as isize + delta.rem_euclid(count as isize)).rem_euclid(count as isize)
+                as usize,
+        )
+    }
     pub fn open_new(&mut self, tab: T) {
         self.tabs.push(tab);
         self.selected = Some(self.tabs.len() - 1);
@@ -109,7 +120,7 @@ impl SidebarDrag {
     }
     pub fn width(self, pointer_x: f32, available_width: f32) -> f32 {
         let max = (available_width - 360.0).clamp(0.0, 900.0);
-        let min = 280.0_f32.min(max);
+        let min = 190.0_f32.min(max);
         (self.start_width + pointer_x - self.start_x).clamp(min, max)
     }
 }
@@ -136,5 +147,39 @@ mod tests {
         assert_eq!(drag.width(454.0, 1600.0), 454.0);
         assert_eq!(drag.width(2000.0, 1600.0), 900.0);
         assert_eq!(drag.width(2000.0, 400.0), 40.0);
+    }
+    #[test]
+    fn navigation_wraps_and_reordering_or_closing_preserves_the_active_identity() {
+        let mut state = WorkspaceState::default();
+        assert_eq!(state.relative_tab(-1), None);
+        for id in ["one", "two", "three", "four"] {
+            state.open_new(id);
+        }
+        assert_eq!(state.relative_tab(1), Some(0));
+        state.selected = Some(0);
+        assert_eq!(state.relative_tab(-1), Some(3));
+        for from in 0..4 {
+            for to in 0..4 {
+                for active in 0..4 {
+                    let mut sample = WorkspaceState::default();
+                    for id in ["one", "two", "three", "four"] {
+                        sample.open_new(id);
+                    }
+                    sample.selected = Some(active);
+                    let identity = sample.tabs[active];
+                    sample.move_tab(from, to);
+                    assert_eq!(sample.tabs[sample.selected.unwrap()], identity);
+                    let other = (sample.selected.unwrap() + 1) % 4;
+                    sample.close_tab(other);
+                    assert_eq!(sample.tabs[sample.selected.unwrap()], identity);
+                }
+            }
+        }
+        state.close_tab(0);
+        assert_eq!(state.tabs[state.selected.unwrap()], "two");
+        state.close_tab(0);
+        state.close_tab(0);
+        state.close_tab(0);
+        assert_eq!(state.selected, None);
     }
 }

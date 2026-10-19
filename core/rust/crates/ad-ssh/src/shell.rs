@@ -60,6 +60,9 @@ impl ShellIo {
                     _ => {}
                 }
             }
+            // A stopped reader must stop the writer too (including overflow),
+            // releasing the PTY instead of leaving a shell with no consumer.
+            reader_cancel.cancel();
         });
         let writer_output = output.clone();
         tokio::spawn(async move {
@@ -83,6 +86,11 @@ impl ShellIo {
                     None => break,
                 }
             }
+            let _ = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+                let _ = writer.eof().await;
+                writer.close().await
+            })
+            .await;
         });
         Self { commands, output }
     }

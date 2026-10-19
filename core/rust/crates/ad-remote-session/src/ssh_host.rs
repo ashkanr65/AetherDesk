@@ -209,7 +209,13 @@ fn parse_endpoint(output: &[u8]) -> Result<AgentEndpoint, LifecycleError> {
     if fields.next().is_some() || port == 0 {
         return Err(LifecycleError::InvalidEndpoint);
     }
-    Ok(AgentEndpoint { port, token })
+    Ok(AgentEndpoint {
+        port,
+        token,
+        newly_created: text
+            .lines()
+            .any(|line| line == "AETHERDESK_AGENT_CREATED_V1"),
+    })
 }
 
 fn decode_token(value: &str) -> Result<[u8; 32], LifecycleError> {
@@ -272,6 +278,12 @@ mod tests {
             parse_endpoint(format!("AETHERDESK_AGENT_V1 41234 {token}\n").as_bytes()).unwrap();
         assert_eq!(endpoint.port, 41234);
         assert_eq!(endpoint.token, [1; 32]);
+        assert!(!endpoint.newly_created);
+        let fresh = parse_endpoint(
+            format!("AETHERDESK_AGENT_CREATED_V1\nAETHERDESK_AGENT_V1 41234 {token}\n").as_bytes(),
+        )
+        .unwrap();
+        assert!(fresh.newly_created);
     }
 
     #[test]

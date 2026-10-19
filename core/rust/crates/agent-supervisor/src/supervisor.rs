@@ -52,6 +52,7 @@ enum CaptureCommand {
         variant: String,
     },
     MonitorLayout {
+        properties: Vec<ad_stream_protocol::MonitorProperties>,
         width: u32,
         height: u32,
         monitors: Vec<ad_stream_protocol::Rectangle>,
@@ -276,9 +277,20 @@ impl AgentSupervisor {
         height: u32,
         monitors: Vec<ad_stream_protocol::Rectangle>,
     ) -> Result<(), SupervisorError> {
+        self.set_monitor_configuration(width, height, monitors, vec![])
+            .await
+    }
+    pub async fn set_monitor_configuration(
+        &self,
+        width: u32,
+        height: u32,
+        monitors: Vec<ad_stream_protocol::Rectangle>,
+        properties: Vec<ad_stream_protocol::MonitorProperties>,
+    ) -> Result<(), SupervisorError> {
         self.update_video_size(width, height);
         self.capture_tx
             .send(CaptureCommand::MonitorLayout {
+                properties,
                 width,
                 height,
                 monitors,
@@ -334,7 +346,7 @@ async fn run_capture_loop(
                 Some(CaptureCommand::Input(input)) => compositor.inject_input(input)?,
                 Some(CaptureCommand::Clipboard(selection)) => compositor.set_clipboard(selection)?,
                 Some(CaptureCommand::KeyboardLayout { layout, variant }) => compositor.set_keyboard_layout(layout, variant)?,
-                Some(CaptureCommand::MonitorLayout { width, height, monitors }) => compositor.set_monitors(width, height, monitors)?,
+                Some(CaptureCommand::MonitorLayout { width, height, monitors, properties }) => compositor.set_monitor_configuration(width, height, monitors, properties)?,
                 Some(CaptureCommand::Stop) | None => {
                     compositor.shutdown();
                     return Ok(());

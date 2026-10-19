@@ -1,7 +1,9 @@
 > **Rust conversion in progress:** this is the isolated AetherDesk-Rust clone.
 > The native implementation is under ui/rust. It is not yet feature-equivalent.
-> Existing build scripts still package the reference Flutter application; they
-> must not be presented as a completed Rust release. See RUST-MIGRATION.md.
+> tools/rust-build-kit packages the native development preview; tools/build-kit
+> still packages the reference Flutter application. See RUST-FEATURE-PARITY.md
+> for the detailed migration status. The documentation below describes the
+> original application's behavior, not completed native Rust parity.
 
 # AetherDesk — Software Architecture, TRD, and PRD
 

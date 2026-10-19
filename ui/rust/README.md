@@ -1,47 +1,36 @@
 # Native Rust desktop migration
 
-This clone is under construction. It is NOT yet a feature-equivalent replacement.
+The native Rust interface calls the production Rust SSH, WireGuard, remote-session,
+streaming and decoding backends directly. It now includes source implementations
+for SSH+X11, remote desktop, popup editing, protected profiles, AI chat/actions,
+Tools and logs. Full behavior parity remains incomplete and unverified.
 
-The new workspace has a native Rust desktop preview and Rust ports of profile
-serialization, tab/sidebar state, pointer-based resize calculations, physical key
-mapping, lock state and legacy shell shortcuts. Existing core Rust crates are
-preserved. No live connections are opened by the preview yet.
+See `../../RUST-MIGRATION.md`, `../../RUST-FEATURE-PARITY.md` and
+`../../rust-feature-inventory.json` for implementation mappings and remaining work.
+The Flutter/C++/Python reference sources are retained while the port is incomplete.
+Upstream native dependencies such as GStreamer, VcXsrv and Xwayland are bundled;
+rewriting the client in Rust does not rewrite those upstream libraries.
 
-Production behavior is frozen against rust-migration.json and its reference
-hashes. The Flutter/C++/Python code is kept as a migration reference until each
-area has behavior and live-host verification. Removing it early would lose
-features. The existing build kit still builds the reference Flutter application;
-it is not a Rust-release recipe.
+Use the sibling Rust beginner build kit for the correct toolchain environment,
+separate workspace tests, Linux agent and portable/installer runtime packaging.
+The legacy `tools/build-kit` recipe still builds the original Flutter reference.
+The native recipe is `tools/rust-build-kit`.
 
-Manual development commands (no builds were run during migration setup):
+For manual test invocation in an initialized build environment, use separate
+workspace commands (the backend packages are not members of the UI workspace):
 
-    cargo test --manifest-path ui/rust/Cargo.toml -p ad-desktop-model
-    cargo run --manifest-path ui/rust/Cargo.toml -p ad-desktop
+    cargo test --manifest-path ui/rust/Cargo.toml -p ad-desktop-model -p ad-desktop
+    cargo test --manifest-path core/rust/Cargo.toml -p ad-ssh -p ad-vpn -p ad-stream-protocol -p ad-stream-client -p ad-display-decoder -p ad-remote-session
 
-The first command compiles the model regression tests; the second builds/runs a
-clearly named development preview. Dependency lock generation and compiler/UI
-verification are still pending. The preview imports saved production profiles
-only on explicit request and never writes to production data.
+These commands compile. They have not been run by this migration pass. A bare
+`cargo run` does not assemble bundled connection runtimes; use the build kit's
+packaged folder for live remote desktop and SSH+X11 checks.
 
-Implementation order:
-1. Persisted formats and isolated state; profiles/vault compatibility.
-2. Direct asynchronous Rust SSH + complete terminal emulator/render/input.
-3. SFTP workspace, transfers, file handlers, native editor windows.
-4. Rust Windows presentation/clipboard/monitors/drag-docking + retained sessions.
-5. Native Rust AI provider/tool loop with the same approvals and history format.
-6. Rust release tools and installer/portable packaging.
-7. Full feature parity, live-host checks, frame/input profiling and release gate.
+The Rust preview stores data under `%APPDATA%/AetherDesk-Rust` and uses separate
+Credential Manager targets. Production profile import is explicit and does not
+copy or alter production credentials. Saved native profiles can remember their
+own credentials with optional master-password protection.
 
-Third-party libraries such as the Windows API, GStreamer and XWayland remain
-external dependencies. A Rust application cannot turn those upstream products
-into Rust. User scripts in PowerShell/POSIX remain supported data; they must not
-be deleted as part of the implementation-language migration.
-
-Framework reference: https://docs.rs/eframe/0.33.3/eframe/trait.App.html
-
-## Preview build kit
-
-The independent recipe is tools/rust-build-kit. Double-click Build-Everything.cmd
-in the sibling AetherDesk-Rust-Beginner-Build-Kit folder. It runs preview tests
-and creates a clearly named portable folder, ZIP and optional installer. The
-legacy tools/build-kit remains the Flutter reference recipe.
+The Windows product executable is now `AetherDesk.exe`; Cargo uses the binary
+name `aetherdesk`. The existing transparent ICO is embedded by the Windows SDK
+resource compiler during normal builds, and installer shortcuts use that name.

@@ -7,7 +7,10 @@ mod isolation_tests;
 pub use ad_config::{SshConfig, X11ForwardingConfig};
 #[path = "remote_file.rs"]
 mod remote_file;
+#[path = "resumable_file.rs"]
+mod resumable_file;
 pub use remote_file::{FileProgress, RemoteFileMetadata, RemoteFileRequest, RemoteFileResult};
+pub use resumable_file::{rename_local_noclobber, ResumableTransferFile};
 #[path = "language_server.rs"]
 mod language_server;
 pub use language_server::{LanguageServer, LanguageServerConfig};
@@ -342,14 +345,24 @@ impl SshClient {
 /// otherwise make Bash omit subsequent real commands when appending on exit.
 fn private_shell_bootstrap(command: &str) -> String {
     let marker = format!("aetherdesk-bootstrap-{}", ConnectionId::new().as_uuid());
-    let legacy = format!("{command}; stty echo").replace('\'', "'\\''");
+    // Embedding the complete initialization again inside its own history
+    // matcher can exceed the PTY's canonical input limit before Readline starts.
+    // Large integration lines are identified by their reserved function names.
+    let legacy = if command.len() <= 256 {
+        format!("{command}; stty echo")
+    } else {
+        String::new()
+    }
+    .replace('\'', "'\\''");
     let cleanup = format!(
         "__aetherdesk_clean_history() {{ \
          local __ad_n __ad_line __ad_i; local -a __ad_drop=(); \
          while IFS=$' \\t' read -r __ad_n __ad_line; do \
          __ad_n=${{__ad_n%\\*}}; \
          case \"$__ad_n\" in ''|*[!0-9]*) continue;; esac; \
-         if [[ \"$__ad_line\" == *'{marker}'* || \"$__ad_line\" == '{legacy}' ]]; then \
+         if [[ \"$__ad_line\" == *'{marker}'* || \"$__ad_line\" == '{legacy}' || \
+         ( \"$__ad_line\" == *'aetherdesk-bootstrap-'* && \"$__ad_line\" == *'__aetherdesk_clean_history()'* ) || \
+         \"$__ad_line\" == *'then __aetherdesk_emit_cwd()'* ]]; then \
          __ad_drop+=(\"$__ad_n\"); fi; \
          done < <(HISTTIMEFORMAT= builtin history); \
          for ((__ad_i=${{#__ad_drop[@]}}-1; __ad_i>=0; __ad_i--)); do \
@@ -419,6 +432,7 @@ impl Drop for OwnedChannel {
         if let (Some(channel), Ok(runtime)) = (self.0.take(), tokio::runtime::Handle::try_current())
         {
             runtime.spawn(async move {
+                let _ = timeout(Duration::from_secs(1), channel.eof()).await;
                 let _ = timeout(Duration::from_secs(1), channel.close()).await;
             });
         }
@@ -468,6 +482,19 @@ impl SshSession {
     /// Get the connection ID
     pub fn connection_id(&self) -> ConnectionId {
         self.connection_id
+    }
+    pub fn host_identity(&self) -> HostIdentity {
+        self.host_identity.clone()
+    }
+
+    /// Observe transport health without opening a shell or a probe process.
+    pub fn is_closed(&self) -> bool {
+        self.lifetime.0.is_cancelled()
+            || self.session.is_closed()
+            || self
+                .bulk
+                .as_ref()
+                .is_some_and(|session| session.is_closed())
     }
 
     /// Open a shell channel for interactive terminal
@@ -834,6 +861,59 @@ impl SshSession {
         timeout(command_timeout, self.execute_command_inner(command))
             .await
             .map_err(|_| CoreError::ConnectionError("The remote command timed out".to_string()))?
+    }
+
+    /// Execute an approved, finite AI/Tools command in an owned Linux process
+    /// group. Cancellation, transport loss, timeout and output overflow close
+    /// its stdin lease; the supervisor then cleans up the group's descendants.
+    /// Agent launch and retained desktop processes deliberately use the ordinary
+    /// command API instead.
+    pub async fn execute_scoped_command_output(
+        &self,
+        command: &str,
+        command_timeout: Duration,
+    ) -> CoreResult<CommandOutput> {
+        if command.contains('\0') || command.len() > 128 * 1024 || command_timeout.is_zero() {
+            return Err(CoreError::ConnectionError("Invalid scoped command".into()));
+        }
+        let quote = |text: &str| format!("'{}'", text.replace('\'', "'\\''"));
+        let wrapper = format!(
+            "exec bash -c {} aetherdesk-job {}",
+            quote(include_str!("scoped_command.sh")),
+            quote(command)
+        );
+        let operation = async {
+            let channel = OwnedChannel(Some(self.session.channel_open_session().await?));
+            channel.exec(true, wrapper.as_str()).await?;
+            let mut writer = channel.make_writer();
+            writer.write_all(b"AETHER_RUN\n").await?;
+            writer.flush().await?;
+            let messages = futures::stream::unfold(channel, |mut channel| async move {
+                channel.wait().await.map(|message| (message, channel))
+            });
+            let collect = collect_command_output(messages);
+            tokio::pin!(collect);
+            let mut pulse = tokio::time::interval(Duration::from_secs(1));
+            pulse.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            loop {
+                tokio::select! {
+                    biased;
+                    _ = self.lifetime.0.cancelled() => return Err(CoreError::ConnectionError("SSH command cancelled: connection closed".into())),
+                    result = &mut collect => return result,
+                    _ = pulse.tick() => {
+                        timeout(Duration::from_secs(2), writer.write_all(b"AETHER_PULSE\n")).await
+                            .map_err(|_| CoreError::ConnectionError("SSH command lease stalled".into()))??;
+                        timeout(Duration::from_secs(2), writer.flush()).await
+                            .map_err(|_| CoreError::ConnectionError("SSH command lease stalled".into()))??;
+                    }
+                }
+            }
+        };
+        timeout(command_timeout, operation).await.map_err(|_| {
+            CoreError::ConnectionError(
+                "The remote command timed out; its process group is being stopped".into(),
+            )
+        })?
     }
 
     async fn execute_command_inner(&self, command: &str) -> CoreResult<CommandOutput> {
@@ -1748,6 +1828,27 @@ fn rewrite_x11_authorization(
     Ok(())
 }
 
+fn verify_confirmed_fingerprint(expected: Option<&str>, actual: &str) -> CoreResult<()> {
+    if expected.is_some_and(|expected| expected != actual) {
+        return Err(CoreError::ConnectionError(
+            "The SSH host key changed after confirmation. The connection was refused.".into(),
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod confirmation_tests {
+    use super::*;
+    #[test]
+    fn a_trust_retry_is_bound_to_the_displayed_fingerprint() {
+        assert!(verify_confirmed_fingerprint(Some("SHA256:one"), "SHA256:one").is_ok());
+        assert!(verify_confirmed_fingerprint(Some("SHA256:one"), "SHA256:two").is_err());
+        // No confirmation still flows through normal known_hosts verification.
+        assert!(verify_confirmed_fingerprint(None, "SHA256:two").is_ok());
+    }
+}
+
 impl ssh_client::Handler for ClientHandler {
     type Error = CoreError;
 
@@ -1756,14 +1857,10 @@ impl ssh_client::Handler for ClientHandler {
         server_public_key: &PublicKeyOrCertificate,
     ) -> Result<bool, Self::Error> {
         let public_key = server_public_key.public_key();
-        if let Some(expected) = &self.confirmed_host_fingerprint {
-            if expected != &public_key.fingerprint(HashAlg::Sha256).to_string() {
-                return Err(CoreError::ConnectionError(
-                    "The SSH host key changed after confirmation. The connection was refused."
-                        .into(),
-                ));
-            }
-        }
+        verify_confirmed_fingerprint(
+            self.confirmed_host_fingerprint.as_deref(),
+            &public_key.fingerprint(HashAlg::Sha256).to_string(),
+        )?;
         #[cfg(test)]
         if let Some(key) = &self.pinned_test_key {
             let accepted = key.key_data() == public_key.key_data();
@@ -2057,6 +2154,17 @@ mod shell_history_tests {
     use std::process::{Command, Stdio};
 
     #[test]
+    fn large_bootstrap_payload_is_not_duplicated_past_the_pty_line_limit() {
+        let command = format!("__ad_value='{}'; :", "x".repeat(1600));
+        let input = private_shell_bootstrap(&command);
+        assert_eq!(input.matches(command.as_str()).count(), 1);
+        assert!(
+            input.len() < 4096,
+            "startup would be truncated before Readline takes over"
+        );
+    }
+
+    #[test]
     fn bootstrap_is_parseable_by_a_posix_shell() {
         let mut child = Command::new("sh")
             .arg("-n")
@@ -2184,12 +2292,24 @@ mod shell_history_tests {
 }
 
 #[cfg(all(test, unix))]
+fn sftp_test_server_path() -> String {
+    std::env::var("AD_SFTP_SERVER").unwrap_or_else(|_| {
+        [
+            "/usr/lib/openssh/sftp-server",
+            "/usr/libexec/openssh/sftp-server",
+        ]
+        .into_iter()
+        .find(|path| std::path::Path::new(path).is_file())
+        .unwrap_or("/usr/lib/openssh/sftp-server")
+        .into()
+    })
+}
+#[cfg(all(test, unix))]
 mod sftp_integration {
     use super::*;
     #[tokio::test]
     async fn openssh_sftp_upload_download_resume_and_empty_files() {
-        let server = std::env::var("AD_SFTP_SERVER")
-            .unwrap_or_else(|_| "/usr/lib/openssh/sftp-server".into());
+        let server = sftp_test_server_path();
         assert!(
             std::path::Path::new(&server).exists(),
             "Install openssh-sftp-server to run the SFTP integration test"

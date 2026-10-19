@@ -31,6 +31,11 @@ struct AgentState {
     cleanup_probes_remaining: usize,
     end_delay: Duration,
     close_delay: Duration,
+    cancel_deploy: Option<tokio_util::sync::CancellationToken>,
+    cancel_launch: Option<tokio_util::sync::CancellationToken>,
+    cancel_hello: Option<tokio_util::sync::CancellationToken>,
+    cancel_resume: Option<tokio_util::sync::CancellationToken>,
+    fail_open_once: bool,
 }
 
 #[derive(Default)]
@@ -45,6 +50,9 @@ impl RemoteAgentHost for MockConnection {
         command: &str,
         _timeout: Duration,
     ) -> Result<RemoteCommandResult, AgentBootstrapError> {
+        if let Some(cancel) = &self.state.lock().unwrap().cancel_deploy {
+            cancel.cancel();
+        }
         if command.contains("chmod 700") {
             self.state.lock().unwrap().installed = true;
         }
@@ -87,13 +95,24 @@ impl AgentConnection for MockConnection {
         _session_id: Uuid,
         _parameters: Option<&SessionParameters>,
     ) -> Result<AgentEndpoint, LifecycleError> {
-        let mut state = self.state.lock().unwrap();
-        assert!(state.installed);
-        state.retained = true;
-        state.launches += 1;
+        let newly_created = {
+            let mut state = self.state.lock().unwrap();
+            assert!(state.installed);
+            let fresh = !state.retained;
+            state.retained = true;
+            state.launches += 1;
+            if let Some(cancel) = &state.cancel_launch {
+                cancel.cancel();
+            }
+            fresh
+        };
+        // Exercise cancellation while launch is still in flight, rather than
+        // only before or after its response.
+        tokio::time::sleep(Duration::from_millis(10)).await;
         Ok(AgentEndpoint {
             port: 41000,
             token: [7; 32],
+            newly_created,
         })
     }
 
@@ -101,6 +120,13 @@ impl AgentConnection for MockConnection {
         &self,
         _endpoint: &AgentEndpoint,
     ) -> Result<Arc<dyn TransportAdapter>, LifecycleError> {
+        {
+            let mut state = self.state.lock().unwrap();
+            if state.fail_open_once {
+                state.fail_open_once = false;
+                return Err(LifecycleError::Launch("opening transport failed".into()));
+            }
+        }
         Ok(Arc::new(MockTransport::new(self.state.clone())))
     }
 }
@@ -138,6 +164,9 @@ impl TransportAdapter for MockTransport {
     async fn send(&self, frame: ArppFrame) -> Result<(), TransportError> {
         match frame.message {
             ArppMessage::Control(ControlMessage::ClientHello { .. }) => {
+                if let Some(cancel) = &self.state.lock().unwrap().cancel_hello {
+                    cancel.cancel();
+                }
                 self.reply(ArppMessage::Control(ControlMessage::ServerHello {
                     protocol_version: PROTOCOL_VERSION,
                     server_nonce: [9; 32],
@@ -158,6 +187,9 @@ impl TransportAdapter for MockTransport {
                 .await;
             }
             ArppMessage::Control(ControlMessage::ResumeSession { session_id, .. }) => {
+                if let Some(cancel) = &self.state.lock().unwrap().cancel_resume {
+                    cancel.cancel();
+                }
                 self.state.lock().unwrap().resumes += 1;
                 self.state.lock().unwrap().attached = true;
                 self.reply(ArppMessage::Control(ControlMessage::ResumeState {
@@ -248,6 +280,92 @@ fn capabilities() -> Capabilities {
         dynamic_resize: true,
         quic_media: false,
     }
+}
+
+async fn interrupted_saved_start(stage: &str, retained: bool) {
+    let binary = std::env::temp_dir().join(format!("ad-agent-r1-{}", Uuid::new_v4()));
+    tokio::fs::write(&binary, b"portable agent").await.unwrap();
+    let artifact = AgentArtifact::inspect("0.1.0", &binary).await.unwrap();
+    let connection = Arc::new(MockConnection::default());
+    let cancel = tokio_util::sync::CancellationToken::new();
+    {
+        let mut state = connection.state.lock().unwrap();
+        state.retained = retained;
+        match stage {
+            "before" => cancel.cancel(),
+            "deploy" => state.cancel_deploy = Some(cancel.clone()),
+            "launch" => state.cancel_launch = Some(cancel.clone()),
+            "hello" => state.cancel_hello = Some(cancel.clone()),
+            "resume" => state.cancel_resume = Some(cancel.clone()),
+            "open_failure" => state.fail_open_once = true,
+            _ => panic!("unknown stage"),
+        }
+    }
+    let session_id = Uuid::new_v4();
+    let parameters = SessionParameters {
+        session_id,
+        desktop_environment: "xfce".into(),
+        width: 640,
+        height: 480,
+        scale_milli: 1000,
+        monitors: 1,
+        video_codec: VideoCodec::H264,
+        audio_codec: None,
+        target_fps: 30,
+        target_bitrate_kbps: 4000,
+    };
+    let mut client = RemoteSessionLifecycle::new(connection.clone(), session_id);
+    let result = tokio::time::timeout(
+        Duration::from_secs(3),
+        client.connect_saved_desktop_cancellable(&artifact, None, &parameters, &cancel),
+    )
+    .await
+    .unwrap();
+    if stage == "open_failure" {
+        assert!(matches!(result, Err(LifecycleError::Launch(_))));
+    } else {
+        assert!(matches!(result, Err(LifecycleError::Cancelled)));
+    }
+    let state = connection.state.lock().unwrap();
+    assert_eq!(
+        state.retained, retained,
+        "cleanup must preserve only pre-existing desktops"
+    );
+    assert!(!state.attached, "cancel left an attached client");
+    if matches!(stage, "before" | "deploy") {
+        assert_eq!(state.launches, 0);
+    } else if !retained {
+        assert!(
+            state.end_acknowledged,
+            "fresh launch rollback was not acknowledged"
+        );
+    }
+    drop(state);
+    assert!(client.session().is_none());
+    let _ = tokio::fs::remove_file(binary).await;
+}
+
+#[tokio::test]
+async fn cancellation_before_or_during_deployment_never_launches_an_agent() {
+    interrupted_saved_start("before", false).await;
+    interrupted_saved_start("deploy", false).await;
+}
+#[tokio::test]
+async fn cancellation_during_launch_rolls_back_only_fresh_desktops() {
+    interrupted_saved_start("launch", false).await;
+    interrupted_saved_start("launch", true).await;
+}
+#[tokio::test]
+async fn cancelled_handshakes_release_their_transport_and_preserve_saved_desktops() {
+    for stage in ["hello", "resume"] {
+        interrupted_saved_start(stage, false).await;
+        interrupted_saved_start(stage, true).await;
+    }
+}
+#[tokio::test]
+async fn a_failed_transport_open_reconnects_for_owned_startup_cleanup() {
+    interrupted_saved_start("open_failure", false).await;
+    interrupted_saved_start("open_failure", true).await;
 }
 
 #[tokio::test]

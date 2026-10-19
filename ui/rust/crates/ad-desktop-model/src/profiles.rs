@@ -46,6 +46,7 @@ pub struct SavedSession {
     pub desktop_environment: String,
     pub key_path: Option<String>,
     pub wireguard_config_path: Option<String>,
+    pub wireguard_enabled: bool,
     pub remember_username: bool,
     pub remember_password: bool,
     pub master_password_protected: bool,
@@ -99,6 +100,9 @@ impl SavedSession {
                 .or_else(|| value.as_f64().map(|v| v as i64))
                 .ok_or("Invalid session field: port")?,
         };
+        let wireguard_config_path =
+            optional_text(map, "wireguardConfigPath")?.filter(|p| !p.trim().is_empty());
+        let wireguard_enabled = boolean(map, "wireguardEnabled", wireguard_config_path.is_some())?;
         Ok(Self {
             id: text(map, "id")?,
             name: text(map, "name")?,
@@ -122,11 +126,16 @@ impl SavedSession {
                 "xfce",
             )?,
             key_path: optional_text(map, "keyPath")?,
-            wireguard_config_path: optional_text(map, "wireguardConfigPath")?,
+            wireguard_config_path,
+            wireguard_enabled,
             remember_password: boolean(map, "rememberPassword", false)?,
             master_password_protected: boolean(map, "masterPasswordProtected", false)?,
             favorite: boolean(map, "favorite", false)?,
-            deleted_at: optional_text(map, "deletedAt")?,
+            deleted_at: optional_text(map, "deletedAt")?.filter(|s| {
+                chrono::DateTime::parse_from_rfc3339(s).is_ok()
+                    || chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M:%S%.f").is_ok()
+                    || chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d").is_ok()
+            }),
         })
     }
     pub fn to_json(&self) -> Value {
@@ -144,6 +153,7 @@ impl SavedSession {
         }
         if let Some(config) = &self.wireguard_config_path {
             value["wireguardConfigPath"] = json!(config);
+            value["wireguardEnabled"] = json!(self.wireguard_enabled);
         }
         value
     }
@@ -163,6 +173,27 @@ pub fn decode_sessions(bytes: &[u8]) -> Result<Vec<SavedSession>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn wireguard_enablement_is_per_profile_and_disabled_files_survive_reload() {
+        let enabled=SavedSession::from_json(&json!({"id":"one","name":"VPN","host":"server","wireguardConfigPath":"C:/vpn/peer.conf"})).unwrap();
+        assert!(enabled.wireguard_enabled); // old profiles retain their choice
+        let mut disabled = enabled.clone();
+        disabled.id = "two".into();
+        disabled.wireguard_enabled = false;
+        let restored = SavedSession::from_json(&disabled.to_json()).unwrap();
+        assert!(!restored.wireguard_enabled);
+        assert_eq!(
+            restored.wireguard_config_path,
+            enabled.wireguard_config_path
+        );
+        assert!(enabled.wireguard_enabled);
+        disabled.wireguard_config_path = None;
+        assert!(
+            !SavedSession::from_json(&disabled.to_json())
+                .unwrap()
+                .wireguard_enabled
+        );
+    }
     #[test]
     fn username_and_master_password_consent_are_preserved() {
         let mut session = SavedSession::from_json(&json!({

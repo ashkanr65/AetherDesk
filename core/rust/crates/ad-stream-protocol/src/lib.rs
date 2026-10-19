@@ -336,8 +336,38 @@ pub enum ControlMessage {
         height: u32,
         monitors: Vec<Rectangle>,
     },
+    /// Extended layout; appended to preserve the legacy bincode variant and payload.
+    MonitorLayoutWithProperties {
+        width: u32,
+        height: u32,
+        monitors: Vec<Rectangle>,
+        properties: Vec<MonitorProperties>,
+    },
 }
 
+/// Client monitor metadata applies only to this session's virtual displays.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MonitorProperties {
+    pub name: String,
+    pub dpi: u16,
+    pub width_mm: u32,
+    pub height_mm: u32,
+    pub refresh_millihz: u32,
+    pub primary: bool,
+}
+pub fn valid_monitor_properties(count: usize, properties: &[MonitorProperties]) -> bool {
+    properties.is_empty()
+        || (properties.len() == count
+            && properties.iter().all(|p| {
+                !p.name.is_empty()
+                    && p.name.len() <= 128
+                    && !p.name.chars().any(char::is_control)
+                    && (48..=768).contains(&p.dpi)
+                    && (10..=10000).contains(&p.width_mm)
+                    && (10..=10000).contains(&p.height_mm)
+                    && (1000..=240000).contains(&p.refresh_millihz)
+            }))
+}
 /// Bound desktop allocations while permitting wide multi-monitor arrangements.
 pub fn valid_desktop_size(width: u32, height: u32) -> bool {
     width >= 64
@@ -838,6 +868,45 @@ mod tests {
         }
     }
 
+    #[test]
+    fn monitor_metadata_is_bounded_and_round_trips_without_changing_legacy_layouts() {
+        let properties = MonitorProperties {
+            name: "Display 1".into(),
+            dpi: 144,
+            width_mm: 600,
+            height_mm: 340,
+            refresh_millihz: 144000,
+            primary: true,
+        };
+        assert!(valid_monitor_properties(
+            1,
+            std::slice::from_ref(&properties)
+        ));
+        assert!(valid_monitor_properties(2, &[]));
+        assert!(!valid_monitor_properties(
+            2,
+            std::slice::from_ref(&properties)
+        ));
+        let mut invalid = properties.clone();
+        invalid.width_mm = u32::MAX;
+        assert!(!valid_monitor_properties(1, &[invalid]));
+        let frame = ArppFrame::new(
+            1,
+            ArppMessage::Control(ControlMessage::MonitorLayoutWithProperties {
+                width: 1920,
+                height: 1080,
+                monitors: vec![Rectangle {
+                    x: 0,
+                    y: 0,
+                    width: 1920,
+                    height: 1080,
+                }],
+                properties: vec![properties],
+            }),
+        );
+        let mut bytes = BytesMut::from(encode_frame(&frame).unwrap().as_ref());
+        assert_eq!(decode_frame(&mut bytes).unwrap(), Some(frame));
+    }
     #[test]
     fn round_trips_keyboard_and_monitor_settings() {
         for control in [
