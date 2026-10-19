@@ -78,8 +78,12 @@ package files and passed isolated rendering/editor-popup checks. The user-approv
 was published on 2026-10-19. All three remote asset SHA-256 digests match the local
 signed release, and anonymous access was verified. Source remains private.
 This preview is available for manual download and excluded from stable automatic
-updates; no stable release is published. Real two-version installer/portable
-upgrade and broader R12 live acceptance remain pending.
+updates. Following explicit user approval, [0.1.2 build 2](https://github.com/ashkanr65/AetherDesk/releases/tag/v0.1.2-build2)
+was published as a normal release for the update test on 2026-10-19. The anonymous
+latest-release feed returns build 2, and the user's real build 1 successfully
+detected it with Check now, displayed its notes and offered Download update.
+No download, installation or restart was performed. Real two-version
+installer/portable upgrade and broader R12 live acceptance remain pending.
 
 ## Build snapshot repair
 

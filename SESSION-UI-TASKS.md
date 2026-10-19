@@ -529,11 +529,13 @@ snapshot identified in AI1; no application rebuild is needed for this metadata f
 | --- | --- | --- |
 | AJ1 | Prepare a newer release for the user's upgrade test | Complete: release.json is 0.1.2 build 2; release notes distinguish prior build 1 evidence from pending build 2 validation. No application code changed. |
 | AJ2 | Build and verify build 2 | Passed: all seven user-run stages in 1:08:28; built source fingerprint 47984201d8a52be22bc85f1dc16b555b60fd07f29b415c7a4ea928172d055972 matched commit 4b9c3a4. Windows/Linux regression reports and bundled X11 passed. Existing executable passed isolated dark/light/editor checks. Signed installer/flat portable ZIP/metadata prepared and verified; all 7,158 ZIP entries match the signed inventory. All three uploaded GitHub asset SHA-256 digests and lengths match local files. Draft release 417338992 ready for review; source private. No compilation performed by the assistant. |
-| AJ3 | Exercise real update detection and upgrade | Remaining: keep build 1 open/installed. Drafts/previews do not enter its stable feed; explicitly publish a verified normal release when ready, then test Check now, download, restart and data preservation. A normal release is public to all eligible users. |
+| AJ3 | Publish build 2 and test real update detection | Passed: user approved normal publication; v0.1.2-build2 published publicly on 2026-10-19. Anonymous latest-release feed returns build 2. Reopened the user's existing build 1 (it had been closed), clicked Settings → Updates → Check now and observed the available update, build 2 notes and Download update button. Source remains private. |
+| AJ4 | Test download, replacement, restart and preservation | Remaining: no download, installation or restart performed. Updates panel left open in build 1. Real portable/installer upgrades, recovery and preservation of settings/credentials/chats still need acceptance. |
 
-Build 2 draft: https://github.com/ashkanr65/AetherDesk/releases/tag/untagged-a39e9f592a9da4bf2e2d
+Build 2 release: https://github.com/ashkanr65/AetherDesk/releases/tag/v0.1.2-build2
 Signed files: AetherDesk-Rust-output/releases/0.1.2-build2-20261019-153901.
 Acceptance evidence: AetherDesk-Rust-output/LATEST-RELEASE-CHECK.txt points to
-the isolated UI check and signed ZIP inventory report. Build 1 remains running
-from the user's Documents folder. Nothing has been published or installed for
-build 2, and no existing connection was interrupted.
+the isolated UI check, signed ZIP inventory and live-update-detection.json reports.
+Build 1 is running from the user's Documents folder. Build 2 is now public and
+available to eligible stable-channel users; nothing was installed during this
+detection test, and no connection was interrupted.
