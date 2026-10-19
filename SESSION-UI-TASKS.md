@@ -483,3 +483,17 @@ build were run. Visual acceptance remains after rebuilding/restarting the client
 The user authorized GitHub setup/public downloads and source push. They retained
 all application compilation/building. No native compiler or application build
 has been run here. See UPDATES.md for release/bootstrap/recovery requirements.
+
+AH verification: all native UI Rust files passed formatting/parser checks;
+migration/reference and registered-regression source checks passed; the full
+offline recipe passed with Cargo mocked, including frozen-snapshot edit detection.
+Three publisher fixtures passed, covering signed inventory/hash verification,
+tampered packages and the production PowerShell extractor's safe/unsafe ZIP cases.
+The manual-only workflow parsed successfully and the changed-source credential
+scan found no key material. Native compiler, actual installer/portable upgrades,
+multi-instance locking and restart recovery remain pending. No binary is published.
+
+The user's later instruction requires all source pushes on main. The temporary
+local review branch was never pushed; its commits will be transferred to main and
+the local branch removed. Legacy Flutter/agent workflows are now manual-only, as
+is the new Rust release workflow, so this main push will not start compilation.

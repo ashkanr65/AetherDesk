@@ -1,13 +1,9 @@
-name: Build AetherDesk for Windows
+name: Legacy Flutter Windows build (manual only)
 
 permissions:
   contents: read
 
 on:
-  push:
-    branches: [ main, master, 'codex/**' ]
-  pull_request:
-    branches: [ main, master, 'codex/**' ]
   workflow_dispatch:
 
 jobs:
@@ -37,7 +33,7 @@ jobs:
       signing_enabled: ${{ steps.signing.outputs.enabled }}
       portable_artifact: ${{ steps.signing.outputs.portable_artifact }}
       release_version: ${{ steps.toolchain.outputs.version }}
-    
+
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
@@ -64,20 +60,20 @@ jobs:
 
     - name: Verify shared build recipe and process exit status
       run: ./tools/build-kit/Test-Recipe-Exit.ps1
-      
+
     - name: Setup Rust
       uses: dtolnay/rust-toolchain@stable
       with:
         toolchain: stable
         target: x86_64-pc-windows-msvc
-        
+
     - name: Setup Flutter
       uses: subosito/flutter-action@v2
       with:
         flutter-version: ${{ steps.toolchain.outputs.flutter }}
         channel: 'stable'
         cache: true
-        
+
     - name: Enable Windows desktop support
       run: flutter config --enable-windows-desktop
 
@@ -94,10 +90,10 @@ jobs:
 
     - name: Generate Flutter Windows runner
       run: ./tools/build-kit/Windows-Stages.ps1 -Stage PrepareRunner
-        
+
     - name: Build Flutter Windows App
       run: ./tools/build-kit/Windows-Stages.ps1 -Stage BuildUI
-        
+
     - name: Install pinned GStreamer decoder SDK
       shell: pwsh
       run: |
@@ -115,7 +111,7 @@ jobs:
 
     - name: Test Rust SSH, display, streaming, and FFI boundaries
       run: ./tools/build-kit/Windows-Stages.ps1 -Stage TestCore
-      
+
     - name: Build Rust FFI library (Release)
       run: ./tools/build-kit/Windows-Stages.ps1 -Stage BuildCore
 
@@ -195,7 +191,7 @@ jobs:
         -Path release_package
         -CertificateBase64 $env:WINDOWS_SIGNING_CERTIFICATE
         -CertificatePassword $env:WINDOWS_SIGNING_PASSWORD
-        
+
     - name: Verify AI runtime integrity after signing
       run: python -X utf8 tools/build-kit/Verify-Assistant.py --package release_package --files-only
 
@@ -211,7 +207,7 @@ jobs:
     needs: build-windows
     if: github.event_name != 'pull_request'
     runs-on: windows-2022
-    
+
     steps:
     - name: Checkout release scripts
       uses: actions/checkout@v4
@@ -221,7 +217,7 @@ jobs:
       with:
         name: ${{ needs.build-windows.outputs.portable_artifact }}
         path: installer_files/
-        
+
     - name: Verify AI runtime files for installer
       run: python -X utf8 tools/build-kit/Verify-Assistant.py --package installer_files --files-only
 
@@ -240,20 +236,20 @@ jobs:
         OutputBaseFilename=AetherDesk-$($releaseVersion.version)-Setup
         SetupIconFile=$env:GITHUB_WORKSPACE\ui\flutter\ad_remote_desktop\assets\aetherdesk.ico
         UninstallDisplayIcon={app}\aetherdesk.exe
-        
+
         [Files]
         Source: "installer_files\*"; DestDir: "{app}"; Flags: recursesubdirs createallsubdirs
-        
+
         [Icons]
         Name: "{group}\AetherDesk"; Filename: "{app}\aetherdesk.exe"
 
         #include "$env:GITHUB_WORKSPACE\tools\build-kit\Editor-Runtime.iss"
         "@ | Out-File -FilePath "installer.iss" -Encoding ASCII
-        
+
     - name: Install Inno Setup
       run: |
         choco install innosetup -y
-        
+
     - name: Build Installer
       run: |
         & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer.iss
@@ -268,7 +264,7 @@ jobs:
         -Path output
         -CertificateBase64 $env:WINDOWS_SIGNING_CERTIFICATE
         -CertificatePassword $env:WINDOWS_SIGNING_PASSWORD
-        
+
     - name: Upload Installer Artifact
       uses: actions/upload-artifact@v4
       with:

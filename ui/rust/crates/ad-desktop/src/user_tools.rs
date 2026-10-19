@@ -273,7 +273,9 @@ impl Default for Panel {
 }
 impl Panel {
     pub fn is_busy(&self) -> bool {
-        self.result.as_ref().is_some_and(|receiver| !receiver.is_closed())
+        self.result
+            .as_ref()
+            .is_some_and(|receiver| !receiver.is_closed())
     }
     pub fn stop(&self) {
         self.cancel.cancel();

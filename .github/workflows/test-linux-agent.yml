@@ -4,10 +4,6 @@ permissions:
   contents: read
 
 on:
-  push:
-    branches: [ main, master, 'codex/**' ]
-  pull_request:
-    branches: [ main, master, 'codex/**' ]
   workflow_dispatch:
 
 jobs:
