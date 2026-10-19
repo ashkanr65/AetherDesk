@@ -514,7 +514,7 @@ case and remains awaiting the user's compiler/native test stage.
 | --- | --- | --- |
 | AI1 | Verify the user's completed build | Passed: all seven stages, 39:55 total. Windows/Linux compiler results and bundled X11 passed. All four new updater regressions passed. Built source fingerprint 1f136a5e4d3b026bc4e03c7e8b1445be183fd52e15a0b4ab03c4eb2fe06fd7ce matches the current runtime source. |
 | AI2 | Check the portable distributable | Passed: all 7,158 extracted files match the verified package. Existing executable passed isolated dark/light rendering and popup-editor lifecycle checks without SDK PATH. No application compilation, provider call or host connection performed here. |
-| AI3 | Prepare and stage signed assets | In progress: installer, flat portable ZIP and signed update metadata for 0.1.2 build 1. Draft/preview only until explicit publication; source remains private. |
+| AI3 | Publish signed preview assets | Complete: user-approved 0.1.2 build 1 preview published at https://github.com/ashkanr65/AetherDesk/releases/tag/v0.1.2-build1 on 2026-10-19. Installer, flat portable ZIP and signed metadata uploaded; all three GitHub SHA-256 digests match local assets. Anonymous access verified. Source remains private; preview excluded from stable automatic updates. |
 | AI4 | Stable updater/release acceptance | Remaining: real two-version upgrade, current installer upgrade/recovery, and broader live R12 checks. Windows Authenticode signing remains unconfigured. Build success is not a claim of full replacement equivalence. |
 
 Publisher preparation found 32 dependency licence files with reproducible dates
