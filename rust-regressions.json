@@ -5099,6 +5099,12 @@
           "package": "ad-desktop",
           "source": "ui/rust/crates/ad-desktop/src/update_apply.rs",
           "test": "interrupted_portable_replacement_can_restore_previous_files_without_touching_user_data"
+        },
+        {
+          "phase": "windows",
+          "package": "ad-desktop",
+          "source": "ui/rust/crates/ad-desktop/src/updates.rs",
+          "test": "first_updated_launch_preserves_the_helpers_recovery_files"
         }
       ],
       "liveAcceptance": "Build kit packages Windows/Linux regression reports and matching catalog hashes, plus a required passing bundled-X11 result, with installer/ZIP runtimes. Offline artifact/failure fixtures pass; real packaging and clean-machine checks remain R12."

@@ -502,3 +502,8 @@ Private main now contains the complete pending Rust source plus updater work.
 The public repository contains only its download README, with no released binary
 or application source. Initial update checks treat an existing public repository
 with no published releases as no update, rather than an authentication failure.
+
+First-launch review also preserves the helper's plan/journal/backup until health
+acknowledgement; cleanup does not retire a stage merely because the new version
+has already started. A dedicated filesystem regression is registered for this
+case and remains awaiting the user's compiler/native test stage.

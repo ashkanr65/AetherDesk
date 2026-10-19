@@ -279,6 +279,12 @@ fn clean_completed() {
         }
     }
 }
+fn retire_obsolete_download(stage: &std::path::Path) {
+    // Installation stages belong to the helper until health acknowledgement.
+    if !stage.join("plan.json").exists() {
+        let _ = discard_stage(stage);
+    }
+}
 fn restore(stage: PathBuf, highest: [u64; 4]) -> Result<Option<(Candidate, PathBuf)>, String> {
     let root = cache()?
         .canonicalize()
@@ -302,7 +308,10 @@ fn restore(stage: PathBuf, highest: [u64; 4]) -> Result<Option<(Candidate, PathB
     )?;
     let version = metadata::version(&manifest.version, manifest.build)?;
     if version <= metadata::current()? {
-        let _ = discard_stage(&stage);
+        // On the first updated launch the old helper still needs its plan,
+        // journal and backup until it receives our health confirmation.
+        // Completed installation stages are removed by delayed maintenance.
+        retire_obsolete_download(&stage);
         return Ok(None);
     }
     if version < highest {
@@ -658,6 +667,21 @@ impl Updates {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn first_updated_launch_preserves_the_helpers_recovery_files() {
+        let stage = tempfile::tempdir().unwrap();
+        for name in ["plan.json", "rollback.json", "previous-executable"] {
+            std::fs::write(stage.path().join(name), b"needed by the running helper").unwrap();
+        }
+        retire_obsolete_download(stage.path());
+        for name in ["plan.json", "rollback.json", "previous-executable"] {
+            assert_eq!(
+                std::fs::read(stage.path().join(name)).unwrap(),
+                b"needed by the running helper"
+            );
+        }
+        assert!(!stage.path().join("complete").exists());
+    }
     #[test]
     fn update_defaults_preserve_consent_version_floor_and_exclude_credentials() {
         let dir = tempfile::tempdir().unwrap();
