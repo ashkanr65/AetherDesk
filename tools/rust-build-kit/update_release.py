@@ -169,7 +169,10 @@ def prepare(package, output, installer, notes, config_path=ROOT / "update-config
         raise ValueError("Incomplete native application package")
     output.mkdir(parents=True, exist_ok=True)
     zip_path = output / f"AetherDesk-{version}-build{build}-windows-x64.zip"
-    with zipfile.ZipFile(zip_path, "x", zipfile.ZIP_DEFLATED, compresslevel=1) as archive:
+    # Cargo preserves reproducible licence timestamps dating back to 1970.
+    # ZIP starts in 1980: clamp archive metadata, never alter package bytes.
+    with zipfile.ZipFile(zip_path, "x", zipfile.ZIP_DEFLATED, compresslevel=1,
+                         strict_timestamps=False) as archive:
         for file in files:
             archive.write(package / file["path"], file["path"])
     installer_asset = None

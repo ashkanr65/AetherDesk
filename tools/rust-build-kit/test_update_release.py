@@ -46,6 +46,7 @@ class UpdateReleaseTests(unittest.TestCase):
             (package / "verification").mkdir(parents=True)
             (package / "agent/linux-x86_64").mkdir(parents=True)
             (package / "AetherDesk.exe").write_bytes(b"test fixture only")
+            os.utime(package / "AetherDesk.exe", (1, 1))
             (package / "release.json").write_text(json.dumps({"version": "1.2.3", "build": 4}))
             (package / "build-info.json").write_text(json.dumps({"version": "1.2.3", "build": 4, "runtime": "native-rust"}))
             (package / "verification/regression-catalog.json").write_text("{}")
@@ -67,6 +68,7 @@ class UpdateReleaseTests(unittest.TestCase):
             with zipfile.ZipFile(root / "out" / manifest["portable"]["name"]) as archive:
                 self.assertEqual(set(archive.namelist()), {f["path"] for f in manifest["files"]})
                 self.assertIn("AetherDesk.exe", archive.namelist())
+                self.assertEqual(archive.getinfo("AetherDesk.exe").date_time, (1980, 1, 1, 0, 0, 0))
                 for file in manifest["files"]:
                     self.assertEqual(release.hashlib.sha256(archive.read(file["path"])).hexdigest(), file["sha256"])
             with patch.object(release, "load_key", return_value=Ed25519PrivateKey.generate()):

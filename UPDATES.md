@@ -71,8 +71,11 @@ uses PyNaCl. Neither is an end-user application dependency.
    before publication. Enable release immutability in public repository Settings
    → Releases if desired, before publishing the first release.
 
-No initial binary/update release has been published. Current version remains
-0.1.2 build 1. R12/compiler/live upgrade acceptance is still pending.
+The 2026-10-19 user build of 0.1.2 build 1 passed all seven stages, including
+compiler regressions and bundled X11. The portable archive matched all 7,158
+package files and passed isolated rendering/editor-popup checks. An initial
+signed preview draft is being prepared; no stable release is published. Real
+two-version installer/portable upgrade and broader R12 live acceptance remain pending.
 
 ## Build snapshot repair
 
