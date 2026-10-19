@@ -1,5 +1,9 @@
 # AetherDesk Rust build kit
 
+For the complete independent signing, publishing and update-test procedure,
+open [AetherDesk build and release guide](../../RELEASE-GUIDE.html) in a browser.
+A copy is included beside the beginner kit launchers as `RELEASE-GUIDE.html`.
+
 This kit builds the native Rust client, including the Windows UI and
 bundled Linux agent, X11 and video runtimes. It is not yet feature-equivalent to
 the original application; see `RUST-FEATURE-PARITY.md` in the source or package.

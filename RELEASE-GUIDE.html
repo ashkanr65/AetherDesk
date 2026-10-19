@@ -1,0 +1,308 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>AetherDesk build and release guide</title>
+<style>
+:root{color-scheme:light;--ink:#272932;--muted:#5b6070;--line:#dcdde4;--accent:#654862;--paper:#fff;--code:#f3f3f7}
+*{box-sizing:border-box}body{margin:0;background:#f1eef2;color:var(--ink);font:16px/1.6 "Segoe UI",Arial,sans-serif}main{max-width:1000px;margin:28px auto;background:var(--paper);padding:44px 52px;border:1px solid var(--line);border-radius:14px}h1{font-size:34px;line-height:1.2;margin:8px 0 18px}h2{font-size:24px;line-height:1.3;margin:40px 0 12px}h3{font-size:18px;margin:22px 0 8px}p{margin:10px 0}a{color:var(--accent)}.eyebrow,.meta{color:var(--muted);font-size:14px}.lead{font-size:18px}.notice{background:#f5eff5;border-left:4px solid var(--accent);padding:14px 18px;margin:20px 0}.success{background:#eef6f1;border-left:4px solid #4e7960;padding:12px 18px}nav{padding:18px 24px;background:#faf9fb;border:1px solid var(--line);border-radius:8px}nav ol{columns:2;column-gap:38px;margin:0;padding-left:22px}li{padding:3px 0}table{width:100%;border-collapse:collapse;margin:16px 0;font-size:14px}th,td{border:1px solid var(--line);padding:10px 12px;text-align:left;vertical-align:top}th{background:#eeeaf0}.snippet{position:relative;margin:14px 0 20px;border:1px solid var(--line);border-radius:8px;overflow:hidden}.snippet-label{padding:7px 14px;background:#eae7ed;font-size:13px;font-weight:600;min-height:38px;padding-right:100px}pre{margin:0;padding:15px;background:var(--code);overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;line-height:1.5;font-size:13px;tab-size:4}code{font-family:Consolas,"Cascadia Mono",monospace}p code,li code,td code{background:#f3f1f5;padding:1px 4px;border-radius:3px;overflow-wrap:anywhere}.copy{position:absolute;top:5px;right:8px;border:1px solid #b3a8b8;background:#fff;color:var(--ink);border-radius:5px;padding:4px 12px;cursor:pointer}.checklist{list-style:none;padding-left:0}.checklist li::before{content:"□ ";font-weight:600;color:var(--accent)}.small{font-size:14px;color:var(--muted)}.path{overflow-wrap:anywhere}details{border:1px solid var(--line);border-radius:7px;padding:12px 16px;margin:16px 0}summary{cursor:pointer;font-weight:600}footer{border-top:1px solid var(--line);margin-top:40px;padding-top:18px;color:var(--muted);font-size:13px}.print{float:right;border:1px solid var(--line);border-radius:5px;background:#fff;padding:7px 12px;cursor:pointer}@media(max-width:700px){main{margin:0;padding:24px 18px;border-radius:0}nav ol{columns:1}h1{font-size:28px}table{font-size:13px}th,td{padding:7px}}@media print{body{background:#fff}main{margin:0;max-width:none;padding:0;border:0}button{display:none}pre{font-size:10px}.snippet,table tr,.notice{break-inside:avoid}h2,h3{break-after:avoid}nav{display:none}a{color:inherit}h2{margin-top:24px}}
+</style>
+</head>
+<body><main>
+<button class="print" onclick="window.print()">Print or save as PDF</button>
+<div class="eyebrow">AETHERDESK • WINDOWS RELEASE OPERATIONS</div>
+<h1>AetherDesk build and release guide</h1>
+<p class="lead">Prepare, sign, upload, publish and test an AetherDesk update yourself, using the existing Rust build kit and protected signing key.</p>
+<p class="meta">Prepared 19 October 2026. Local paths match this PC. The next-release example is <strong>0.1.2 build 3</strong>; build 2 is already published. Change the example for each future release.</p>
+<div class="notice"><strong>Publishing a normal release enables updates for all eligible users.</strong> Drafts and previews do not appear in the application's stable update channel. Increasing a version in a text file is not enough: the new executable must be built, packaged and signed.</div>
+<nav aria-label="Guide contents"><ol>
+<li><a href="#setup">Set up the publisher computer</a></li><li><a href="#version">Prepare the next version</a></li>
+<li><a href="#build">Build the application</a></li><li><a href="#verify">Check the completed build</a></li>
+<li><a href="#sign">Prepare signed release files</a></li><li><a href="#inventory">Verify the portable contents</a></li>
+<li><a href="#draft">Upload a draft</a></li><li><a href="#remote">Verify uploaded files</a></li>
+<li><a href="#publish">Publish on GitHub</a></li><li><a href="#test">Test the actual update</a></li>
+<li><a href="#trouble">Troubleshooting and recovery</a></li><li><a href="#finish">Keep the release records</a></li>
+</ol></nav>
+
+<h2 id="setup">1 Set up the publisher computer</h2>
+<p>Use PowerShell on your normal Windows account, the one that holds the existing signing key. Open PowerShell directly; paste one command box at a time. These boxes are instructions only: opening this guide does not run commands.</p>
+<table><thead><tr><th>Purpose</th><th>Location</th></tr></thead><tbody>
+<tr><td>Private source and scripts</td><td class="path">C:\Users\rezae\Documents\Temp\Aether\AetherDesk-Rust</td></tr>
+<tr><td>Build kit launchers</td><td class="path">C:\Users\rezae\Documents\Temp\Aether\AetherDesk-Rust-Beginner-Build-Kit</td></tr>
+<tr><td>Generated packages and reports</td><td class="path">C:\Users\rezae\Documents\Temp\Aether\AetherDesk-Rust-output</td></tr>
+<tr><td>Private source on GitHub</td><td><a href="https://github.com/ashkanr65/AetherDesk-Rust">ashkanr65/AetherDesk-Rust</a> • keep private • use main</td></tr>
+<tr><td>Public downloads on GitHub</td><td><a href="https://github.com/ashkanr65/AetherDesk/releases">ashkanr65/AetherDesk</a> • release assets and public documentation only</td></tr>
+</tbody></table>
+<p>The build prerequisites remain those in <strong>START-HERE.md</strong>. Publishing also uses Git with Git Credential Manager, Python and its <code>cryptography</code> package. These are publisher tools; end users do not install them.</p>
+<div class="snippet"><div class="snippet-label">PowerShell • initialize every new terminal session</div><pre><code data-language="powershell">$ErrorActionPreference = 'Stop'
+$Source = 'C:\Users\rezae\Documents\Temp\Aether\AetherDesk-Rust'
+$Kit = 'C:\Users\rezae\Documents\Temp\Aether\AetherDesk-Rust-Beginner-Build-Kit'
+$Output = 'C:\Users\rezae\Documents\Temp\Aether\AetherDesk-Rust-output'
+$PublisherPython = 'C:\Users\rezae\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe'
+Set-Location -LiteralPath $Source
+if (!(Test-Path -LiteralPath $PublisherPython -PathType Leaf)) {
+    throw 'Publisher Python missing. Use the independent Python setup below.'
+}
+&amp; $PublisherPython -c "import cryptography; print('Publisher Python is ready')"
+if ($LASTEXITCODE -ne 0) { throw 'Publisher Python needs cryptography' }
+git --version
+if ($LASTEXITCODE -ne 0) { throw 'Git is unavailable' }
+git branch --show-current
+git remote -v
+git status --short</code></pre></div>
+<p>Expected branch: <strong>main</strong>. Expected source remote: <code>ashkanr65/AetherDesk-Rust</code>. Inspect any listed changes before proceeding. Do not reset or discard changes merely to obtain a clean status. For GitHub access, use your existing Git Credential Manager sign-in; do not paste a token into scripts.</p>
+<p><strong>Keep the same PowerShell window open through the release steps.</strong> Its path and package variables belong to that session. If you close it, repeat section 1 and section 4. To resume an already prepared release, read <code>Output\LATEST-SIGNED-RELEASE.txt</code> into <code>$Signed</code> using <code>$Signed = (Get-Content -LiteralPath (Join-Path $Output 'LATEST-SIGNED-RELEASE.txt') -Raw).Trim()</code>; then repeat verification before uploading. Do not run prepare again against a nonempty signed-output folder.</p>
+<details><summary>Optional independent Python setup without the Codex runtime</summary>
+<p>Install Python 3 from <a href="https://www.python.org/downloads/windows/">python.org</a> with its Python launcher if you do not already have it. Then create a publisher environment outside the source and build-output folders. Run this setup once; repeat only the final assignment in future PowerShell sessions.</p>
+<div class="snippet"><div class="snippet-label">PowerShell • optional one-time environment</div><pre><code data-language="powershell">$PublisherEnvironment = Join-Path $env:LOCALAPPDATA 'AetherDesk-Publisher'
+py -3 -m venv $PublisherEnvironment
+if ($LASTEXITCODE -ne 0) { throw 'Python environment creation failed' }
+$PublisherPython = Join-Path $PublisherEnvironment 'Scripts\python.exe'
+&amp; $PublisherPython -m pip install cryptography
+if ($LASTEXITCODE -ne 0) { throw 'Publisher dependency installation failed' }
+&amp; $PublisherPython -c "import cryptography; print('Publisher Python is ready')"
+if ($LASTEXITCODE -ne 0) { throw 'Publisher Python check failed' }</code></pre></div>
+<p>This does not transfer the signing key. A different PC or Windows account still needs authorized access to the existing protected key. You can also use the private repository's manual signing workflow; its configured Actions secret is separate from this local Python environment.</p>
+</details>
+<div class="notice"><strong>Keep the existing signing key.</strong> It is protected in Windows Credential Manager under <code>AetherDesk-Rust/provider/updates-release-signing</code>. The private repository also has the encrypted <code>UPDATE_SIGNING_KEY</code> Actions secret. Do not run key initialization as a routine release step, change the pinned public key, export secrets into the source tree, or upload keys. Replacing the key prevents existing clients from trusting updates. Arrange an approved key backup before replacing this PC.</div>
+
+<h2 id="version">2 Prepare the next version</h2>
+<p>Finish and commit feature changes first. Pull the current private main only when your working tree is clean. All source changes and pushes stay on main.</p>
+<div class="snippet"><div class="snippet-label">PowerShell • synchronize clean source</div><pre><code data-language="powershell">Set-Location -LiteralPath $Source
+if ((git branch --show-current) -ne 'main') { throw 'Switch to main first' }
+if (@(git status --porcelain).Count) { throw 'Review and commit current changes first' }
+git pull --ff-only origin main
+if ($LASTEXITCODE -ne 0) { throw 'Source synchronization failed' }</code></pre></div>
+<p>Use a unique version/build pair for every publication. Keep the version for a small rebuild and increase the build number. For a feature release, choose a new numeric version and a positive build number. Numeric versions such as <code>0.1.3</code> are supported; the previous <code>0.0.1.AI-R</code> naming idea is not the current version format. Never reuse a published pair or relabel an old executable.</p>
+<div class="snippet"><div class="snippet-label">PowerShell • example next release, edit these two values</div><pre><code data-language="powershell">$ReleaseVersion = '0.1.2'
+$ReleaseBuild = 3
+@{ version = $ReleaseVersion; build = $ReleaseBuild } |
+    ConvertTo-Json | Set-Content -LiteralPath (Join-Path $Source 'release.json') -Encoding UTF8
+&amp; (Join-Path $Source 'tools\build-kit\Release-Version.ps1') -Repository $Source
+notepad.exe (Join-Path $Source 'RELEASE-NOTES.md')</code></pre></div>
+<p>Edit and save the notes in Notepad, then close it. Describe the changes and known limitations. Do not copy old test results as proof that the new build passed. The kit synchronizes native package versions in its snapshot; do not edit Cargo lockfiles by hand for this routine step.</p>
+<div class="snippet"><div class="snippet-label">PowerShell • review, commit and push before building</div><pre><code data-language="powershell">git diff -- release.json RELEASE-NOTES.md
+git -c core.autocrlf=false add -- release.json RELEASE-NOTES.md
+if ($LASTEXITCODE -ne 0) { throw 'Staging failed' }
+git -c core.autocrlf=false commit -m "Prepare AetherDesk $ReleaseVersion build $ReleaseBuild"
+if ($LASTEXITCODE -ne 0) { throw 'Commit failed' }
+git push origin main
+if ($LASTEXITCODE -ne 0) { throw 'Private main push failed' }
+if (@(git status --porcelain).Count) { throw 'Working tree is not clean' }</code></pre></div>
+
+<h2 id="build">3 Build the application</h2>
+<p><strong>Before starting, preserve an older working installation outside the output folder.</strong> Keep its installer or portable package for recovery and upgrade testing. The full-build launchers remove old packages, logs and reports. Do not run the older copy from a folder that the kit cleans.</p>
+<p>In the build kit folder, double-click one launcher:</p>
+<table><thead><tr><th>Launcher</th><th>Use</th></tr></thead><tbody>
+<tr><td><code>Build-Everything.cmd</code></td><td>Installer and portable ZIP; frees build caches after success.</td></tr>
+<tr><td><code>Build-Faster.cmd</code></td><td>Installer and portable ZIP; keeps caches for faster later builds, using more disk space.</td></tr>
+<tr><td><code>Build-Portable-Only.cmd</code> or <code>Build-Portable-Faster.cmd</code></td><td>Portable only. The main release procedure below expects both distributions; use a full build when publishing both.</td></tr>
+</tbody></table>
+<p>Wait for every required stage to pass. If a stage fails, stop and inspect the newest log; do not upload an older output by mistake. Timings are saved in <code>reports\build-timing.json</code>. Do not change runtime source during release preparation: snapshot builds exclude later checkout changes.</p>
+
+<h2 id="verify">4 Check the completed build</h2>
+<p>If you opened a new PowerShell window, repeat section 1 to restore the path variables. The following checks read files and validate packaging; they do not compile the application.</p>
+<div class="snippet"><div class="snippet-label">PowerShell • validate the full build and package</div><pre><code data-language="powershell">Set-Location -LiteralPath $Source
+$timing = Get-Content -LiteralPath (Join-Path $Output 'reports\build-timing.json') -Raw | ConvertFrom-Json
+if ($timing.status -ne 'Passed' -or $timing.steps.Count -ne 7 -or
+    @($timing.steps | Where-Object { $_.status -ne 'Passed' }).Count) {
+    throw 'A complete seven-stage build has not passed'
+}
+$Package = (Get-Content -LiteralPath (Join-Path $Output 'LATEST-FOLDER.txt') -Raw).Trim()
+$Installer = (Get-Content -LiteralPath (Join-Path $Output 'LATEST-INSTALLER.txt') -Raw).Trim()
+if (!(Test-Path -LiteralPath $Installer -PathType Leaf)) { throw 'Installer is missing' }
+$built = Get-Content -LiteralPath (Join-Path $Package 'release.json') -Raw | ConvertFrom-Json
+$planned = Get-Content -LiteralPath (Join-Path $Source 'release.json') -Raw | ConvertFrom-Json
+if ($built.version -ne $planned.version -or $built.build -ne $planned.build) {
+    throw 'The package does not match the planned release'
+}
+. (Join-Path $Source 'tools\rust-build-kit\Build-Common.ps1')
+Verify-RustPackage $Package
+$info = Get-Content -LiteralPath (Join-Path $Package 'build-info.json') -Raw | ConvertFrom-Json
+if ($info.fingerprint -ne (Get-SourceFingerprint)) {
+    throw 'Source changed since this package was built. Review before releasing.'
+}
+Write-Host "Verified $($built.version) build $($built.build); build time $($timing.elapsed)"
+Get-Content -LiteralPath (Join-Path $Package 'verification\windows-regressions.json') -TotalCount 14
+Get-Content -LiteralPath (Join-Path $Package 'agent\linux-x86_64\regression-results.json') -TotalCount 14
+Get-Content -LiteralPath (Join-Path $Package 'verification\x11-runtime.json')</code></pre></div>
+<p>Check <code>compilerTestsPassed: true</code>, matching catalog hashes and successful bundled X11 evidence. The reports deliberately keep live acceptance and complete replacement readiness separate. A compiler pass does not prove every live feature works.</p>
+<p>Test the new package directly before release: launch <code>AetherDesk.exe</code> from its complete folder, check both themes, SSH/SFTP/X11/desktop, keyboard and mouse, editor opening/closing, AI and your changed features. Finish these tests and close the new copy; keep the old copy available for the real upgrade. Do not run just the EXE after copying it out of its runtime folder.</p>
+
+<h2 id="sign">5 Prepare signed release files</h2>
+<p>Use the protected key already configured on this Windows account. The publisher creates a flat ZIP for the updater, copies the installer under the public filename and signs metadata containing package hashes and the complete file inventory. Use these newly prepared files, rather than uploading the kit's original outer-folder ZIP.</p>
+<div class="snippet"><div class="snippet-label">PowerShell • prepare and verify the signed release</div><pre><code data-language="powershell">$release = Get-Content -LiteralPath (Join-Path $Package 'release.json') -Raw | ConvertFrom-Json
+$Tag = 'v' + $release.version + '-build' + $release.build
+$Signed = Join-Path $Output ('releases\' + $release.version + '-build' + $release.build + '-' + (Get-Date -Format 'yyyyMMdd-HHmmss'))
+&amp; $PublisherPython (Join-Path $Source 'tools\rust-build-kit\update_release.py') prepare --package $Package --installer $Installer --output $Signed --notes-file (Join-Path $Source 'RELEASE-NOTES.md')
+if ($LASTEXITCODE -ne 0) { throw 'Signed release preparation failed' }
+&amp; $PublisherPython (Join-Path $Source 'tools\rust-build-kit\update_release.py') verify --directory $Signed
+if ($LASTEXITCODE -ne 0) { throw 'Signed release verification failed' }
+Set-Content -LiteralPath (Join-Path $Output 'LATEST-SIGNED-RELEASE.txt') -Value $Signed -Encoding UTF8
+Get-ChildItem -LiteralPath $Signed -File | Select-Object Name,Length
+Write-Host "Release tag: $Tag"</code></pre></div>
+<p>Expected files: <code>AetherDesk-VERSION-buildN-Setup.exe</code>, <code>AetherDesk-VERSION-buildN-windows-x64.zip</code>, and <code>update.json</code>. Signing covers update metadata; it does not add Windows Authenticode publisher signing. Never modify a prepared ZIP, installer or metadata file. Reprepare and reverify if inputs change.</p>
+
+<h2 id="inventory">6 Verify the portable contents</h2>
+<p>This extra check reads every archive entry and compares its size and SHA-256 with the signed inventory. It does not extract a second full copy or install anything. Copy the complete box, including both PowerShell here-string markers.</p>
+<div class="snippet"><div class="snippet-label">PowerShell containing Python • verify every ZIP entry</div><pre><code data-language="powershell">@'
+import base64, hashlib, json, sys, zipfile
+from pathlib import Path
+folder = Path(sys.argv[1])
+envelope = json.loads((folder / 'update.json').read_text(encoding='utf-8-sig'))
+manifest = json.loads(base64.b64decode(envelope['manifest']))
+expected = {item['path']: item for item in manifest['files']}
+if len(expected) != len(manifest['files']):
+    raise SystemExit('Duplicate inventory entries')
+with zipfile.ZipFile(folder / manifest['portable']['name']) as archive:
+    entries = archive.infolist()
+    if len(entries) != len(expected) or {e.filename for e in entries} != set(expected):
+        raise SystemExit('ZIP inventory does not match')
+    for entry in entries:
+        item = expected[entry.filename]
+        digest = hashlib.sha256()
+        with archive.open(entry) as stream:
+            for chunk in iter(lambda: stream.read(1024 * 1024), b''):
+                digest.update(chunk)
+        if entry.file_size != item['bytes'] or digest.hexdigest() != item['sha256']:
+            raise SystemExit('Mismatch: ' + entry.filename)
+print('PASS: all', len(expected), 'portable files match the signed inventory')
+'@ | &amp; $PublisherPython - $Signed
+if ($LASTEXITCODE -ne 0) { throw 'Portable content verification failed' }</code></pre></div>
+
+<h2 id="draft">7 Upload a draft</h2>
+<p>The publishing script verifies signatures, asset hashes, a clean source checkout and the pushed private source commit. It checks that the source remains private and uploads only the named assets to the approved public downloads repository. It always creates a draft; it does not publish automatically.</p>
+<div class="snippet"><div class="snippet-label">PowerShell • create the normal-release draft</div><pre><code data-language="powershell">Set-Location -LiteralPath $Source
+if ((git branch --show-current) -ne 'main') { throw 'Expected main' }
+if (@(git status --porcelain).Count) { throw 'Review and commit outstanding source changes first' }
+git push origin main
+if ($LASTEXITCODE -ne 0) { throw 'Source push failed' }
+&amp; (Join-Path $Source 'tools\rust-build-kit\Publish-Update.ps1') -Directory $Signed -Python $PublisherPython</code></pre></div>
+<p>For a <strong>preview draft</strong>, add <code>-Preview</code> to the final command instead. Run only one variant for a release tag. Keep the draft URL printed by the script. The script throws on failure; do not ignore its error even if older terminal exit information appears successful.</p>
+<p>If an upload fails, the draft may contain partial files. Inspect it on GitHub before retrying; the script creates a new draft rather than resuming an existing one. For an unpublished incomplete draft, remove it through GitHub and retry the same signed files. Do not remove or replace a published release to reuse its version.</p>
+
+<h2 id="remote">8 Verify uploaded files</h2>
+<p>Run this after all uploads finish. It reads the existing Git Credential Manager sign-in without displaying the token, locates the intended release, compares all three remote digests and sizes with the local signed files, checks source privacy and records the result.</p>
+<div class="snippet"><div class="snippet-label">PowerShell • verify GitHub assets before publishing</div><pre><code data-language="powershell">$credentials = $null
+$credentialLine = $null
+$headers = @{}
+try {
+    $env:GIT_TERMINAL_PROMPT = '0'
+    $env:GCM_INTERACTIVE = 'never'
+    $credentials = "protocol=https`nhost=github.com`n`n" | git credential fill 2&gt;$null
+    if ($LASTEXITCODE -ne 0) { throw 'Git Credential Manager sign-in required' }
+    $credentialLine = $credentials | Where-Object { $_.StartsWith('password=') } | Select-Object -First 1
+    if (!$credentialLine) { throw 'GitHub credential unavailable' }
+    $headers = @{ Authorization = ('Bearer ' + $credentialLine.Substring(9)); Accept = 'application/vnd.github+json'; 'X-GitHub-Api-Version' = '2022-11-28' }
+    $sourceRepo = Invoke-RestMethod 'https://api.github.com/repos/ashkanr65/AetherDesk-Rust' -Headers $headers
+    if (!$sourceRepo.private) { throw 'The source repository must remain private' }
+    $envelope = Get-Content -LiteralPath (Join-Path $Signed 'update.json') -Raw | ConvertFrom-Json
+    $manifest = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($envelope.manifest)) | ConvertFrom-Json
+    $Tag = 'v' + $manifest.version + '-build' + $manifest.build
+    # Follow pagination so a repository with many old releases still works.
+    $matches = @()
+    for ($page = 1; ; $page++) {
+        $batch = @(Invoke-RestMethod ("https://api.github.com/repos/ashkanr65/AetherDesk/releases?per_page=100&amp;page=$page") -Headers $headers)
+        $matches += @($batch | Where-Object { $_.tag_name -eq $Tag })
+        if ($matches.Count -or $batch.Count -lt 100) { break }
+    }
+    if ($matches.Count -ne 1) { throw 'Expected exactly one release for this tag' }
+    $remote = $matches[0]
+    $names = @('update.json', $manifest.portable.name, $manifest.installer.name)
+    if ($remote.assets.Count -ne 3) { throw 'Expected exactly three uploaded files' }
+    foreach ($asset in $remote.assets) {
+        if ($asset.name -notin $names) { throw 'Unexpected uploaded filename' }
+        $local = Join-Path $Signed $asset.name
+        $expectedDigest = 'sha256:' + (Get-FileHash -LiteralPath $local -Algorithm SHA256).Hash.ToLowerInvariant()
+        if ($asset.state -ne 'uploaded' -or $asset.digest -ne $expectedDigest -or
+            $asset.size -ne (Get-Item -LiteralPath $local).Length) {
+            throw ('Uploaded file mismatch: ' + $asset.name)
+        }
+    }
+    [ordered]@{ tag = $Tag; url = $remote.html_url; draft = $remote.draft;
+        preview = $remote.prerelease; remoteHashesVerified = $true; sourcePrivate = $true } |
+        ConvertTo-Json | Set-Content -LiteralPath (Join-Path $Signed 'draft-verification.json') -Encoding UTF8
+    Write-Host "PASS: uploaded files match. Review $($remote.html_url)"
+} finally {
+    $headers.Clear()
+    $credentials = $null
+    $credentialLine = $null
+}</code></pre></div>
+<p>The additional local <code>draft-verification.json</code> is a report, not a release asset. Do not upload it. Never display or copy the credential variables or enable a transcript that captures manually printed secrets.</p>
+
+<h2 id="publish">9 Publish on GitHub</h2>
+<ol>
+<li>Open the draft URL while signed in to your GitHub account. If necessary, open <a href="https://github.com/ashkanr65/AetherDesk/releases">AetherDesk Releases</a> and edit the draft.</li>
+<li>Verify the version/build tag, title, notes and all three assets. The public repository must contain no private application source, credentials or personal test data.</li>
+<li>For a preview, keep <strong>This is a pre-release</strong> selected. It becomes a public manual download and is excluded from stable automatic updates.</li>
+<li>For a normal update, clear the pre-release option and select <strong>Set as latest release</strong>. Explicitly making it latest matters when increasing only the build number while keeping the same numeric version.</li>
+<li>Click <strong>Publish release</strong> only when you accept making the update available to all eligible users. There is currently no private rollout ring in AetherDesk. If it is only a draft, choose <strong>Save draft</strong>.</li>
+<li>Open the published page in a signed-out or private browser window. Check installer and portable download availability. GitHub's automatic “Source code” archives belong to the public downloads repository and are not the AetherDesk application source.</li>
+</ol>
+<p>For a normal release, verify that the public latest feed returns the exact tag:</p>
+<div class="snippet"><div class="snippet-label">PowerShell • anonymous stable-feed check</div><pre><code data-language="powershell">$latest = Invoke-RestMethod 'https://api.github.com/repos/ashkanr65/AetherDesk/releases/latest'
+if ($latest.tag_name -ne $Tag -or $latest.draft -or $latest.prerelease) {
+    throw 'The stable update feed is not serving the intended release'
+}
+$latest | Select-Object tag_name,html_url,published_at</code></pre></div>
+<p>Update the public README download links to the newly published assets. Keep its validation claims accurate. A draft or preview will not pass the normal-feed check above, by design. GitHub's <a href="https://docs.github.com/en/repositories/releasing-projects-on-github/managing-releases-in-a-repository">official release instructions</a> describe the publication controls.</p>
+
+<h2 id="test">10 Test the actual update</h2>
+<p>Use an older updater-enabled AetherDesk installation. Opening the newly built version cannot prove an upgrade from the older one. Back up your old package/installer and, with AetherDesk closed, its settings folder at <code>%APPDATA%\AetherDesk-Rust</code>. Folder backups do not export Windows Credential Manager secrets; keep the existing Windows account and protected credentials.</p>
+<h3>Detection and download</h3>
+<ol>
+<li>Open the older version. Select the top-right gear, then <strong>Updates</strong> and <strong>Check now</strong>.</li>
+<li>Confirm the offered release notes identify the newer build. The heading currently shows the numeric version without its build number, so two successive builds can both display “0.1.2”.</li>
+<li>Click <strong>Download update</strong>. Wait for verification and the ready-to-install state. A detection success alone does not prove download, installation or restart.</li>
+</ol>
+<h3>Replacement and restart</h3>
+<ol>
+<li>Finish transfers and assistant operations, save editor changes and disconnect active tabs normally. Close other AetherDesk instances using the same installation folder. The updater blocks installation while relevant work is active.</li>
+<li>Choose <strong>Update and restart</strong> and review its confirmation. Allow the helper and application to finish; do not start a second copy, move runtime files or remove the update stage during the operation.</li>
+<li>After restart, confirm the updated installation's <code>release.json</code> shows the new build. Compare the EXE hash with <code>AetherDesk.exe</code> in the new signed inventory if stronger confirmation is needed. The About version alone may not distinguish build 1 from build 2.</li>
+<li>Verify saved sessions, settings, credentials, AI services/history and working-file recovery. Reconnect and test keyboard, mouse, file transfers, desktop sizing and the features changed in this release.</li>
+<li>Repeat with a disposable portable installation and a disposable installer installation. Success for one distribution does not certify the other. This PC alone does not establish clean-machine compatibility.</li>
+</ol>
+<p>The installer path is normally <code>%LOCALAPPDATA%\Programs\AetherDesk-Rust</code>; portable updates replace the folder from which the old EXE was launched. Do not alter the old <code>release.json</code> to simulate an older build: the version and trust key are embedded into the executable.</p>
+<div class="success"><strong>Confirmed as of 19 October 2026:</strong> build 1 detected the published build 2 and showed its download button. The build/package checks and signed-file verification passed. Real download, replacement, restart, preservation and recovery testing were still pending when this guide was created.</div>
+
+<h2 id="trouble">11 Troubleshooting and recovery</h2>
+<table><thead><tr><th>What you see</th><th>What to do</th></tr></thead><tbody>
+<tr><td>No update offered</td><td>Check the old EXE's real build, the normal release's latest tag, its published rather than draft state, and the pre-release option. Both version and build are compared. A preview is intentionally ignored. Do not erase version-floor settings to force a downgrade.</td></tr>
+<tr><td>Signing key unavailable or mismatched</td><td>Use the original Windows account and protected key. Check the publisher Python path. Do not generate a replacement key. Recover the established key through an approved process or use the configured private manual workflow.</td></tr>
+<tr><td>Python or cryptography unavailable</td><td>Use section 1's publisher environment. This does not require changing the application's end-user dependencies.</td></tr>
+<tr><td>GitHub authorization fails</td><td>Confirm access to both repositories using your normal Git Credential Manager account. Complete sign-in yourself. The public downloads repository must stay public and source private. Do not put a token in the guide or source.</td></tr>
+<tr><td>Release output is not empty</td><td>Use a new timestamped signed-output folder. A failed prepare can leave a partial ZIP; never publish it.</td></tr>
+<tr><td>Tag exists or an upload failed</td><td>Inspect the unpublished draft and its files before retrying. Never overwrite a published version/build pair. Give corrected public packages a new build number.</td></tr>
+<tr><td>Source changed since the build</td><td>Check the actual diff and package provenance. The built snapshot does not contain later changes. Rebuild when application/build inputs changed; do not bypass the provenance check to release different code.</td></tr>
+<tr><td>Download or verification fails</td><td>Record the message, check connectivity, disk space and the three uploaded assets, then retry through Updates. Never edit signed metadata or disable verification.</td></tr>
+<tr><td>Update and restart is unavailable</td><td>Finish or save active work and close other instances from the same installation. Do not kill an active session merely to bypass the guard.</td></tr>
+<tr><td>Portable update is interrupted</td><td>Keep the updater's backup, journal, plan and logs. Portable replacement attempts restoration after copy or first-start failure; do not delete recovery files. If automatic recovery fails, close all instances and recover from the known-good complete portable package into a separate folder.</td></tr>
+<tr><td>Installer update or first start fails</td><td>Keep installer/helper logs and the previous installer. The installer uses its transaction mechanism, but automatic rollback after a failed first launch is not guaranteed. Use the retained package/installer for controlled recovery; do not delete user settings or protected credentials.</td></tr>
+<tr><td>A bad normal release is already public</td><td>Stop further rollout by changing its GitHub release state to a pre-release and verify what the latest normal feed serves. This does not revoke already downloaded files or roll back installed clients. Publish a corrected, higher build rather than replacing signed public assets.</td></tr>
+</tbody></table>
+
+<h2 id="finish">12 Keep the release records</h2>
+<ul class="checklist">
+<li>Retain the signed installer, flat ZIP, metadata, upload-verification report and release URL.</li>
+<li>Retain the source commit, package fingerprint, build timing, native regression reports and your live-test notes before the next build clears reports.</li>
+<li>Record detection, download, replacement, restart and preservation separately. Keep failed results and recovery limitations visible.</li>
+<li>Update <code>SESSION-UI-TASKS.md</code> with completed and remaining work; commit and push documentation to private main. Public release notes and README should describe only what actually passed.</li>
+<li>Keep at least one working older installation/package outside the generated output folder. Do not run blanket deletion commands on source, profiles, signing material or recovery folders.</li>
+</ul>
+<p>The release scripts normally need no edits between releases. Routine work is: <strong>version and notes → commit and push main → build → verify → sign → upload draft → verify remote files → publish → test the actual upgrade → record results.</strong></p>
+<footer>This guide follows the local tools/rust-build-kit implementation and the release process used on this PC. Additional references: <a href="https://docs.github.com/en/repositories/releasing-projects-on-github/managing-releases-in-a-repository">GitHub release management</a> and <a href="https://docs.python.org/3/library/venv.html">Python virtual environments</a>. Recheck commands if paths, scripts or the GitHub interface change. No build, publication, installation or credential operation is performed by opening this file.</footer>
+</main>
+<script>
+document.querySelectorAll('.snippet').forEach(function(box){
+  var button=document.createElement('button');button.type='button';button.className='copy';button.textContent='Copy';button.setAttribute('aria-label','Copy commands');
+  button.addEventListener('click',async function(){
+    var text=box.querySelector('code').textContent;
+    try{if(!navigator.clipboard)throw new Error('Use fallback');await navigator.clipboard.writeText(text);}
+    catch(error){var area=document.createElement('textarea');area.value=text;area.style.position='fixed';area.style.opacity='0';document.body.appendChild(area);area.select();var copied=document.execCommand('copy');area.remove();if(!copied){button.textContent='Select text';return;}}
+    button.textContent='Copied';setTimeout(function(){button.textContent='Copy';},1800);
+  });box.appendChild(button);
+});
+</script>
+</body></html>

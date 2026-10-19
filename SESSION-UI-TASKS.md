@@ -539,3 +539,10 @@ the isolated UI check, signed ZIP inventory and live-update-detection.json repor
 Build 1 is running from the user's Documents folder. Build 2 is now public and
 available to eligible stable-channel users; nothing was installed during this
 detection test, and no connection was interrupted.
+
+## Independent release documentation — 2026-10-19
+
+| Item | Work | Status |
+| --- | --- | --- |
+| AK1 | Document the complete build/sign/publish/test process | Complete: RELEASE-GUIDE.html in the beginner kit, with a versioned source copy at the repository root. Twelve sections cover publisher setup, versions, cache choices, build/package provenance, signing, ZIP inventory, draft/upload verification, preview/normal publication, actual upgrade tests and recovery. Eleven PowerShell examples parsed without execution; internal links and matching copies checked. No key material included. |
+| AK2 | Make the guide discoverable | Complete: beginner-kit START-HERE.md and source build-kit README link the offline guide. It includes copy buttons and print/save-as-PDF support. Built-in browser local-file preview was blocked by its URL policy; no rendered-layout check is claimed. |
