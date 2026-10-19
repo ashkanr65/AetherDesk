@@ -1,17 +1,13 @@
 # AetherDesk
 
-Official Windows downloads and signed automatic updates for AetherDesk.
+Official Windows downloads for AetherDesk. Application source is maintained in a separate private repository.
 
-This repository contains distribution information and release assets only. Application source is maintained separately in a private repository.
+## AetherDesk 0.1.2 preview (build 1)
 
-## Downloads
+- [Windows installer](https://github.com/ashkanr65/AetherDesk/releases/download/v0.1.2-build1/AetherDesk-0.1.2-build1-Setup.exe)
+- [Portable Windows ZIP](https://github.com/ashkanr65/AetherDesk/releases/download/v0.1.2-build1/AetherDesk-0.1.2-build1-windows-x64.zip)
+- [Release notes](https://github.com/ashkanr65/AetherDesk/releases/tag/v0.1.2-build1)
 
-Installers and portable ZIPs will be available on the [Releases page](https://github.com/ashkanr65/AetherDesk/releases) after validation. No validated signed update has been published yet.
+Download and install this preview manually, or extract the portable ZIP and run AetherDesk.exe. Preview releases are excluded from stable automatic updates. Real two-version upgrade acceptance is still pending before a stable update is published.
 
-## Automatic updates
-
-The forthcoming updater supports both installer and portable distributions. It checks public release information without requiring a GitHub account, verifies signed metadata and package hashes, and asks before installing and restarting.
-
-Update preferences are available from AetherDesk Settings. Existing versions without the updater require a one-time manual installation of a version that includes it.
-
-The updater sends no session contents, credentials, files or chat history. GitHub receives ordinary release-check and download requests.
+Update metadata is signed with Ed25519. Windows Authenticode publisher signing is not configured for this preview.
