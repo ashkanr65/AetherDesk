@@ -1,5 +1,5 @@
 [CmdletBinding()]
-param([Parameter(Mandatory=$true)][string]$Directory,[string]$Python='python')
+param([Parameter(Mandatory=$true)][string]$Directory,[string]$Python='python',[switch]$Preview)
 $ErrorActionPreference='Stop'
 $root=[IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../..'))
 $config=Get-Content -LiteralPath (Join-Path $root 'update-config.json') -Raw | ConvertFrom-Json
@@ -33,7 +33,8 @@ try{
     $dirty=@(& git -C $root status --porcelain)
     if($LASTEXITCODE -ne 0 -or $dirty.Count){throw 'Commit and push the tested release source before publishing.'}
     $null=Invoke-RestMethod -Uri ($source.url+'/commits/'+$commit) -Headers $headers
-    $body=@{tag_name=$tag;target_commitish=$repository.default_branch;name=('AetherDesk '+$manifest.version);body=$manifest.notes;draft=$true;prerelease=$false}|ConvertTo-Json
+    $title='AetherDesk '+$manifest.version+$(if($Preview){' preview'}else{''})
+    $body=@{tag_name=$tag;target_commitish=$repository.default_branch;name=$title;body=$manifest.notes;draft=$true;prerelease=[bool]$Preview}|ConvertTo-Json
     $release=Invoke-RestMethod -Method Post -Uri ($api+'/releases') -Headers $headers -ContentType 'application/json' -Body $body
     foreach($file in $files){
         $name=[Uri]::EscapeDataString([IO.Path]::GetFileName($file))
