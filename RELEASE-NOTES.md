@@ -6,8 +6,11 @@ AetherDesk 0.1.2 build 2 — update acceptance candidate
 Validation status:
 
 - Build 1 passed all seven build stages, updater regressions, portable integrity verification and isolated rendering/editor checks.
-- Build 2 compilation, package verification and real upgrades remain pending. Build 1 results do not certify this new package.
+- Build 2 passed all seven user-run build stages, including Windows/Linux regressions, bundled X11 verification, portable packaging and installer creation (1:08:28 total).
+- The verified package matches the current source fingerprint. Its executable passed isolated dark/light rendering and popup-editor lifecycle checks without SDK PATH or real user settings.
+- All 7,158 portable ZIP entries match the signed file inventory; metadata signatures and complete asset hashes were verified.
+- Real installer/portable upgrades and data-preservation checks remain pending.
 
-This candidate must be built and verified before publication. A real upgrade between versions, current installer upgrade/recovery, and broader live feature acceptance remain pending. The publisher signs update metadata with Ed25519; Windows Authenticode publisher signing is not configured.
+This candidate has passed build and package checks. A real upgrade between versions, current installer upgrade/recovery, and broader live feature acceptance remain pending. The publisher signs update metadata with Ed25519; Windows Authenticode publisher signing is not configured.
 
 Keep the existing build 1 installation for the upgrade test. A draft or preview cannot trigger its stable update channel; publishing a normal release is a separate step and makes the update available to all eligible users.
