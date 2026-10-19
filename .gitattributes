@@ -1,3 +1,6 @@
 # These files are consumed by Linux, including when checked out on Windows.
 *.sh text eol=lf
 *.patch text eol=lf
+# Linux and Windows compare the catalog's raw SHA-256 in release evidence.
+rust-regressions.json text eol=lf
+update-config.json text eol=lf
