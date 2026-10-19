@@ -522,3 +522,11 @@ before ZIP's 1980 minimum. The publisher now clamps ZIP timestamps, with a fixtu
 covering a 1970 file and unchanged file hashes. This publisher-only adjustment does
 not alter the built runtime. The verified application remains the e9596cf source
 snapshot identified in AI1; no application rebuild is needed for this metadata fix.
+
+## Update acceptance candidate — 2026-10-19
+
+| Item | Work | Status |
+| --- | --- | --- |
+| AJ1 | Prepare a newer release for the user's upgrade test | Complete: release.json is 0.1.2 build 2; release notes distinguish prior build 1 evidence from pending build 2 validation. No application code changed. |
+| AJ2 | Build and verify build 2 | Remaining: user runs the build kit; verify native results and installer/portable outputs, then prepare signed assets and a draft. No compilation performed by the assistant. |
+| AJ3 | Exercise real update detection and upgrade | Remaining: keep build 1 open/installed. Drafts/previews do not enter its stable feed; explicitly publish a verified normal release when ready, then test Check now, download, restart and data preservation. A normal release is public to all eligible users. |

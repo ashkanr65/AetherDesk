@@ -1,16 +1,13 @@
-AetherDesk 0.1.2 build 1 — initial Rust preview
+AetherDesk 0.1.2 build 2 — update acceptance candidate
 
-- Optional automatic update checks for installer and portable distributions; no GitHub account or extra runtime installation is needed.
-- Signed update metadata and package verification, download progress and confirmed restart.
-- Connections sidebar name/status alignment.
+- Increases the build number from 1 to 2 to exercise update detection, download, replacement and restart from the existing 0.1.2 build 1 application.
+- Application behavior is unchanged; this is a release-metadata update, not a feature release.
 
-Validation for this build:
+Validation status:
 
-- All seven build stages passed, including Windows/Linux compiler regressions and bundled X11 tests.
-- All four updater regressions passed.
-- All 7,158 files in the portable archive match the verified package.
-- The extracted portable app passed its isolated dark/light rendering and editor-popup lifecycle check with the SDK removed from PATH.
+- Build 1 passed all seven build stages, updater regressions, portable integrity verification and isolated rendering/editor checks.
+- Build 2 compilation, package verification and real upgrades remain pending. Build 1 results do not certify this new package.
 
-This is a preview candidate. A real upgrade between two released versions, current installer upgrade/recovery, and broader live feature acceptance remain pending. Update metadata is Ed25519-signed; Windows Authenticode publisher signing is not configured.
+This candidate must be built and verified before publication. A real upgrade between versions, current installer upgrade/recovery, and broader live feature acceptance remain pending. The publisher signs update metadata with Ed25519; Windows Authenticode publisher signing is not configured.
 
-Download the installer for a normal installation, or extract the portable ZIP and run AetherDesk.exe. Existing versions without the updater require one manual upgrade. Preview releases are not delivered through the stable automatic-update channel.
+Keep the existing build 1 installation for the upgrade test. A draft or preview cannot trigger its stable update channel; publishing a normal release is a separate step and makes the update available to all eligible users.
