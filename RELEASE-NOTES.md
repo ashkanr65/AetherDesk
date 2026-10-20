@@ -13,9 +13,11 @@ AetherDesk 0.1.2 build 5 — Portable updates and responsive windows
 Validation status:
 
 - Build 4 passed its build checks, but the user's real portable update exposed a read-only-file failure affecting replacement and rollback. Those earlier checks did not prove successful upgrades.
-- Three new Windows filesystem regressions cover read-only package files, interrupted writes and recovery with a locked file. They are required by the build kit.
-- Five additional Windows layout regressions cover monitor/DPI changes, maximized/fullscreen windows, sidebar restoration, narrow welcome text and compact Preferences. Parser/format and offline build-kit safeguards pass; native compilation and these new layout tests await the user's build.
-- Build 5 compilation, native regressions and a real two-version automatic upgrade remain pending the user's build. No build 5 package has been published.
+- The completed build passed all seven stages in 39 minutes 6 seconds on 20 October 2026. Windows 282 registered / 256 required and Linux 95 / 80 regression checks passed, together with packaged X11 verification.
+- All three new Windows filesystem regressions passed: read-only package files, interrupted writes and recovery with a locked file.
+- All five new layout regressions passed: monitor/DPI changes, maximized/fullscreen windows, sidebar restoration, narrow welcome text and compact Preferences. The reported button/shortcut overlap is fixed and its original regression passes.
+- The package matches the tested source fingerprint. Its completed executable passed isolated dark/light rendering and editor popup open/close checks without SDK tools on PATH.
+- Real automatic two-version replacement/restart, settings and credential preservation, and clean-machine acceptance remain separate pending checks. These build results do not claim those tests passed.
 
 Updates use the existing Ed25519 verification key and ask before restarting. Windows Authenticode signing remains separate and unconfigured.
 

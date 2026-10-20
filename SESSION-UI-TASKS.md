@@ -616,3 +616,11 @@ detection test, and no connection was interrupted.
 | --- | --- | --- |
 | AS1 | Fix the reported narrow welcome action overlap | Implemented: measure both the New Connection button and shortcut hint before choosing a horizontal row or a vertical stack. Removes the wrapping-horizontal-row interaction that painted shortcut text over the button at width 280/font 13. Keeps the existing geometry regression unchanged. |
 | AS2 | Start the requested full build | Source parser/format and patch checks pass. The user explicitly authorized starting Build-Everything this time and requested not to wait for results. Build launch and completion status are recorded separately below; no successful result is assumed. |
+
+## Build 5 update preparation — 2026-10-20
+
+| Item | Work | Status |
+| --- | --- | --- |
+| AT1 | Verify the completed build | Passed: all seven stages in 00:39:06. Windows 282 registered / 256 required and Linux 95 / 80 pass; all eight new updater/layout regressions, including the formerly failing welcome shortcut row, pass. Packaged X11 passes. Source fingerprint a89aab67d0600e4fad82747126ac182c74498100ee57aa80a4a0647249397c38 matches the current application inputs from a830fb6. Isolated packaged dark/light/editor check passed without SDK PATH. Evidence: output/acceptance/update-build5-20261020. |
+| AT2 | Sign and publish the stable update | In progress: prepare build 5 using the established pinned signing key, verify the full ZIP inventory and installer, then verify uploaded hashes and anonymous stable-feed access. The user explicitly requested making this completed build available for auto-update. |
+| AT3 | Real upgrade and monitor acceptance | Remaining: real two-version automatic replacement/restart and user-data preservation, real monitor movement/snapping, installer upgrade and clean-machine acceptance. Earlier clients with read-only package files may need repair/manual upgrade; the user's previously repaired portable build 4 has normalized package attributes. |
