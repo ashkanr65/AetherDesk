@@ -22,3 +22,7 @@ Validation status:
 Updates use the existing Ed25519 verification key and ask before restarting. Windows Authenticode signing remains separate and unconfigured.
 
 Existing failed update folders must be retained until recovery has been verified. Older clients with read-only installed package files may need repair or a manual upgrade before they can receive this fix automatically.
+
+Published as the latest stable auto-update on 20 October 2026:
+https://github.com/ashkanr65/AetherDesk/releases/tag/v0.1.2-build5
+Signed assets, uploaded hashes and anonymous runtime update-feed access verified.
