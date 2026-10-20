@@ -41,6 +41,7 @@ pub fn shortcut(key: egui::Key, m: egui::Modifiers) -> Option<Action> {
 }
 
 pub fn take_shortcuts(ctx: &egui::Context) -> Vec<Action> {
+    let bindings = crate::preferences::current().shortcuts;
     ctx.input_mut(|input| {
         let mut actions = Vec::new();
         input.events.retain(|event| {
@@ -51,7 +52,7 @@ pub fn take_shortcuts(ctx: &egui::Context) -> Vec<Action> {
                 ..
             } = event
             {
-                if let Some(action) = shortcut(*key, *modifiers) {
+                if let Some(action) = shortcut_with(*key, *modifiers, &bindings) {
                     actions.push(action);
                     return false;
                 }
@@ -60,6 +61,32 @@ pub fn take_shortcuts(ctx: &egui::Context) -> Vec<Action> {
         });
         actions
     })
+}
+
+pub fn shortcut_with(
+    key: egui::Key,
+    m: egui::Modifiers,
+    bindings: &crate::preferences::Shortcuts,
+) -> Option<Action> {
+    if !m.ctrl || m.alt || m.mac_cmd {
+        return None;
+    }
+    for (binding, action) in [
+        (&bindings.new_connection, Action::NewConnection),
+        (&bindings.sidebar, Action::ToggleSidebar),
+        (&bindings.next_tab, Action::Relative(1)),
+        (&bindings.previous_tab, Action::Relative(-1)),
+    ] {
+        if crate::preferences::key(&binding.key) == Some(key) && binding.shift == m.shift {
+            return Some(action);
+        }
+    }
+    // Keep the original paging aliases when using the default tab bindings.
+    if *bindings == crate::preferences::Shortcuts::default() {
+        shortcut(key, m)
+    } else {
+        None
+    }
 }
 
 #[derive(Clone)]
@@ -126,20 +153,14 @@ impl Strip {
                 );
                 let (label, close) = tab_regions(item);
                 let hovered = ui.rect_contains_pointer(item);
+                let colors = crate::theme::colors(ui.visuals().dark_mode);
                 let fill = if selected == Some(index) {
-                    ui.visuals().selection.bg_fill
+                    colors.tab_active
                 } else {
-                    ui.visuals().widgets.inactive.bg_fill
+                    colors.tab
                 };
-                ui.painter().rect_filled(
-                    item,
-                    3.0,
-                    if hovered {
-                        fill.gamma_multiply(1.2)
-                    } else {
-                        fill
-                    },
-                );
+                ui.painter()
+                    .rect_filled(item, 3.0, if hovered { colors.hover } else { fill });
                 if hovered {
                     ui.painter().rect_stroke(
                         item,
@@ -152,11 +173,21 @@ impl Strip {
                     ui.push_id(tab.id, |ui| {
                         let response = ui.put(
                             label,
-                            egui::Button::new(format!("{} · {}", tab.name, tab.state))
-                                .truncate()
-                                .frame(false)
-                                .selected(selected == Some(index))
-                                .sense(egui::Sense::click_and_drag()),
+                            egui::Button::new(
+                                egui::RichText::new(format!("{} · {}", tab.name, tab.state)).color(
+                                    if hovered {
+                                        colors.hover_text
+                                    } else if selected == Some(index) {
+                                        colors.tab_active_text
+                                    } else {
+                                        colors.tab_text
+                                    },
+                                ),
+                            )
+                            .truncate()
+                            .frame(false)
+                            .selected(selected == Some(index))
+                            .sense(egui::Sense::click_and_drag()),
                         );
                         if response.clicked() {
                             change.select = Some(index);
@@ -191,10 +222,12 @@ impl Strip {
                             );
                         }
                         let c = close.center();
-                        let color = if selected == Some(index) {
-                            ui.visuals().selection.stroke.color
+                        let color = if close_response.hovered() {
+                            colors.hover_text
+                        } else if selected == Some(index) {
+                            colors.tab_active_text
                         } else {
-                            ui.visuals().text_color()
+                            colors.tab_text
                         };
                         for direction in [-1.0, 1.0] {
                             ui.painter().line_segment(
@@ -230,6 +263,25 @@ impl Strip {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn customized_navigation_shortcuts_preserve_altgr_and_release_unbound_keys() {
+        let mut bindings = crate::preferences::Shortcuts::default();
+        bindings.new_connection.key = "N".into();
+        let m = egui::Modifiers {
+            ctrl: true,
+            shift: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            shortcut_with(egui::Key::N, m, &bindings),
+            Some(Action::NewConnection)
+        );
+        assert_eq!(shortcut_with(egui::Key::K, m, &bindings), None);
+        assert_eq!(
+            shortcut_with(egui::Key::N, egui::Modifiers { alt: true, ..m }, &bindings),
+            None
+        );
+    }
     #[test]
     fn switching_sidebars_does_not_expand_the_shared_width_to_fit_controls() {
         let ctx = egui::Context::default();

@@ -53,6 +53,8 @@ pub fn button_scaled(
     });
     let color = if selected {
         ui.visuals().selection.stroke.color
+    } else if !response.hovered() && !response.is_pointer_button_down() {
+        crate::theme::colors(ui.visuals().dark_mode).icon
     } else {
         ui.style().interact(&response).fg_stroke.color
     };

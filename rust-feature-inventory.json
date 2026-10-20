@@ -865,6 +865,21 @@
       "status": "preserved_unavailable",
       "implementation": [],
       "acceptance": "Original RDP/VNC entry points explicitly return not implemented; capability flags for smart card/MFA/FIDO2 false. Do not promote stubs to real support."
+    },
+    {
+      "id": "preferences.application",
+      "area": "Application preferences",
+      "behavior": "Stable log viewport, independent light/dark application palettes, sample GUI, theme import/export, application defaults, configurable navigation and public branding",
+      "references": [
+        "ui/rust/crates/ad-desktop/src/main.rs"
+      ],
+      "status": "implemented_unverified",
+      "implementation": [
+        "ui/rust/crates/ad-desktop/src/preferences.rs",
+        "ui/rust/crates/ad-desktop/src/theme_palette.rs",
+        "ui/rust/crates/ad-desktop/src/log_panel.rs"
+      ],
+      "acceptance": "Compile the registered preference/theme/log fixtures and exercise apply/cancel, scrolling, persistence, native window scaling, startup and upgrade compatibility in packaged Windows builds."
     }
   ],
   "sourceFiles": [

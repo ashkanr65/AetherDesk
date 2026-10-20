@@ -67,6 +67,7 @@ impl eframe::App for Smoke {
             self.ticks = 0;
             if self.phase == 1 {
                 self.app.dark = false;
+                self.app.preferences.settings.mode = crate::preferences::Mode::Light;
                 super::palette(ctx, false);
             }
         }

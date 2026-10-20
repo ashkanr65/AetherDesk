@@ -220,7 +220,7 @@ def verify_release(directory, config_path=ROOT / "update-config.json"):
 
 
 def configure_github():
-    """Publisher-only: seal the key directly into the private source repo secret."""
+    """Publisher-only: seal the key directly into the public project Actions secret."""
     from nacl.public import PublicKey, SealedBox
     env = dict(os.environ, GIT_TERMINAL_PROMPT="0", GCM_INTERACTIVE="never")
     response = subprocess.run(["git", "credential", "fill"], input="protocol=https\nhost=github.com\n\n",
@@ -239,9 +239,10 @@ def configure_github():
             data = stream.read()
             return json.loads(data) if data else None
 
-    repo = "/repos/ashkanr65/AetherDesk-Rust"
-    if api(repo)["private"] is not True:
-        raise ValueError("Signing secrets may only be configured in the private source repository")
+    repo = "/repos/ashkanr65/AetherDesk"
+    project = api(repo)
+    if project["private"] is not False or project["default_branch"] != "main" or project.get("archived"):
+        raise ValueError("Expected the active public AetherDesk repository on main")
     key = load_key()
     config = json.loads((ROOT / "update-config.json").read_text(encoding="utf-8-sig"))
     if public(key) != config["publicKey"]:
@@ -253,7 +254,7 @@ def configure_github():
     encrypted = SealedBox(PublicKey(base64.b64decode(receiver["key"]))).encrypt(secret)
     api(repo + "/actions/secrets/UPDATE_SIGNING_KEY", "PUT",
         {"key_id": receiver["key_id"], "encrypted_value": base64.b64encode(encrypted).decode()})
-    print("Publisher signing key configured as an encrypted Actions secret in the private source repository.")
+    print("Publisher signing key configured as an encrypted Actions secret in the public AetherDesk project.")
 
 
 def main():

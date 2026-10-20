@@ -1,7 +1,6 @@
 //! Application log capture for the shipped client.
 //!
-//! The Flutter host supplies the log directory via its application log path.
-//! Rust owns a separate core-PID.log file and bounded background writer.
+//! Each application instance owns a core-PID.log file and bounded background writer.
 //! The Logs panel merges producer files without competing rotation handles.
 
 use std::fmt;
@@ -18,15 +17,16 @@ use tracing_subscriber::fmt::{FmtContext, FormatEvent};
 use tracing_subscriber::registry::LookupSpan;
 use tracing_subscriber::EnvFilter;
 
-const MAX_BYTES: u64 = 10 * 1024 * 1024;
-const GENERATIONS: usize = 5;
-
 /// Installs the JSONL file subscriber once. Unknown level strings fall back
 /// to `info`, matching the host agent's default.
 pub fn init(path: &Path) {
     static INIT: OnceLock<()> = OnceLock::new();
     INIT.get_or_init(|| {
-        let level = std::env::var("AETHERDESK_LOG_LEVEL").unwrap_or_else(|_| "info".into());
+        let preferences = crate::preferences::load()
+            .ok()
+            .flatten()
+            .unwrap_or_default();
+        let level = std::env::var("AETHERDESK_LOG_LEVEL").unwrap_or(preferences.log_level);
         let filter = EnvFilter::try_new(&level).unwrap_or_else(|_| EnvFilter::new("info"));
         let path = path.with_file_name(format!("core-{}.log", std::process::id()));
         if let Some(parent) = path.parent() {
@@ -119,7 +119,8 @@ impl SharedFile {
                 Err(_) => return,
             }
         }
-        if state.written.saturating_add(bytes.len() as u64) > MAX_BYTES {
+        let limit = crate::preferences::current().log_file_mb * 1024 * 1024;
+        if state.written.saturating_add(bytes.len() as u64) > limit {
             state.file.take(); // Close before rotating on Windows.
             rotate(&state.path);
             state.written = 0;
@@ -147,9 +148,15 @@ impl SharedFile {
 }
 
 fn rotate(path: &Path) {
-    let oldest = PathBuf::from(format!("{}.{}", path.display(), GENERATIONS));
+    let generations = crate::preferences::current().log_generations;
+    // Remove only this instance's numbered rotations, including surplus old
+    // generations when the user reduces the retention count.
+    for index in generations..=20 {
+        let _ = std::fs::remove_file(format!("{}.{index}", path.display()));
+    }
+    let oldest = PathBuf::from(format!("{}.{}", path.display(), generations));
     let _ = std::fs::remove_file(&oldest);
-    for index in (1..GENERATIONS).rev() {
+    for index in (1..generations).rev() {
         let source = PathBuf::from(format!("{}.{}", path.display(), index));
         if source.exists() {
             let _ = std::fs::rename(&source, format!("{}.{}", path.display(), index + 1));
@@ -317,7 +324,7 @@ mod tests {
         let path = dir.join("core.log");
         let file = SharedFile::open(path.clone());
         file.append(b"{\"msg\":\"first\"}\n");
-        file.0.lock().unwrap().written = MAX_BYTES;
+        file.0.lock().unwrap().written = crate::preferences::current().log_file_mb * 1024 * 1024;
         file.append(b"{\"msg\":\"second\"}\n");
         assert!(std::fs::read_to_string(&path).unwrap().contains("second"));
         assert!(std::fs::read_to_string(dir.join("core.log.1"))

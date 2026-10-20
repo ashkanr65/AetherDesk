@@ -1,16 +1,17 @@
-AetherDesk 0.1.2 build 2 — update acceptance candidate
+AetherDesk 0.1.2 build 3 — Preferences and theme customization
 
-- Increases the build number from 1 to 2 to exercise update detection, download, replacement and restart from the existing 0.1.2 build 1 application.
-- Application behavior is unchanged; this is a release-metadata update, not a feature release.
+- Preferences replaces the application Settings page, with General, Display, Connections, Files and Editor, AI Assistant, Keyboard, Updates and Logs categories.
+- Independent light and dark palettes provide 30 editable colour roles, sample GUI previews, hexadecimal input, contrast warnings, reset and theme import/export.
+- Application font size and scaling, system theme, startup window state, reopening disconnected tabs and confirmation before quitting active connections.
+- New-connection defaults, connection timeout, file-opening defaults, directory synchronization and customizable application navigation shortcuts.
+- Configurable log level, log size and rotation retention; the Log files popup keeps stable bounds while scrolling.
+- Public interface, About, package names and installer branding use AetherDesk. Existing settings, protected credentials, installation identity and update verification remain compatible.
 
 Validation status:
 
-- Build 1 passed all seven build stages, updater regressions, portable integrity verification and isolated rendering/editor checks.
-- Build 2 passed all seven user-run build stages, including Windows/Linux regressions, bundled X11 verification, portable packaging and installer creation (1:08:28 total).
-- The verified package matches the current source fingerprint. Its executable passed isolated dark/light rendering and popup-editor lifecycle checks without SDK PATH or real user settings.
-- All 7,158 portable ZIP entries match the signed file inventory; metadata signatures and complete asset hashes were verified.
-- Real installer/portable upgrades and data-preservation checks remain pending.
+- Rust formatting/parser and offline build-recipe checks are performed without compiling the application.
+- Seven new native regression checks are registered for the user's build-kit test stage. They have not been compiled or run by the assistant.
+- Source and releases are consolidated in public ashkanr65/AetherDesk; MIT OR Apache-2.0 licence files are included.
+- Packaged UI checks, real upgrades, restart/recovery and data preservation remain pending.
 
-This candidate has passed build and package checks. A real upgrade between versions, current installer upgrade/recovery, and broader live feature acceptance remain pending. The publisher signs update metadata with Ed25519; Windows Authenticode publisher signing is not configured.
-
-Keep the existing build 1 installation for the upgrade test. A draft or preview cannot trigger its stable update channel; publishing a normal release is a separate step and makes the update available to all eligible users.
+This release must be built, tested and signed before publication. No new binary is published by these source changes. Update metadata uses the existing Ed25519 key; Windows Authenticode publisher signing remains separate.

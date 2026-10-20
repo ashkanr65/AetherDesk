@@ -10,6 +10,31 @@ use tokio::sync::mpsc;
 const MAX_READ: usize = 2 * 1024 * 1024;
 const MAX_RECORDS: usize = 4000;
 const LEVELS: [&str; 5] = ["trace", "debug", "info", "warn", "error"];
+pub fn window_size(available: egui::Vec2) -> egui::Vec2 {
+    egui::vec2(850.0, 560.0).min((available - egui::vec2(40.0, 70.0)).max(egui::vec2(160.0, 180.0)))
+}
+fn records_view(ui: &mut egui::Ui, records: &[&Record], follow: bool) {
+    let row_height = ui.text_style_height(&egui::TextStyle::Monospace) + 6.0;
+    egui::ScrollArea::both()
+        .id_salt("structured-logs")
+        .stick_to_bottom(follow)
+        .auto_shrink([false, false])
+        .max_width(ui.available_width())
+        .min_scrolled_width(0.0)
+        .max_height((ui.available_height() - 130.0).max(50.0))
+        .show_rows(ui, row_height, records.len(), |ui, range| {
+            for index in range {
+                ui.add(
+                    egui::Label::new(
+                        egui::RichText::new(records[index].display().replace('\n', " ⏎ "))
+                            .monospace(),
+                    )
+                    .wrap_mode(egui::TextWrapMode::Extend)
+                    .selectable(true),
+                );
+            }
+        });
+}
 type Host = (String, Arc<ad_ssh::SshSession>, uuid::Uuid);
 #[derive(Clone, Debug)]
 struct Record {
@@ -394,22 +419,7 @@ impl Panel {
             records.len(),
             self.records.len()
         ));
-        let row_height = ui.text_style_height(&egui::TextStyle::Monospace) + 6.0;
-        egui::ScrollArea::both()
-            .id_salt("structured-logs")
-            .stick_to_bottom(self.follow)
-            .max_height((ui.available_height() - 130.0).max(50.0))
-            .show_rows(ui, row_height, records.len(), |ui, range| {
-                for index in range {
-                    let record = records[index];
-                    ui.add(
-                        egui::Label::new(
-                            egui::RichText::new(record.display().replace('\n', " ⏎ ")).monospace(),
-                        )
-                        .selectable(true),
-                    );
-                }
-            });
+        records_view(ui, &records, self.follow);
         let filtered = records
             .iter()
             .map(|r| r.display())
@@ -500,6 +510,66 @@ impl Panel {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn scrolling_variable_length_logs_keeps_the_popup_bounds_fixed() {
+        let ctx = egui::Context::default();
+        ctx.style_mut(|s| s.animation_time = 0.0);
+        let records: Vec<_> = (0..300)
+            .map(|i| {
+                Record::parse(
+                    &format!("row {i} {}", "W".repeat(if i % 2 == 0 { 1200 } else { 8 })),
+                    "fixture",
+                )
+            })
+            .collect();
+        let mut baseline: Option<egui::Rect> = None;
+        for pass in 0..16 {
+            let count = if pass % 3 == 0 { 0 } else { records.len() };
+            let visible: Vec<_> = records.iter().take(count).collect();
+            let _ = ctx.run(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(1200.0, 800.0),
+                    )),
+                    events: vec![
+                        egui::Event::PointerMoved(egui::pos2(160.0, 180.0)),
+                        egui::Event::MouseWheel {
+                            unit: egui::MouseWheelUnit::Point,
+                            delta: egui::vec2(0.0, -180.0),
+                            modifiers: egui::Modifiers::NONE,
+                        },
+                    ],
+                    ..Default::default()
+                },
+                |ctx| {
+                    let response = egui::Window::new("Log size fixture")
+                        .fixed_pos(egui::pos2(10.0, 10.0))
+                        .fixed_size(window_size(ctx.content_rect().size()))
+                        .resizable(false)
+                        .collapsible(false)
+                        .show(ctx, |ui| {
+                            ui.label("Search and filters");
+                            records_view(ui, &visible, false);
+                            ui.label("Export controls");
+                        })
+                        .unwrap();
+                    if pass >= 8 {
+                        let rect = response.response.rect;
+                        if let Some(before) = baseline {
+                            assert!(
+                                (rect.width() - before.width()).abs() < 1.0
+                                    && (rect.height() - before.height()).abs() < 1.0,
+                                "log window drifted: {before:?} -> {rect:?}"
+                            );
+                        } else {
+                            baseline = Some(rect);
+                        }
+                    }
+                },
+            );
+        }
+    }
     #[test]
     fn structured_filters_do_not_treat_error_words_as_severity_or_lose_rotations() {
         let dir = tempfile::tempdir().unwrap();

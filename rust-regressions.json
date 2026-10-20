@@ -5160,6 +5160,54 @@
         }
       ],
       "liveAcceptance": "Original RDP/VNC entry points explicitly return not implemented; capability flags for smart card/MFA/FIDO2 false. Do not promote stubs to real support."
+    },
+    {
+      "id": "preferences.application",
+      "checks": [
+        {
+          "phase": "windows",
+          "package": "ad-desktop",
+          "source": "ui/rust/crates/ad-desktop/src/theme_palette.rs",
+          "test": "light_and_dark_theme_roles_round_trip_without_cross_contamination"
+        },
+        {
+          "phase": "windows",
+          "package": "ad-desktop",
+          "source": "ui/rust/crates/ad-desktop/src/theme_palette.rs",
+          "test": "contrast_warning_detects_invisible_controls_without_rejecting_user_colours"
+        },
+        {
+          "phase": "windows",
+          "package": "ad-desktop",
+          "source": "ui/rust/crates/ad-desktop/src/preferences.rs",
+          "test": "preferences_preserve_legacy_mode_and_damaged_settings_until_explicit_repair"
+        },
+        {
+          "phase": "windows",
+          "package": "ad-desktop",
+          "source": "ui/rust/crates/ad-desktop/src/preferences.rs",
+          "test": "exported_themes_exclude_secrets_reject_bad_schema_and_never_overwrite"
+        },
+        {
+          "phase": "windows",
+          "package": "ad-desktop",
+          "source": "ui/rust/crates/ad-desktop/src/navigation.rs",
+          "test": "customized_navigation_shortcuts_preserve_altgr_and_release_unbound_keys"
+        },
+        {
+          "phase": "windows",
+          "package": "ad-desktop",
+          "source": "ui/rust/crates/ad-desktop/src/log_panel.rs",
+          "test": "scrolling_variable_length_logs_keeps_the_popup_bounds_fixed"
+        },
+        {
+          "phase": "windows",
+          "package": "ad-desktop",
+          "source": "ui/rust/crates/ad-desktop/src/preferences.rs",
+          "test": "applied_preferences_round_trip_without_modifying_profiles_or_update_settings"
+        }
+      ],
+      "liveAcceptance": "Compile and run the registered fixtures with the build kit. Verify log scrolling, cancel/apply, both theme palettes, import/export, application scaling, startup and preserved credentials in the packaged application."
     }
   ],
   "originalSuites": [

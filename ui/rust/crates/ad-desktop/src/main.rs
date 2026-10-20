@@ -21,6 +21,7 @@ mod logging;
 mod migration;
 mod navigation;
 mod notifications;
+mod preferences;
 mod process_job;
 mod profile_store;
 #[cfg(all(test, windows))]
@@ -40,6 +41,7 @@ mod terminal;
 mod terminal_navigation;
 mod terminal_settings;
 mod theme;
+mod theme_palette;
 mod transfers;
 mod ui_icons;
 mod update_apply;
@@ -78,6 +80,9 @@ struct RustDesktop {
     show_desktop_recovery: bool,
     theme: theme::Theme,
     show_appearance: bool,
+    preferences: preferences::Panel,
+    confirm_quit_open: bool,
+    quit_confirmed: bool,
     show_logs: bool,
     show_help: bool,
     show_about: bool,
@@ -105,13 +110,15 @@ impl Default for RustDesktop {
             .clamp(190.0, 900.0) as f32;
         workspace.sidebar_visible = settings["sidebarVisible"].as_bool().unwrap_or(true);
         let notice = loaded.as_ref().err().cloned().unwrap_or_default();
-        Self {
+        let dark = settings["dark"].as_bool().unwrap_or(true);
+        let preferences = preferences::Panel::load(dark);
+        let mut app = Self {
             workspace,
             connections: connection::Connections::new(),
             profiles: loaded.unwrap_or_default(),
             filter: String::new(),
             notice,
-            dark: settings["dark"].as_bool().unwrap_or(true),
+            dark,
             new_profile: None,
             closing: None,
             editors: editor::Editors::default(),
@@ -126,6 +133,9 @@ impl Default for RustDesktop {
             show_desktop_recovery: false,
             theme: theme::Theme::default(),
             show_appearance: false,
+            preferences,
+            confirm_quit_open: false,
+            quit_confirmed: false,
             show_logs: false,
             show_help: false,
             show_about: false,
@@ -141,7 +151,20 @@ impl Default for RustDesktop {
             } else {
                 None
             },
+        };
+        if app.preferences.settings.restore_tabs {
+            if let Some(ids) = settings["openSessions"].as_array() {
+                for id in ids.iter().take(32).filter_map(|v| v.as_str()) {
+                    if let Some(profile) = app.profiles.iter().find(|p| p.id == id).cloned() {
+                        app.open_profile(profile);
+                        if let Some(tab) = app.workspace.tabs.last_mut() {
+                            tab.restore_disconnected();
+                        }
+                    }
+                }
+            }
         }
+        app
     }
 }
 fn palette(ctx: &egui::Context, dark: bool) {
@@ -233,10 +256,21 @@ impl RustDesktop {
     }
     fn persist_settings(&mut self) {
         if self.settings_valid {
-            if let Err(error) = storage::write_json(
-                "settings.json",
-                &serde_json::json!({"dark":self.dark,"sidebarWidth":self.workspace.sidebar_width,"sidebarVisible":self.workspace.sidebar_visible}),
-            ) {
+            let mut settings = storage::read_json("settings.json")
+                .ok()
+                .flatten()
+                .filter(|v| v.is_object())
+                .unwrap_or_else(|| serde_json::json!({}));
+            settings["dark"] = self.dark.into();
+            settings["sidebarWidth"] = self.workspace.sidebar_width.into();
+            settings["sidebarVisible"] = self.workspace.sidebar_visible.into();
+            settings["openSessions"] = serde_json::json!(self
+                .workspace
+                .tabs
+                .iter()
+                .map(|t| t.profile.id.clone())
+                .collect::<Vec<_>>());
+            if let Err(error) = storage::write_json("settings.json", &settings) {
                 self.report_error(error);
             }
         }
@@ -341,9 +375,8 @@ impl RustDesktop {
         match result {
             Ok(profiles) => {
                 self.profiles.extend(profiles);
-                self.notice =
-                    "Profiles copied into the Rust app. Original profiles and credentials are unchanged."
-                        .to_owned();
+                self.notice = "Profiles imported. Existing profiles and credentials are unchanged."
+                    .to_owned();
                 self.persist_profiles();
             }
             Err(error) => self.report_error(error),
@@ -353,6 +386,11 @@ impl RustDesktop {
 impl eframe::App for RustDesktop {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.theme.initialize(ctx);
+        let dark = self.preferences.settings.dark(ctx, self.dark);
+        if dark != self.dark {
+            self.dark = dark;
+            palette(ctx, self.dark);
+        }
         ctx.request_repaint_after(std::time::Duration::from_secs(1));
         // Navigation shortcuts are consumed below, after checking whether a
         // remote desktop owns the keyboard. Do not consume Ctrl+Shift+K here.
@@ -362,7 +400,7 @@ impl eframe::App for RustDesktop {
         if !had_update && self.updates.available() {
             self.notifications.push(notifications::Notice::new(
                 notifications::Kind::Information,
-                "An AetherDesk update is available. Open Settings → Updates to review it.",
+                "An AetherDesk update is available. Open the gear menu → Updates to review it.",
             ));
         }
         while let Ok(request) = self.app_requests.try_recv() {
@@ -392,8 +430,33 @@ impl eframe::App for RustDesktop {
                 .collect();
             self.editors.recovery_ui(ctx, runtime, &sessions);
         }
+        if self.confirm_quit_open {
+            let mut open = true;
+            let mut confirm = false;
+            let mut cancel = false;
+            egui::Window::new("Quit AetherDesk?").open(&mut open).resizable(false).collapsible(false).show(ctx, |ui| {
+                ui.label("Active connections will be disconnected. Saved sessions and retained desktops remain available.");
+                ui.horizontal(|ui| { confirm = ui.button("Quit").clicked(); cancel = ui.button("Cancel").clicked(); });
+            });
+            if confirm {
+                self.quit_confirmed = true;
+                self.confirm_quit_open = false;
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            } else if cancel || !open {
+                self.confirm_quit_open = false;
+            }
+        }
         if ctx.input(|i| i.viewport().close_requested()) && !self.editors.can_close() {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            ctx.request_repaint();
+        } else if ctx.input(|i| i.viewport().close_requested())
+            && self.closing.is_none()
+            && self.preferences.settings.confirm_quit
+            && !self.quit_confirmed
+            && self.workspace.tabs.iter().any(|t| t.is_active())
+        {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            self.confirm_quit_open = true;
             ctx.request_repaint();
         } else if ctx.input(|i| i.viewport().close_requested()) && self.closing.is_none() {
             self.persist_settings();
@@ -496,7 +559,7 @@ impl eframe::App for RustDesktop {
                             self.import_profiles();
                             ui.close();
                         }
-                        if ui.button("Import original AetherDesk data…").clicked() {
+                        if ui.button("Import previous settings…").clicked() {
                             self.show_migration = true;
                             ui.close();
                         }
@@ -546,7 +609,7 @@ impl eframe::App for RustDesktop {
                     );
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         ui.menu_button("⚙", |ui| {
-                            if ui.button("Settings…").clicked() {
+                            if ui.button("Preferences…").clicked() {
                                 self.show_appearance = true;
                                 ui.close();
                             }
@@ -561,7 +624,7 @@ impl eframe::App for RustDesktop {
                                 self.updates.open = true;
                                 ui.close();
                             }
-                            if ui.button("Logfiles…").clicked() {
+                            if ui.button("Log files…").clicked() {
                                 self.show_logs = true;
                                 ui.close();
                             }
@@ -576,6 +639,9 @@ impl eframe::App for RustDesktop {
                         });
                         if theme::mode_toggle(ui, self.dark) {
                             self.dark = !self.dark;
+                            if let Err(error) = self.preferences.toggle_mode(self.dark) {
+                                self.report_error(error);
+                            }
                             palette(ctx, self.dark);
                             self.persist_settings();
                         }
@@ -719,25 +785,23 @@ impl eframe::App for RustDesktop {
                 }
             });
         if self.show_appearance {
-            let mut open = true;
-            egui::Window::new("Settings").open(&mut open).resizable(false).show(ctx, |ui| {
-                ui.group(|ui| {
-                    ui.heading("Workspace");
-                    ui.label("Use the single sun/moon switch in the toolbar to change theme.");
-                    ui.label("Drag the sidebar divider to change its width.");
-                });
-                ui.group(|ui| {
-                    ui.heading("Terminal");
-                    ui.label("Open Terminal settings in a connection to choose fonts, colours and custom words.");
-                });
-                ui.horizontal(|ui| {
-                    if ui.button("Updates…").clicked() { self.updates.open = true; }
-                    if ui.button("Logfiles…").clicked() { self.show_logs = true; }
-                    if ui.button("Help…").clicked() { self.show_help = true; }
-                    if ui.button("About…").clicked() { self.show_about = true; }
-                });
-            });
-            self.show_appearance = open;
+            self.preferences.show();
+            self.show_appearance = false;
+        }
+        match self.preferences.ui(ctx) {
+            Some(preferences::Action::Applied) => {
+                self.dark = self.preferences.settings.dark(ctx, self.dark);
+                ctx.set_zoom_factor(self.preferences.settings.ui_scale);
+                palette(ctx, self.dark);
+                self.persist_settings();
+            }
+            Some(preferences::Action::Assistant) => {
+                self.workspace.select_sidebar(Sidebar::Assistant);
+                self.assistant.open_preferences();
+            }
+            Some(preferences::Action::Updates) => self.updates.open = true,
+            Some(preferences::Action::Logs) => self.show_logs = true,
+            None => {}
         }
         let update_safe = !self.updates.open
             || (self.closing.is_none()
@@ -755,9 +819,11 @@ impl eframe::App for RustDesktop {
         }
         if self.show_logs {
             let mut open = true;
-            egui::Window::new("Logfiles")
+            egui::Window::new("Log files")
                 .open(&mut open)
-                .default_size([850.0, 560.0])
+                .fixed_size(log_panel::window_size(ctx.content_rect().size()))
+                .resizable(false)
+                .collapsible(false)
                 .show(ctx, |ui| {
                     let hosts = self
                         .workspace
@@ -778,14 +844,15 @@ impl eframe::App for RustDesktop {
             let mut open = true;
             egui::Window::new("AetherDesk Help").open(&mut open).resizable(false).show(ctx, |ui| {
                 ui.heading("Connections and workspace");
-                ui.label("New connection: Ctrl+Shift+K. Toggle sidebar: Ctrl+Shift+B.");
-                ui.label("Next / previous tab: Ctrl+Tab / Ctrl+Shift+Tab. Drag tabs to reorder.");
+                let keys=&self.preferences.settings.shortcuts;
+                ui.label(format!("New connection: {}. Toggle sidebar: {}.",keys.new_connection.label(),keys.sidebar.label()));
+                ui.label(format!("Next / previous tab: {} / {}. Drag tabs to reorder.",keys.next_tab.label(),keys.previous_tab.label()));
                 ui.label("Close a tab with its × or the middle mouse button.");
                 ui.label("Terminal: Ctrl+C interrupts; Ctrl+Shift+C copies; Ctrl+Shift+V pastes.");
                 ui.label("Hold Shift to select terminal text when a program captures the mouse.");
                 ui.label("Use Terminal settings to add words and choose their colours.");
                 ui.label("Passwords are encrypted in Windows Credential Manager; they are excluded from session exports.");
-                ui.label("Logfiles are available from the settings gear.");
+                ui.label("Log files are available from the gear menu.");
             });
             self.show_help = open;
         }
@@ -796,19 +863,21 @@ impl eframe::App for RustDesktop {
                 .resizable(false)
                 .show(ctx, |ui| {
                     ui.heading("AetherDesk");
-                    ui.label(format!("Version {}", env!("CARGO_PKG_VERSION")));
+                    let build = update_manifest::current().map(|v|v[3]).unwrap_or(0);
+                    ui.label(format!("Version {} · Build {build}", env!("CARGO_PKG_VERSION")));
+                    ui.label(format!("Licence: {}", env!("CARGO_PKG_LICENSE")));
                     ui.label("SSH · SFTP · SSH + X11 · Remote Desktop · AI Assistant");
-                    ui.label(
-                        "Native Rust client. Acceptance status is tracked in RUST-MIGRATION.md.",
-                    );
+                    ui.label("A secure workspace for connections, files and AI assistance.");
+                    ui.hyperlink_to("Project and downloads", "https://github.com/ashkanr65/AetherDesk");
+                    ui.label("Bundled dependency licences are included in THIRD-PARTY-NOTICES.txt and THIRD-PARTY-LICENSES.");
                 });
             self.show_about = open;
         }
         if self.show_migration {
             let mut open = true;
-            egui::Window::new("Import original AetherDesk data").open(&mut open).resizable(false).show(ctx,|ui|{
+            egui::Window::new("Import previous settings").open(&mut open).resizable(false).show(ctx,|ui|{
                 let enter = crate::dialog::primary(ui);
-                ui.label("Copies saved connections, terminal preferences, provider setup and chat transcripts into this Rust app. Original files are read only.");
+                ui.label("Import saved connections, terminal preferences, AI services and chat history from the previous installation. Source files are read only.");
                 ui.checkbox(&mut self.migrate_credentials,"Copy saved connection passwords and provider API keys");
                 if self.migrate_credentials {ui.label("Master password (only needed for protected credentials)");ui.add(egui::TextEdit::singleline(&mut self.migration_master).password(true));}
                 let response = ui.button("Import"); crate::dialog::focus_on_open(ui, &response);
@@ -902,7 +971,7 @@ impl eframe::App for RustDesktop {
                             if let Some(index)=disconnect{self.workspace.tabs[index].disconnect();}
                             if !self.workspace.tabs.iter().any(|t|t.is_active()){ui.label("No active connections");}
                         }
-                        Sidebar::Logs=>{self.show_logs=true;ui.label("Logfiles are open in a popup.");}
+                        Sidebar::Logs=>{self.show_logs=true;ui.label("Log files are open in a popup.");}
                         _=>{ui.label("This sidebar's functional port is pending. See RUST-FEATURE-PARITY.md for the tracked behavior.");}
                     }
                     });
@@ -1080,10 +1149,16 @@ fn main() -> eframe::Result {
     if let Ok(root) = storage::root() {
         logging::init(&root.join("logs/application.log"));
     }
-    tracing::info!("Native Rust application starting");
+    tracing::info!("AetherDesk starting");
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_icon(theme::native_icon())
+            .with_maximized(
+                preferences::load()
+                    .ok()
+                    .flatten()
+                    .is_some_and(|p| p.start_maximized),
+            )
             .with_inner_size([1280.0, 840.0])
             .with_min_inner_size([800.0, 500.0]),
         ..Default::default()
@@ -1094,7 +1169,13 @@ fn main() -> eframe::Result {
         Box::new(|creation| {
             let app = RustDesktop::default();
             creation.egui_ctx.set_fonts(theme::font_definitions());
-            palette(&creation.egui_ctx, app.dark);
+            creation
+                .egui_ctx
+                .set_zoom_factor(app.preferences.settings.ui_scale);
+            palette(
+                &creation.egui_ctx,
+                app.preferences.settings.dark(&creation.egui_ctx, app.dark),
+            );
             Ok(Box::new(app))
         }),
     )

@@ -346,7 +346,7 @@ async fn run(
             if let Some(server) = &mut x11 { server.stop().await; }
             events.send(Event::Closed); return;
         },
-        result = tokio::time::timeout(Duration::from_secs(75), connect) => result.unwrap_or_else(|_| Err("SSH authentication or setup timed out".into())),
+        result = tokio::time::timeout(Duration::from_secs(crate::preferences::current().connect_timeout), connect) => result.unwrap_or_else(|_| Err("SSH authentication or setup timed out".into())),
     };
     let session = match result {
         Ok(value) => value,

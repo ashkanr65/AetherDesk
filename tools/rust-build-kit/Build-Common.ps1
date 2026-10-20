@@ -136,7 +136,7 @@ function Get-RustSourceFiles {
     # ad-ssh embeds this source even when the current connection does not use X11.
     $paths.Add('tools/x11-icons.py')
     foreach ($relative in @('agent/linux/Dockerfile.bundle','tools/package-linux-agent.sh','tools/build-xwayland.sh','tools/xwayland-monitors.patch','tools/build-kit/Bundle-X11.ps1','tools/build-kit/Release-Version.ps1','tools/build-kit/toolchain.json')) { $paths.Add($relative) }
-    foreach ($name in @('release.json','update-config.json','rust-migration.json','RUST-MIGRATION.md','RUST-FEATURE-PARITY.md','rust-feature-inventory.json','rust-regressions.json')) { $paths.Add($name) }
+    foreach ($name in @('LICENSE','LICENSE-MIT','LICENSE-APACHE','release.json','update-config.json','rust-migration.json','RUST-MIGRATION.md','RUST-FEATURE-PARITY.md','rust-feature-inventory.json','rust-regressions.json')) { $paths.Add($name) }
     $paths.Add('tools/test_x11_icons.py')
     foreach ($path in Get-ChildItem -LiteralPath $recipeRoot -File) {
         $paths.Add('tools/rust-build-kit/' + $path.Name)
@@ -421,7 +421,7 @@ function Verify-RustPackage([string]$Package,[switch]$BeforeX11) {
         if($x11.bundledX11TestPassed -ne $true -or $x11.liveAcceptancePassed -ne $false -or $x11.replacementReady -ne $false){throw 'Package bundled X11 test evidence is invalid.'}
     }
     $info = Get-Content -LiteralPath (Join-Path $Package 'build-info.json') -Raw | ConvertFrom-Json
-    if ($info.featureEquivalent -ne $false -or $info.runtime -ne 'native-rust' -or $info.product -ne 'AetherDesk Rust') {
+    if ($info.featureEquivalent -ne $false -or $info.runtime -ne 'native-rust' -or $info.product -notin @('AetherDesk','AetherDesk Rust')) {
         throw 'Package must identify the native Rust client and its acceptance status.'
     }
     $exe = Join-Path $Package 'AetherDesk.exe'
@@ -440,7 +440,7 @@ function Verify-RustPackage([string]$Package,[switch]$BeforeX11) {
             throw 'Rust executable must be Windows x64.'
         }
     } finally { $stream.Dispose() }
-    foreach ($name in @('Cargo.lock','rust-migration.json','READ-ME-FIRST.txt','THIRD-PARTY-NOTICES.txt')) {
+    foreach ($name in @('Cargo.lock','READ-ME-FIRST.txt','THIRD-PARTY-NOTICES.txt')) {
         if (!(Test-Path -LiteralPath (Join-Path $Package $name) -PathType Leaf)) { throw "Missing Rust package file: $name" }
     }
 }

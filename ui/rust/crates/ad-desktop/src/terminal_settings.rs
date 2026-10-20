@@ -466,10 +466,7 @@ pub fn edit(ui: &mut egui::Ui, settings: &mut Settings) {
                     );
                     });
                     ui.group(|ui| {
-                        ui.checkbox(
-                            &mut settings.follow_cwd,
-                            "Synchronize terminal and file folders in new SSH tabs",
-                        );
+                        ui.label("Default folder synchronization is configured in Preferences → Files and Editor. Each Files window can override it for its own tab.");
                     });
                 });
         });

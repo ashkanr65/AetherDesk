@@ -19,9 +19,8 @@ $release=$null
 try{
     $api='https://api.github.com/repos/'+$config.repository
     $repository=Invoke-RestMethod -Uri $api -Headers $headers
-    if($repository.private -ne $false -or $config.repository -ne 'ashkanr65/AetherDesk'){throw 'Only the approved public binary-download repository can receive releases. Visibility will never be changed by this script.'}
-    $source=Invoke-RestMethod -Uri 'https://api.github.com/repos/ashkanr65/AetherDesk-Rust' -Headers $headers
-    if(!$source.private){throw 'The source repository must remain private.'}
+    if($repository.private -ne $false -or $config.repository -ne 'ashkanr65/AetherDesk'){throw 'Releases must use the public AetherDesk source repository.'}
+    if($repository.default_branch -ne 'main'){throw 'The release repository must use main.'}
     $files=@((Join-Path $Directory 'update.json'))
     foreach($asset in @($manifest.portable,$manifest.installer)|Where-Object{$_}){
         if($asset.name -match '[\/]' -or $asset.name -in @('.','..')){throw 'Invalid asset name.'}
@@ -32,9 +31,12 @@ try{
     $commit=(& git -C $root rev-parse HEAD|Out-String).Trim()
     $dirty=@(& git -C $root status --porcelain)
     if($LASTEXITCODE -ne 0 -or $dirty.Count){throw 'Commit and push the tested release source before publishing.'}
-    $null=Invoke-RestMethod -Uri ($source.url+'/commits/'+$commit) -Headers $headers
+    $branch=(& git -C $root branch --show-current|Out-String).Trim()
+    if($branch -ne 'main'){throw 'Publish only from main.'}
+    $remoteMain=Invoke-RestMethod -Uri ($api+'/git/ref/heads/main') -Headers $headers
+    if($remoteMain.object.sha -ne $commit){throw 'Push this exact main commit to AetherDesk before publishing.'}
     $title='AetherDesk '+$manifest.version+$(if($Preview){' preview'}else{''})
-    $body=@{tag_name=$tag;target_commitish=$repository.default_branch;name=$title;body=$manifest.notes;draft=$true;prerelease=[bool]$Preview}|ConvertTo-Json
+    $body=@{tag_name=$tag;target_commitish=$commit;name=$title;body=$manifest.notes;draft=$true;prerelease=[bool]$Preview}|ConvertTo-Json
     $release=Invoke-RestMethod -Method Post -Uri ($api+'/releases') -Headers $headers -ContentType 'application/json' -Body $body
     foreach($file in $files){
         $name=[Uri]::EscapeDataString([IO.Path]::GetFileName($file))

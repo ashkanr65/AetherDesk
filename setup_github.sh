@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Quick Start Script for GitHub Actions Build
-# This script helps you push the code to GitHub to trigger Windows EXE build
+# This script helps you push the code to GitHub for the manual Windows build workflow
 
 set -e
 
@@ -63,9 +63,9 @@ echo "   git push -u origin main"
 echo ""
 echo "3. Go to your GitHub repository → Actions tab → Enable GitHub Actions"
 echo ""
-echo "4. The build will start automatically!"
+echo "4. Open Actions and manually run the required workflow on main."
 echo ""
 echo "5. After ~15 minutes, download artifacts from the workflow run"
 echo ""
-echo "For detailed instructions, see: BUILD_WINDOWS_EXE.md"
+echo "For detailed instructions, see: RELEASE-GUIDE.html"
 echo "=========================================="

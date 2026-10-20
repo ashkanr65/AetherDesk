@@ -1,4 +1,4 @@
-name: Prepare signed AetherDesk Rust update
+name: Prepare signed AetherDesk update
 
 # Deliberate manual build. Pushing this work never starts a build or release.
 on:
@@ -9,6 +9,7 @@ permissions:
 
 jobs:
   linux-agent:
+    if: github.repository == 'ashkanr65/AetherDesk' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-22.04
     timeout-minutes: 90
     steps:
@@ -84,6 +85,6 @@ jobs:
           path: signed-update/
           retention-days: 14
 
-# Artifacts remain in the private source repository until a maintainer reviews
-# them and runs Publish-Update.ps1. That script creates a draft in the separate
-# public downloads repository; it never uploads source or publishes automatically.
+# Source, workflow artifacts and releases belong to this public repository.
+# A maintainer reviews the verified package and runs Publish-Update.ps1 to create
+# a draft at the exact main commit. Publication remains a separate deliberate step.

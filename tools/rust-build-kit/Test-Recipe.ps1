@@ -491,14 +491,14 @@ try {
     try { Test-AgentBundle $agentRoot } catch { if ($_.Exception.Message -notlike '*checksum mismatch*') { throw }; $failed=$true }
     if (!$failed) { throw 'A corrupted agent runtime was accepted.' }
     [IO.File]::WriteAllText($library,'fixture')
-    '{"featureEquivalent":false,"runtime":"native-rust","product":"AetherDesk Rust"}' |
+    '{"featureEquivalent":false,"runtime":"native-rust","product":"AetherDesk"}' |
         Set-Content -LiteralPath (Join-Path $package 'build-info.json') -Encoding UTF8
     $image = New-Object byte[] 80
     $image[0]=77; $image[1]=90; $image[60]=64
     $image[64]=80; $image[65]=69; $image[68]=100; $image[69]=134
     $exe = Join-Path $package 'AetherDesk.exe'
     [IO.File]::WriteAllBytes($exe,$image)
-    foreach ($name in @('Cargo.lock','rust-migration.json','READ-ME-FIRST.txt','THIRD-PARTY-NOTICES.txt')) {
+    foreach ($name in @('Cargo.lock','READ-ME-FIRST.txt','THIRD-PARTY-NOTICES.txt')) {
         [IO.File]::WriteAllText((Join-Path $package $name),'offline fixture')
     }
     # Execute the real notices writer, not a hand-created placeholder.
@@ -566,6 +566,13 @@ $worker = [IO.File]::ReadAllText((Join-Path $PSScriptRoot 'Build-Worker.ps1'))
 foreach ($required in @('Invoke-RustWorkspaceTests $snapshot','Test-NativeX11Runtime $snapshot $result','Initialize-WorkspaceLocks $result',"'build','--locked','--release'","aetherdesk","Check-Migration.ps1","featureEquivalent="+ '$false')) {
     if (!$worker.Contains($required)) { throw "Rust recipe omitted: $required" }
 }
+foreach ($required in @('AppName=AetherDesk','DefaultGroupName=AetherDesk','UsePreviousGroup=no','UsePreviousAppDir=yes','{group}\AetherDesk','Open AetherDesk','{ABE535D8-5D63-4A27-902C-752E22C6E7B5}','Programs\AetherDesk-Rust')) {
+    if (!$worker.Contains($required)) {throw "Public branding or upgrade compatibility missing: $required"}
+}
+if ($worker.Contains('AppName=AetherDesk Rust') -or $worker.Contains("'AetherDesk-Rust-' +")) {throw 'Public package and installer names still contain the implementation language.'}
+Write-Host 'PASS: public product labels use AetherDesk and preserve installer/update identity.'
 if ($worker -match "Invoke-StepTool 'flutter|Invoke-StepTool 'node|Invoke-StepTool 'python|LangGraph") { throw 'Rust recipe must not build the legacy Flutter/Python app.' }
 $global:LASTEXITCODE = 0
 Write-Host 'PASS: Rust recipe syntax, workspace test routing, separate dependency locks, failure propagation, resume hashes, isolated versions, root dependency notices and x64 package validation.'
+
+& (Join-Path $PSScriptRoot 'Test-Public-Publisher.ps1')

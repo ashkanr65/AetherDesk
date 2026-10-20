@@ -74,43 +74,7 @@ fn build_font_definitions() -> egui::FontDefinitions {
 pub fn heading_font(size: f32) -> egui::FontId {
     egui::FontId::new(size, egui::FontFamily::Name("ui-heading".into()))
 }
-#[derive(Clone, Copy)]
-pub struct Colors {
-    pub panel: Color32,
-    pub canvas: Color32,
-    pub text: Color32,
-    pub muted: Color32,
-    pub heading: Color32,
-    pub border: Color32,
-    pub selection: Color32,
-    pub selection_text: Color32,
-}
-pub fn colors(dark: bool) -> Colors {
-    let rgb = Color32::from_rgb;
-    if dark {
-        Colors {
-            panel: rgb(19, 20, 19),
-            canvas: rgb(2, 17, 24),
-            text: rgb(222, 213, 195),
-            muted: rgb(179, 168, 146),
-            heading: rgb(201, 186, 155),
-            border: rgb(136, 116, 82),
-            selection: rgb(99, 80, 55),
-            selection_text: rgb(255, 244, 222),
-        }
-    } else {
-        Colors {
-            panel: rgb(244, 237, 220),
-            canvas: rgb(247, 245, 231),
-            text: rgb(48, 42, 30),
-            muted: rgb(105, 89, 60),
-            heading: rgb(111, 81, 32),
-            border: rgb(154, 129, 83),
-            selection: rgb(194, 169, 122),
-            selection_text: rgb(40, 31, 16),
-        }
-    }
-}
+pub use crate::theme_palette::colors;
 pub fn apply(ctx: &egui::Context, dark: bool) {
     let c = colors(dark);
     let mut v = if dark {
@@ -119,48 +83,51 @@ pub fn apply(ctx: &egui::Context, dark: bool) {
         egui::Visuals::light()
     };
     v.panel_fill = c.panel;
-    v.window_fill = c.panel;
-    v.extreme_bg_color = if dark {
-        Color32::from_rgb(9, 12, 12)
-    } else {
-        Color32::from_rgb(255, 250, 238)
-    };
+    v.window_fill = c.popup;
+    v.window_stroke = Stroke::new(1.0, c.border);
+    v.warn_fg_color = c.warning;
+    v.error_fg_color = c.error;
+    v.extreme_bg_color = c.input;
     v.faint_bg_color = c.canvas;
     v.override_text_color = None;
     v.widgets.noninteractive.fg_stroke = Stroke::new(1.0_f32, c.text);
-    v.widgets.noninteractive.bg_stroke = Stroke::new(0.8_f32, c.border.gamma_multiply(0.45));
-    v.widgets.inactive.fg_stroke = Stroke::new(1.0_f32, c.text);
-    v.widgets.inactive.bg_fill = c.panel;
-    v.widgets.inactive.weak_bg_fill = c.panel;
+    v.widgets.noninteractive.bg_stroke = Stroke::new(0.8_f32, c.separator);
+    v.widgets.inactive.fg_stroke = Stroke::new(1.0_f32, c.button_text);
+    v.widgets.inactive.bg_fill = c.button;
+    v.widgets.inactive.weak_bg_fill = c.button;
     v.widgets.inactive.bg_stroke = Stroke::new(0.8_f32, c.border.gamma_multiply(0.7));
-    for widget in [
-        &mut v.widgets.hovered,
-        &mut v.widgets.active,
-        &mut v.widgets.open,
-    ] {
-        widget.bg_fill = c.selection;
-        widget.weak_bg_fill = c.selection;
-        widget.fg_stroke = Stroke::new(1.0_f32, c.selection_text);
-        widget.bg_stroke = Stroke::new(1.0_f32, c.border);
-    }
+    v.widgets.hovered.bg_fill = c.hover;
+    v.widgets.hovered.weak_bg_fill = c.hover;
+    v.widgets.hovered.fg_stroke = Stroke::new(1.0, c.hover_text);
+    v.widgets.hovered.bg_stroke = Stroke::new(1.0, c.border);
+    v.widgets.active.bg_fill = c.active;
+    v.widgets.active.weak_bg_fill = c.active;
+    v.widgets.active.fg_stroke = Stroke::new(1.0, c.active_text);
+    v.widgets.active.bg_stroke = Stroke::new(1.0, c.border);
+    v.widgets.open.bg_fill = c.titlebar;
+    v.widgets.open.weak_bg_fill = c.titlebar;
+    v.widgets.open.fg_stroke = Stroke::new(1.0, c.selection_text);
+    v.widgets.open.bg_stroke = Stroke::new(1.0, c.border);
     v.selection.bg_fill = c.selection;
     v.selection.stroke = Stroke::new(1.0_f32, c.selection_text);
-    v.hyperlink_color = c.heading;
+    v.hyperlink_color = c.information;
     ctx.set_visuals(v);
     ctx.send_viewport_cmd(egui::ViewportCommand::SetTheme(if dark {
         egui::SystemTheme::Dark
     } else {
         egui::SystemTheme::Light
     }));
+    let font_size = crate::preferences::current().font_size;
     ctx.style_mut(|style| {
         style.spacing.button_padding = egui::vec2(10.0, 5.0);
         style.spacing.item_spacing = egui::vec2(8.0, 6.0);
         style
             .text_styles
-            .insert(egui::TextStyle::Body, egui::FontId::proportional(13.0));
-        style
-            .text_styles
-            .insert(egui::TextStyle::Button, egui::FontId::proportional(13.0));
+            .insert(egui::TextStyle::Body, egui::FontId::proportional(font_size));
+        style.text_styles.insert(
+            egui::TextStyle::Button,
+            egui::FontId::proportional(font_size),
+        );
     });
 }
 #[derive(Default)]
@@ -169,7 +136,7 @@ impl Theme {
     pub fn initialize(&mut self, _ctx: &egui::Context) {}
     pub fn toolbar(&self, ui: &egui::Ui, dark: bool) {
         let r = ui.max_rect().expand2(egui::vec2(8.0, 2.0));
-        ui.painter().rect_filled(r, 0, colors(dark).panel);
+        ui.painter().rect_filled(r, 0, colors(dark).toolbar);
         ui.painter().hline(
             r.x_range(),
             r.bottom(),
@@ -180,14 +147,14 @@ impl Theme {
         ui.painter().rect_filled(
             ui.max_rect().expand2(egui::vec2(8.0, 2.0)),
             0,
-            colors(dark).panel,
+            colors(dark).sidebar,
         );
     }
     pub fn rail(&self, ui: &egui::Ui, dark: bool) {
         ui.painter().rect_filled(
             ui.max_rect().expand2(egui::vec2(5.0, 2.0)),
             0,
-            colors(dark).panel,
+            colors(dark).rail,
         );
     }
     pub fn logo(&self, ui: &egui::Ui, dark: bool, rect: Rect) {
@@ -214,7 +181,7 @@ impl Theme {
             let (canvas, _) = ui.allocate_exact_size(egui::vec2(area.width(), height), egui::Sense::hover());
             let at = |x: f32, y: f32| canvas.min + egui::vec2(x, y) * scale;
             let band = Rect::from_min_size(at(46.0, 47.0), egui::vec2(width, 34.0 * scale));
-            ui.painter().rect_filled(band, 2, if dark { Color32::from_rgba_unmultiplied(18, 30, 30, 90) } else { Color32::from_rgba_unmultiplied(211, 193, 150, 35) });
+            ui.painter().rect_filled(band, 2, c.panel);
             icon(ui.painter(), Rect::from_center_size(band.left_center() + egui::vec2(20.0 * scale, 0.0), egui::vec2(18.0, 18.0)), 8, c.muted);
             ui.painter().text(band.left_center() + egui::vec2(45.0 * scale, 0.0), egui::Align2::LEFT_CENTER, "SECURE REMOTE WORKSPACE", egui::FontId::proportional(12.0), c.muted);
             let heading=ui.painter().layout("Everything remote.\nOne focused workspace.".into(),heading_font(32.0*scale.min(1.1)),c.heading,width);
@@ -222,8 +189,8 @@ impl Theme {
             let paragraph = ui.painter().layout("Open every connection in its own independent tab, keep credentials protected by Windows, and move between terminal, files, applications, and desktops without losing context.".into(), egui::FontId::proportional(13.0), c.text, width);
             ui.painter().galley(at(46.0, 184.0), paragraph, c.text);
             let action_rect=Rect::from_min_size(at(46.0,238.0),egui::vec2(139.0,28.0));
-            if ui.put(action_rect,egui::Button::new("+  New Connection").corner_radius(18)).on_hover_text("Create a connection (Ctrl+Shift+K)").clicked() { chosen=Some(ConnectionType::SshTerminal); }
-            ui.painter().text(egui::pos2(action_rect.right()+12.0,action_rect.center().y),egui::Align2::LEFT_CENTER,"Shortcut: Ctrl+Shift+K",egui::FontId::proportional(12.0),c.muted);
+            if ui.put(action_rect,egui::Button::new("+  New Connection").corner_radius(18)).on_hover_text(format!("Create a connection ({})", crate::preferences::current().shortcuts.new_connection.label())).clicked() { chosen=Some(ConnectionType::SshTerminal); }
+            ui.painter().text(egui::pos2(action_rect.right()+12.0,action_rect.center().y),egui::Align2::LEFT_CENTER,format!("Shortcut: {}",crate::preferences::current().shortcuts.new_connection.label()),egui::FontId::proportional(12.0),c.muted);
             let cards = [
                 (ConnectionType::SshTerminal, "SSH Terminal", "Fast interactive shells with verified host keys.", 0),
                 (ConnectionType::SftpOnly, "SFTP Workspace", "Local and remote files beside every live session.", 1),
@@ -244,7 +211,7 @@ impl Theme {
                 let foreground = if response.hovered() { c.selection_text } else { c.text };
                 icon(ui.painter(), Rect::from_min_size(rect.min + egui::vec2(22.0, 22.0) * scale, egui::vec2(18.0, 18.0)), index, foreground);
                 ui.painter().text(rect.min + egui::vec2(51.0, 17.0) * scale, egui::Align2::LEFT_TOP, title, egui::FontId::proportional(14.0), foreground);
-                if card_width > 310.0 { let dot = egui::pos2(rect.right() - 50.0, rect.top() + 22.0 * scale); ui.painter().circle_filled(dot, 3.0, if index == 0 { Color32::from_rgb(54, 168, 99) } else { Color32::from_rgb(99, 139, 177) }); ui.painter().text(dot + egui::vec2(7.0, 0.0), egui::Align2::LEFT_CENTER, "Ready", egui::FontId::proportional(9.0), foreground); }
+                if card_width > 310.0 { let dot = egui::pos2(rect.right() - 50.0, rect.top() + 22.0 * scale); ui.painter().circle_filled(dot, 3.0, if index == 0 { c.success } else { c.information }); ui.painter().text(dot + egui::vec2(7.0, 0.0), egui::Align2::LEFT_CENTER, "Ready", egui::FontId::proportional(9.0), foreground); }
                 let text = ui.painter().layout(description.into(), egui::FontId::proportional(12.0), foreground, card_width - 79.0 * scale);
                 ui.painter().galley(rect.min + egui::vec2(51.0, 37.0) * scale, text, foreground);
                 if response.clicked() { chosen = Some(kind); }
@@ -325,7 +292,7 @@ pub fn rail_button(
         if selected || response.hovered() {
             c.selection_text
         } else {
-            c.text
+            c.icon
         },
     );
     response.on_hover_text(label)

@@ -413,10 +413,16 @@ impl Editors {
     }
     pub fn open(
         &mut self,
-        file: OpenFile,
+        mut file: OpenFile,
         runtime: &crate::connection::Connections,
         ctx: &egui::Context,
     ) {
+        if !file.force_text
+            && matches!(file.action, OpenAction::Default)
+            && crate::preferences::current().system_editor
+        {
+            file.action = OpenAction::DefaultProgram;
+        }
         if let OpenAction::Compare(other) = file.action.clone() {
             self.comparisons.push(crate::comparison::Comparison::new(
                 file.location,

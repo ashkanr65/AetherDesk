@@ -1,8 +1,8 @@
 # AetherDesk updates
 
-Application source remains private in `ashkanr65/AetherDesk-Rust`. Public
-downloads use `ashkanr65/AetherDesk`. The former project was retained as the
-private, archived `ashkanr65/AetherDesk-Legacy-Private-20261019` repository.
+Application source and releases share the public `ashkanr65/AetherDesk`
+repository and its main branch. The update address and pinned verification key
+are unchanged, so existing installations keep working with the same feed.
 Users need no GitHub account, token, Python, Node or separate updater installation.
 Clients without this updater need one initial manual upgrade.
 
@@ -44,7 +44,7 @@ Windows paths, oversized packages and unexpected archive entries. Requests use
 HTTPS with fixed GitHub API hosts. No publisher credential ships in the product.
 
 The private Ed25519 key is protected in this PC's Windows Credential Manager as
-`AetherDesk-Rust/provider/updates-release-signing`. The private source repository
+`AetherDesk-Rust/provider/updates-release-signing`. The public project repository
 also has its encrypted Actions secret `UPDATE_SIGNING_KEY`. No plaintext key file
 is created or committed. Arrange an approved secret backup before retiring the
 PC/repository; do not regenerate the key casually because existing clients pin it.
@@ -54,10 +54,10 @@ Publisher-only Python tools use cryptography; configuring the Actions secret als
 uses PyNaCl. Neither is an end-user application dependency.
 
 1. Increase numeric version/build in `release.json` for each published release.
-   Never reuse a pair. Update `RELEASE-NOTES.md`; commit and push private source.
-2. Manually run **Prepare signed AetherDesk Rust update**, or use the local kit.
+   Never reuse a pair. Update `RELEASE-NOTES.md`; commit and push main.
+2. Manually run **Prepare signed AetherDesk update**, or use the local kit.
    The manual workflow runs Linux/Windows regressions and packaging and prepares
-   a private `aetherdesk-signed-update` artifact. It does not publish a release.
+   an `aetherdesk-signed-update` workflow artifact in the public repository. It does not publish a release.
    The supplied Linux agent's version/catalog must match the Windows client.
 3. For a local package, run `update_release.py prepare --package <folder>
    --installer <setup> --output <new-empty-folder> --notes-file RELEASE-NOTES.md`.
@@ -67,7 +67,7 @@ uses PyNaCl. Neither is an end-user application dependency.
    restart/recovery and remote compatibility. These checks have not run here.
 5. Run `Publish-Update.ps1 -Directory <signed-output> -Python <publisher-python>`.
    It verifies signatures/hashes and creates a draft in public AetherDesk, uploading
-   only the explicit package assets and metadata. Source stays private. Review
+   only the explicit package assets and metadata. The release tag targets the exact pushed source commit. Review
    before publication. Enable release immutability in public repository Settings
    → Releases if desired, before publishing the first release.
 
@@ -76,7 +76,7 @@ compiler regressions and bundled X11. The portable archive matched all 7,158
 package files and passed isolated rendering/editor-popup checks. The user-approved
 [0.1.2 build 1 preview](https://github.com/ashkanr65/AetherDesk/releases/tag/v0.1.2-build1)
 was published on 2026-10-19. All three remote asset SHA-256 digests match the local
-signed release, and anonymous access was verified. Source remains private.
+signed release, and anonymous access was verified. Source was private at that time.
 This preview is available for manual download and excluded from stable automatic
 updates. Following explicit user approval, [0.1.2 build 2](https://github.com/ashkanr65/AetherDesk/releases/tag/v0.1.2-build2)
 was published as a normal release for the update test on 2026-10-19. The anonymous

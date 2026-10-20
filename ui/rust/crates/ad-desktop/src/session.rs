@@ -124,7 +124,9 @@ impl SessionTab {
             terminal: Terminal::default(),
             pty_size: None,
             files_visible,
-            sync_directories: crate::terminal_settings::current().1.follow_cwd,
+            sync_directories: crate::preferences::current()
+                .follow_cwd
+                .unwrap_or_else(|| crate::terminal_settings::current().1.follow_cwd),
             local_path: std::env::var("USERPROFILE").unwrap_or_else(|_| ".".into()),
             local_loaded_path: String::new(),
             local_entries: vec![],
@@ -155,6 +157,9 @@ impl SessionTab {
         self.credential_loaded = self.profile.remember_password && !secret.is_empty();
         self.credentials.secret = secret;
         self.master_password = master;
+    }
+    pub fn restore_disconnected(&mut self) {
+        self.credentials_open = false;
     }
     pub fn take_profile_update(&mut self) -> Option<SavedSession> {
         self.profile_update.take()

@@ -70,7 +70,8 @@ pub fn validate(profile: &SavedSession) -> Result<(), String> {
     Ok(())
 }
 pub fn new_profile() -> SavedSession {
-    SavedSession::from_json(&json!({"id":uuid::Uuid::new_v4().to_string(),"name":"New connection","host":"","username":"","rememberUsername":false})).expect("literal session defaults")
+    let preferences = crate::preferences::current();
+    SavedSession::from_json(&json!({"id":uuid::Uuid::new_v4().to_string(),"name":"New connection","host":"","username":"","port":preferences.default_port,"rememberUsername":preferences.remember_username})).expect("literal session defaults")
 }
 pub fn import(path: &std::path::Path) -> Result<Vec<SavedSession>, String> {
     let metadata = std::fs::metadata(path).map_err(|e| e.to_string())?;

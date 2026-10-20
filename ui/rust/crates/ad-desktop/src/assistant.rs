@@ -513,6 +513,9 @@ fn composer_action_rects(row: egui::Rect) -> [egui::Rect; 3] {
     [attach, model, send]
 }
 impl Assistant {
+    pub fn open_preferences(&mut self) {
+        self.settings_open = true;
+    }
     pub fn is_busy(&self) -> bool {
         self.busy || self.approval.is_some()
     }

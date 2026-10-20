@@ -48,22 +48,20 @@ try {
         4 {
             $binary = (Require-Record 3 $fingerprint).output
             $snapshot = (Require-Record 1 $fingerprint).output
-            $result = Join-Path $packagesRoot ('AetherDesk-Rust-' + $release.version + '-build' + $release.build + '_' + $stamp)
+            $result = Join-Path $packagesRoot ('AetherDesk-' + $release.version + '-build' + $release.build + '_' + $stamp)
             New-Item -ItemType Directory -Path $result | Out-Null
             Copy-Item -LiteralPath $binary -Destination (Join-Path $result 'AetherDesk.exe')
-            foreach ($name in @('release.json','rust-migration.json')) {
+            foreach ($name in @('release.json','LICENSE','LICENSE-MIT','LICENSE-APACHE')) {
                 Copy-Item -LiteralPath (Join-Path $snapshot $name) -Destination (Join-Path $result $name)
             }
             Copy-Item -LiteralPath (Join-Path $snapshot 'ui\rust\Cargo.lock') -Destination (Join-Path $result 'Cargo.lock')
-            Copy-Item -LiteralPath (Join-Path $snapshot 'RUST-MIGRATION.md') -Destination (Join-Path $result 'RUST-MIGRATION.md')
-            Copy-Item -LiteralPath (Join-Path $snapshot 'RUST-FEATURE-PARITY.md') -Destination (Join-Path $result 'RUST-FEATURE-PARITY.md')
-            @('AetherDesk native Rust client.',
+            @('AetherDesk - secure remote workspace.',
               'Includes native SSH/SFTP, bundled X11 and remote desktop paths, popup editor, AI/Tools and protected native profiles.',
-              'Feature parity and live behavior remain unverified; some workflows are still incomplete. See RUST-FEATURE-PARITY.md.',
-              'Double-click AetherDesk.exe. No Flutter, Node, Python or Rust installation is required to run AetherDesk Rust.',
+              'Configure appearance and behaviour from the gear menu > Preferences. See release notes for known limitations.',
+              'Double-click AetherDesk.exe. All required application runtimes are bundled.',
               'Windows 10/11 x64 and an OpenGL 3.3-capable graphics driver are required.') |
                 Set-Content -LiteralPath (Join-Path $result 'READ-ME-FIRST.txt') -Encoding UTF8
-            [ordered]@{schemaVersion=1;product='AetherDesk Rust';version=$release.version;build=$release.build;fingerprint=$fingerprint;featureEquivalent=$false;runtime='native-rust';built=(Get-Date -Format o)} |
+            [ordered]@{schemaVersion=1;product='AetherDesk';version=$release.version;build=$release.build;fingerprint=$fingerprint;featureEquivalent=$false;runtime='native-rust';built=(Get-Date -Format o)} |
                 ConvertTo-Json | Set-Content -LiteralPath (Join-Path $result 'build-info.json') -Encoding UTF8
             Copy-DependencyNotices (Join-Path $snapshot 'ui\rust\Cargo.toml') $result
             $tests = Get-Content -LiteralPath (Require-Record 2 $fingerprint).output -Raw | ConvertFrom-Json
@@ -100,11 +98,13 @@ try {
             @(
                 '[Setup]',
                 'AppId={{ABE535D8-5D63-4A27-902C-752E22C6E7B5}',
-                'AppName=AetherDesk Rust',
+                'AppName=AetherDesk',
                 ('AppVersion=' + $release.normalized),
                 ('VersionInfoVersion=' + $release.normalized + '.' + $release.build),
                 'DefaultDirName={localappdata}\Programs\AetherDesk-Rust',
-                'DefaultGroupName=AetherDesk Rust',
+                'DefaultGroupName=AetherDesk',
+                'UsePreviousGroup=no',
+                'UsePreviousAppDir=yes',
                 'PrivilegesRequired=lowest',
                 'CloseApplications=no',
                 'RestartApplications=no',
@@ -120,14 +120,19 @@ try {
                 '[InstallDelete]',
                 'Type: files; Name: "{app}\aetherdesk-rust.exe"',
                 'Type: files; Name: "{app}\aetherdesk-rust-preview.exe"',
+                'Type: files; Name: "{app}\RUST-MIGRATION.md"',
+                'Type: files; Name: "{app}\RUST-FEATURE-PARITY.md"',
+                'Type: files; Name: "{app}\rust-migration.json"',
                 'Type: files; Name: "{userprograms}\AetherDesk Rust Preview\AetherDesk Rust Preview.lnk"',
                 'Type: dirifempty; Name: "{userprograms}\AetherDesk Rust Preview"',
+                'Type: files; Name: "{userprograms}\AetherDesk Rust\AetherDesk Rust.lnk"',
+                'Type: dirifempty; Name: "{userprograms}\AetherDesk Rust"',
                 '[Files]',
                 ('Source: "' + $package + '\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs'),
                 '[Icons]',
-                'Name: "{group}\AetherDesk Rust"; Filename: "{app}\AetherDesk.exe"',
+                'Name: "{group}\AetherDesk"; Filename: "{app}\AetherDesk.exe"',
                 '[Run]',
-                'Filename: "{app}\AetherDesk.exe"; Description: "Open AetherDesk Rust"; Flags: nowait postinstall skipifsilent'
+                'Filename: "{app}\AetherDesk.exe"; Description: "Open AetherDesk"; Flags: nowait postinstall skipifsilent'
             ) | Set-Content -LiteralPath $script -Encoding UTF8
             Invoke-StepTool (Get-Iscc) @($script)
             $result = Join-Path $packagesRoot ($installerName + '.exe')

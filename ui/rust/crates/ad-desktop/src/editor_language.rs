@@ -153,7 +153,7 @@ impl Language {
                 match result {
                     Ok(server) => {
                         self.server = Some(server);
-                        self.request("initialize",json!({"processId":null,"clientInfo":{"name":"AetherDesk Rust"},"rootUri":self.root,"capabilities":{"general":{"positionEncodings":["utf-16"]},"workspace":{"configuration":true,"workspaceEdit":{"documentChanges":true,"resourceOperations":[]}},"textDocument":{"completion":{"completionItem":{"snippetSupport":false,"insertReplaceSupport":true}},"publishDiagnostics":{"versionSupport":true}}}}));
+                        self.request("initialize",json!({"processId":null,"clientInfo":{"name":"AetherDesk"},"rootUri":self.root,"capabilities":{"general":{"positionEncodings":["utf-16"]},"workspace":{"configuration":true,"workspaceEdit":{"documentChanges":true,"resourceOperations":[]}},"textDocument":{"completion":{"completionItem":{"snippetSupport":false,"insertReplaceSupport":true}},"publishDiagnostics":{"versionSupport":true}}}}));
                     }
                     Err(error) => self.error = Some(error),
                 }

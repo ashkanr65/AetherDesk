@@ -1,19 +1,19 @@
-# AetherDesk Rust build kit
+# AetherDesk build kit
 
 For the complete independent signing, publishing and update-test procedure,
 open [AetherDesk build and release guide](../../RELEASE-GUIDE.html) in a browser.
 A copy is included beside the beginner kit launchers as `RELEASE-GUIDE.html`.
 
-This kit builds the native Rust client, including the Windows UI and
-bundled Linux agent, X11 and video runtimes. It is not yet feature-equivalent to
-the original application; see `RUST-FEATURE-PARITY.md` in the source or package.
+This kit builds the AetherDesk Windows application, Linux agent, X11 and video runtimes. Compiler checks and live acceptance are tracked separately; consult the current release notes for validation status.
+
+Application Preferences and colour customization are described in [PREFERENCES.md](../../PREFERENCES.md). Packages and installer shortcuts use AetherDesk; existing installation and data identifiers remain compatible.
 
 Double-click `Build-Everything.cmd` in `AetherDesk-Rust-Beginner-Build-Kit`.
 `Build-Portable-Only.cmd` omits the installer. All three launchers, including
 `Rebuild-Everything.cmd`, automatically clear old generated outputs before running
 the stages. After success they also remove staging files and caches to save disk
 space, keeping completed packages, logs and reports. These commands compile and test the
-source when **you** run them. No compilation was performed during this migration.
+source when **you** run them. Source changes do not compile until you run the kit.
 
 ## Build computer
 
@@ -162,7 +162,7 @@ when you build. Live Windows input/DPI/toolbar checks remain under R12.
 those fixtures are mocked. Formatting/recipe checks do not prove runtime parity.
 
 R1-R11 source work is implemented. R12 compiler/live/clean-machine acceptance is
-pending. `rust-regressions.json` covers 56 behavior groups and 37 original suites
+pending. `rust-regressions.json` covers 57 behavior groups and 37 original suites
 and helper references. The build records Windows results under
 `AetherDesk-Rust-output/reports/windows-regressions.json`; Linux results travel
 with the agent. These reports always leave live acceptance and replacement
@@ -180,7 +180,7 @@ changes. Native resolution, encoder quality and frame-rate defaults are preserve
 See SESSION-UI-TASKS.md and REMOTE-PERFORMANCE.md for remaining runtime checks.
 
 Signed updates and publisher setup are documented in UPDATES.md at the repository
-root. Application source stays private; public AetherDesk contains downloads only.
+root. Application source and releases share the public ashkanr65/AetherDesk repository on main.
 The release workflow is manual and never publishes automatically. Stages after
 snapshot creation now run their recipe from that verified snapshot, so later
 checkout edits do not invalidate a long packaging step. Snapshot tampering still

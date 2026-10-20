@@ -38,8 +38,8 @@ version = "0.1.2"
 edition = "2021"
 authors = ["AetherDesk Team"]
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/aetherdesk/aetherdesk"
-homepage = "https://aetherdesk.dev"
+repository = "https://github.com/ashkanr65/AetherDesk"
+homepage = "https://github.com/ashkanr65/AetherDesk"
 
 [workspace.dependencies]
 # Async runtime
