@@ -117,3 +117,19 @@ LATEST-RELEASE-CHECK.txt and LATEST-SIGNED-RELEASE.txt point to this release.
 No application was compiled by the assistant and no user installation was
 replaced. Real two-version upgrades, restart/recovery and data preservation
 remain pending; feed verification is not an installation test.
+
+## Build 4 publication — 20 October 2026
+
+[AetherDesk 0.1.2 build 4](https://github.com/ashkanr65/AetherDesk/releases/tag/v0.1.2-build4)
+is the normal latest update, including the Preferences layout repair. The user's
+build passed all seven stages in 52:06, including both new rendered layout tests,
+Windows/Linux regressions and packaged X11. Isolated dark/light/editor checks passed.
+All 7,158 portable files, the installer copy and all three uploaded asset digests
+were verified. Anonymous latest-feed and runtime metadata download checks passed;
+the downloaded signature verifies with the existing pinned key.
+
+Evidence: AetherDesk-Rust-output/acceptance/update-build4-20261020. The latest
+signed-release and release-check pointers now refer to build 4. Older installations
+can use the gear menu → Updates → Check now. Existing build 4 installations
+correctly find no newer version. No user installation was replaced; real upgrade,
+restart/recovery and data-preservation acceptance remains pending.
