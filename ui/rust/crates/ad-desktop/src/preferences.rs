@@ -335,14 +335,58 @@ impl Panel {
         self.settings = settings;
         Ok(())
     }
+    fn restore_section(&mut self, defaults: bool) {
+        let source = if defaults {
+            Settings::default()
+        } else {
+            self.settings.clone()
+        };
+        copy_section(&mut self.draft, &source, self.section);
+        if self.section == Section::Files {
+            self.follow_cwd = if defaults {
+                true
+            } else {
+                source
+                    .follow_cwd
+                    .unwrap_or_else(|| crate::terminal_settings::current().1.follow_cwd)
+            };
+        }
+        if self.section == Section::Display {
+            self.hex.clear();
+        }
+        self.message = if defaults {
+            "Defaults previewed for this section. Apply and save to keep them.".into()
+        } else {
+            "Unapplied changes in this section were discarded.".into()
+        };
+    }
+    fn apply_section(&mut self) -> Result<(), String> {
+        if self.section == Section::Display
+            && self
+                .hex
+                .values()
+                .any(|text| theme_palette::parse_hex(text).is_none())
+        {
+            return Err(
+                "Correct the invalid hexadecimal colour before applying Display preferences."
+                    .into(),
+            );
+        }
+        if self.section == Section::Files {
+            self.draft.follow_cwd = Some(self.follow_cwd);
+        }
+        let mut settings = self.settings.clone();
+        copy_section(&mut settings, &self.draft, self.section);
+        self.save(settings)?;
+        self.message = format!("{} preferences saved.", self.section.label());
+        Ok(())
+    }
     pub fn ui(&mut self, ctx: &egui::Context) -> Option<Action> {
         if !self.open {
             return None;
         }
         let mut open = true;
         let mut action = None;
-        let mut apply = false;
-        let mut cancel = false;
         let size = crate::app_layout::dialog_size(ctx, egui::vec2(900.0, 650.0));
         egui::Window::new("Preferences")
             .id(egui::Id::new("app-preferences"))
@@ -350,116 +394,147 @@ impl Panel {
             .fixed_size(size)
             .resizable(false)
             .collapsible(false)
-            .vscroll(true)
             .show(ctx, |ui| {
                 let enter = crate::dialog::primary(ui);
+                // Allocate the window once. Child content cannot increase its
+                // height or scroll the navigation/footer out of the window.
+                let (bounds, _) = ui.allocate_exact_size(size, egui::Sense::hover());
                 let compact = size.x < 660.0;
-                // Scrolling content can have infinite available height. Use
-                // the actual window size so nested scroll areas stay bounded.
-                let height = (size.y - if compact { 190.0 } else { 100.0 }).max(48.0);
+                let mut navigation = ui.new_child(
+                    egui::UiBuilder::new()
+                        .id_salt("preferences-navigation")
+                        .max_rect(if compact {
+                            egui::Rect::from_min_size(bounds.min, egui::vec2(bounds.width(), 34.0))
+                        } else {
+                            egui::Rect::from_min_size(
+                                bounds.min,
+                                egui::vec2(150.0, bounds.height()),
+                            )
+                        })
+                        .layout(egui::Layout::top_down(egui::Align::Min)),
+                );
+                navigation.set_clip_rect(navigation.max_rect().intersect(ui.clip_rect()));
                 if compact {
                     egui::ComboBox::from_id_salt("compact-preferences-section")
                         .selected_text(self.section.label())
-                        .show_ui(ui, |ui| {
+                        .show_ui(&mut navigation, |ui| {
                             for section in Section::ALL {
                                 ui.selectable_value(&mut self.section, section, section.label());
                             }
                         });
-                    ui.separator();
-                    action = self.section_scroll(ui, height);
                 } else {
-                    ui.horizontal_top(|ui| {
-                        ui.allocate_ui_with_layout(
-                            egui::vec2(150.0, height),
-                            egui::Layout::top_down(egui::Align::Min),
-                            |ui| {
-                                ui.set_min_height(height);
-                                for section in Section::ALL {
-                                    if ui
-                                        .selectable_label(self.section == section, section.label())
-                                        .clicked()
-                                    {
-                                        self.section = section;
-                                    }
-                                }
-                            },
-                        );
-                        ui.separator();
-                        // The navigation is horizontal, but its sibling form must
-                        // own a vertical layout rather than inherit that direction.
-                        action = self.section_scroll(ui, height);
-                    });
+                    for section in Section::ALL {
+                        if navigation
+                            .selectable_label(self.section == section, section.label())
+                            .clicked()
+                        {
+                            self.section = section;
+                            self.message.clear();
+                        }
+                    }
                 }
-                ui.separator();
+                if !compact {
+                    ui.painter().vline(
+                        bounds.left() + 156.0,
+                        bounds.y_range(),
+                        ui.visuals().widgets.noninteractive.bg_stroke,
+                    );
+                }
+                let section_rect = egui::Rect::from_min_max(
+                    bounds.min
+                        + if compact {
+                            egui::vec2(0.0, 42.0)
+                        } else {
+                            egui::vec2(162.0, 0.0)
+                        },
+                    bounds.max,
+                );
+                // Reserve the status line and actions before laying out the
+                // scroll viewport. All scroll painting is clipped above them.
+                let footer_height = (ui.spacing().interact_size.y + 12.0).max(40.0);
+                let footer_rect = egui::Rect::from_min_max(
+                    egui::pos2(section_rect.left(), section_rect.bottom() - footer_height),
+                    section_rect.max,
+                );
+                let message_height = ui.text_style_height(&egui::TextStyle::Body) + 8.0;
+                let content_rect = egui::Rect::from_min_max(
+                    section_rect.min,
+                    egui::pos2(
+                        section_rect.right(),
+                        footer_rect.top() - message_height - 8.0,
+                    ),
+                );
+                let mut content = ui.new_child(
+                    egui::UiBuilder::new()
+                        .id_salt("preferences-section")
+                        .max_rect(content_rect)
+                        .layout(egui::Layout::top_down(egui::Align::Min)),
+                );
+                content.set_clip_rect(content_rect.intersect(ui.clip_rect()));
+                form_style(&mut content);
+                action = egui::ScrollArea::both()
+                    .id_salt(("preferences-content", self.section.label()))
+                    .auto_shrink([false, false])
+                    .max_height(content_rect.height())
+                    .max_width(content_rect.width())
+                    .show(&mut content, |ui| {
+                        ui.set_width(ui.available_width().max(360.0));
+                        self.section_ui(ui)
+                    })
+                    .inner;
                 if !self.message.is_empty() {
-                    ui.add(egui::Label::new(&self.message).truncate())
+                    let message_rect = egui::Rect::from_min_max(
+                        egui::pos2(section_rect.left(), content_rect.bottom() + 4.0),
+                        egui::pos2(section_rect.right(), footer_rect.top()),
+                    );
+                    let mut message = ui.new_child(egui::UiBuilder::new().max_rect(message_rect));
+                    message.set_clip_rect(message_rect.intersect(ui.clip_rect()));
+                    message
+                        .add(egui::Label::new(&self.message).truncate())
                         .on_hover_text(&self.message);
                 }
-                ui.with_layout(
-                    egui::Layout::right_to_left(egui::Align::Center).with_main_wrap(true),
-                    |ui| {
-                        cancel = ui.button("Cancel").clicked();
-                        if ui.button("Reset to defaults").clicked() {
-                            self.draft = Settings::default();
-                            self.follow_cwd = true;
-                            self.hex.clear();
-                        }
-                        let response =
-                            ui.add_enabled(self.valid, egui::Button::new("Apply and save"));
-                        crate::dialog::focus_on_open(ui, &response);
-                        apply = self.valid && (response.clicked() || enter);
-                    },
+                ui.painter().hline(
+                    section_rect.x_range(),
+                    footer_rect.top(),
+                    ui.visuals().widgets.noninteractive.bg_stroke,
                 );
-            });
-        if apply {
-            if self
-                .hex
-                .values()
-                .any(|text| theme_palette::parse_hex(text).is_none())
-            {
-                self.message = "Correct the invalid hexadecimal colour before applying.".into();
-                return action;
-            }
-            self.draft.follow_cwd = Some(self.follow_cwd);
-            let result = self.save(self.draft.clone());
-            match result {
-                Ok(()) => {
-                    self.open = false;
-                    action = Some(Action::Applied);
-                    self.message.clear();
+                let mut footer = ui.new_child(
+                    egui::UiBuilder::new()
+                        .id_salt("preferences-section-actions")
+                        .max_rect(footer_rect)
+                        .layout(egui::Layout::right_to_left(egui::Align::Center)),
+                );
+                footer.set_clip_rect(footer_rect.intersect(ui.clip_rect()));
+                let editable = !matches!(self.section, Section::Assistant | Section::Updates);
+                if footer
+                    .button("Cancel")
+                    .on_hover_text("Discard changes in this section")
+                    .clicked()
+                {
+                    self.restore_section(false);
                 }
-                Err(error) => self.message = error,
-            }
-        } else if cancel || !open {
+                if footer
+                    .add_enabled(editable, egui::Button::new("Reset to defaults"))
+                    .clicked()
+                {
+                    self.restore_section(true);
+                }
+                let response =
+                    footer.add_enabled(self.valid && editable, egui::Button::new("Apply and save"));
+                crate::dialog::focus_on_open(&mut footer, &response);
+                if self.valid && editable && (response.clicked() || enter) {
+                    match self.apply_section() {
+                        Ok(()) => action = Some(Action::Applied),
+                        Err(error) => self.message = error,
+                    }
+                }
+            });
+        if !open {
             self.open = false;
             self.draft = self.settings.clone();
             self.hex.clear();
         }
         action
-    }
-    fn section_scroll(&mut self, ui: &mut egui::Ui, height: f32) -> Option<Action> {
-        let width = ui.available_width();
-        ui.allocate_ui_with_layout(
-            egui::vec2(width, height),
-            egui::Layout::top_down(egui::Align::Min),
-            |ui| {
-                ui.set_width(width);
-                form_style(ui);
-                egui::ScrollArea::both()
-                    .id_salt(("preferences-content", self.section.label()))
-                    .auto_shrink([false, false])
-                    .max_height(height)
-                    .max_width(width)
-                    .show(ui, |ui| {
-                        // Very narrow viewports scroll the form rather than
-                        // compressing labels and controls over one another.
-                        ui.set_width(width.max(360.0));
-                        self.section_ui(ui)
-                    })
-                    .inner
-            },
-        )
-        .inner
     }
     fn section_ui(&mut self, ui: &mut egui::Ui) -> Option<Action> {
         ui.strong(self.section.label());
@@ -713,6 +788,39 @@ impl Panel {
         });
     }
 }
+// Keep sections independent: an unrelated draft (including invalid colour
+// text) must never be saved or discarded by another section's actions.
+fn copy_section(target: &mut Settings, source: &Settings, section: Section) {
+    match section {
+        Section::General => {
+            target.start_maximized = source.start_maximized;
+            target.restore_tabs = source.restore_tabs;
+            target.confirm_quit = source.confirm_quit;
+        }
+        Section::Display => {
+            target.mode = source.mode;
+            target.ui_scale = source.ui_scale;
+            target.font_size = source.font_size;
+            target.themes = source.themes;
+        }
+        Section::Connections => {
+            target.default_port = source.default_port;
+            target.remember_username = source.remember_username;
+            target.connect_timeout = source.connect_timeout;
+        }
+        Section::Files => {
+            target.system_editor = source.system_editor;
+            target.follow_cwd = source.follow_cwd;
+        }
+        Section::Keyboard => target.shortcuts = source.shortcuts.clone(),
+        Section::Logs => {
+            target.log_level = source.log_level.clone();
+            target.log_file_mb = source.log_file_mb;
+            target.log_generations = source.log_generations;
+        }
+        Section::Assistant | Section::Updates => {}
+    }
+}
 // Apply only to the Preferences content column: preserve the chosen body font,
 // use it for labels and controls, and wrap descriptions inside the viewport.
 fn form_style(ui: &mut egui::Ui) {
@@ -915,6 +1023,154 @@ mod tests {
             .max_by(|a, b| a.1.left().total_cmp(&b.1.left()))
             .map(|(_, rect, size, clip)| (*rect, *size, *clip))
             .unwrap_or_else(|| panic!("Missing Preferences text: {label}"))
+    }
+    #[test]
+    fn section_actions_save_reset_and_cancel_only_the_selected_category() {
+        let _restore = RestoreSettings(current());
+        let directory = tempfile::tempdir().unwrap();
+        crate::storage::with_test_root(directory.path(), || {
+            let mut panel = Panel::load(true);
+            panel.show();
+            let original = panel.settings.clone();
+            panel.draft.start_maximized = !original.start_maximized;
+            panel.draft.default_port = 2222;
+            panel.draft.themes.dark.canvas = [1, 2, 3];
+            panel.hex.insert("true:Canvas".into(), "invalid".into());
+            panel.section = Section::General;
+            panel.apply_section().unwrap();
+            let saved = load().unwrap().unwrap();
+            assert_eq!(saved.start_maximized, !original.start_maximized);
+            assert_eq!(saved.default_port, original.default_port);
+            assert_eq!(saved.themes, original.themes);
+            assert_eq!(
+                panel.draft.default_port, 2222,
+                "other drafts must survive Apply"
+            );
+            panel.section = Section::Display;
+            assert!(panel.apply_section().is_err());
+            panel.restore_section(false);
+            assert_eq!(panel.draft.themes, original.themes);
+            assert!(panel.hex.is_empty());
+            assert_eq!(
+                panel.draft.default_port, 2222,
+                "Cancel must only discard this section"
+            );
+            panel.section = Section::Connections;
+            panel.apply_section().unwrap();
+            panel.restore_section(true);
+            assert_eq!(panel.draft.default_port, Settings::default().default_port);
+            assert_eq!(
+                load().unwrap().unwrap().default_port,
+                2222,
+                "Reset stays a draft"
+            );
+            assert_eq!(panel.draft.start_maximized, !original.start_maximized);
+            panel.apply_section().unwrap();
+            let saved = load().unwrap().unwrap();
+            assert_eq!(saved.default_port, Settings::default().default_port);
+            assert_eq!(saved.start_maximized, !original.start_maximized);
+            assert!(
+                panel.open,
+                "section actions must leave navigation available"
+            );
+        });
+    }
+    #[test]
+    fn display_scrolling_keeps_navigation_and_section_actions_fixed_and_uncovered() {
+        let _restore = RestoreSettings(current());
+        let directory = tempfile::tempdir().unwrap();
+        crate::storage::with_test_root(directory.path(), || {
+            for screen in [egui::vec2(1200.0, 900.0), egui::vec2(640.0, 500.0)] {
+                let ctx = egui::Context::default();
+                let mut panel = Panel::load(true);
+                panel.show();
+                panel.section = Section::Display;
+                let mut before = Vec::new();
+                let mut after = Vec::new();
+                let mut pointer = egui::Pos2::ZERO;
+                for frame in 0..32 {
+                    let mut events = Vec::new();
+                    if frame >= 8 {
+                        events.push(egui::Event::PointerMoved(pointer));
+                    }
+                    if frame == 8 {
+                        events.push(egui::Event::MouseWheel {
+                            unit: egui::MouseWheelUnit::Point,
+                            delta: egui::vec2(0.0, -10000.0),
+                            modifiers: egui::Modifiers::default(),
+                        });
+                    }
+                    let output = ctx.run(
+                        egui::RawInput {
+                            screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, screen)),
+                            time: Some(frame as f64 * 0.1),
+                            events,
+                            ..Default::default()
+                        },
+                        |ctx| {
+                            panel.ui(ctx);
+                        },
+                    );
+                    let texts: Vec<PaintedText> = output
+                        .shapes
+                        .into_iter()
+                        .filter_map(|shape| {
+                            if let egui::epaint::Shape::Text(text) = shape.shape {
+                                Some((
+                                    text.galley.job.text.clone(),
+                                    egui::Rect::from_min_size(text.pos, text.galley.size()),
+                                    text.galley.job.sections.first()?.format.font_id.size,
+                                    shape.clip_rect,
+                                ))
+                            } else {
+                                None
+                            }
+                        })
+                        .collect();
+                    if frame == 7 {
+                        pointer = find_text(&texts, "Theme mode").0.center();
+                        before = texts;
+                    } else if frame == 31 {
+                        after = texts;
+                    }
+                }
+                let (first, _, first_clip) = find_text(&before, "Theme mode");
+                let (_, _, last_clip) = find_text(&after, "Import palettes");
+                assert!(first_clip.contains_rect(first));
+                assert!(
+                    after.iter().all(
+                        |(text, rect, _, clip)| text != "Theme mode" || !clip.intersects(*rect)
+                    ),
+                    "test must really scroll Display"
+                );
+                assert_eq!(first_clip, last_clip, "content viewport must remain fixed");
+                for label in ["Apply and save", "Reset to defaults", "Cancel"] {
+                    let (a, _, _) = find_text(&before, label);
+                    let (b, _, clip) = find_text(&after, label);
+                    assert_eq!(a, b, "{label} moved with Display content");
+                    assert!(clip.contains_rect(b), "{label} was clipped");
+                    assert!(
+                        last_clip.bottom() < b.top(),
+                        "Display content covers the footer"
+                    );
+                    assert!(b.bottom() <= screen.y, "{label} escaped the window");
+                }
+                // General is a fixed left-navigation item in the wide layout.
+                if screen.x >= 660.0 {
+                    assert_eq!(
+                        find_text(&before, "General").0,
+                        find_text(&after, "General").0
+                    );
+                }
+                assert!(
+                    after
+                        .iter()
+                        .any(|(text, rect, _, clip)| text == "Import palettes"
+                            && clip.contains_rect(*rect)),
+                    "the bottom of Display must be reachable without a covering blank region"
+                );
+            }
+        });
     }
     #[test]
     fn compact_preferences_keep_visible_text_separate_and_actions_reachable() {

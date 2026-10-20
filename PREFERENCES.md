@@ -17,10 +17,18 @@ to AetherDesk, not the remote host's monitor resolution or streamed pixels.
 Categories remain on the left. Each category title starts the right column, with
 options stacked below it using a consistent body text size. Labels and controls
 align in rows, long text wraps and content scrolls vertically within the existing
-window size. **Apply and save**
-validates and saves changes. **Cancel** discards unapplied changes. **Reset to
-defaults** updates the draft; apply it to save. Separate AI and update management
-windows retain their own save and confirmation behaviour.
+window size. The navigation stays fixed; only the selected category's content
+scrolls. Its action buttons stay visible below the content.
+
+**Apply and save** validates and saves only the selected category and keeps
+Preferences open. **Cancel** discards only that category's unapplied changes.
+**Reset to defaults** previews defaults for that category; apply to save them.
+Switching categories preserves their separate drafts. Closing Preferences with
+its title-bar close button discards all remaining unapplied changes.
+
+AI Assistant and Updates open their own management windows, which retain their
+own save and confirmation behaviour. Apply and Reset are disabled in those two
+launcher sections because they contain no directly editable application fields.
 
 ## Theme colours
 

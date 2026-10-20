@@ -175,11 +175,10 @@ impl Theme {
         let mut chosen = None;
         egui::ScrollArea::vertical().id_salt("welcome-scroll").auto_shrink([false, false]).show(ui, |ui| {
             let margin = (ui.available_width() * 0.045).clamp(12.0, 46.0);
-            egui::Frame::new().inner_margin(margin).show(ui, |ui| {
+            egui::Frame::new().inner_margin(egui::Margin::symmetric(margin as i8, 12)).show(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Wrap);
             let font = egui::TextStyle::Body.resolve(ui.style()).size;
-            ui.add_space(20.0);
             egui::Frame::new().fill(c.panel).inner_margin(12.0).show(ui, |ui| {
                 ui.horizontal(|ui| {
                     let (rect, _) = ui.allocate_exact_size(egui::vec2(18.0, 18.0), egui::Sense::hover());
@@ -187,12 +186,12 @@ impl Theme {
                     ui.label(egui::RichText::new("SECURE REMOTE WORKSPACE").color(c.muted));
                 });
             });
-            ui.add_space(24.0);
+            ui.add_space(12.0);
             let heading_size = (font * 2.25).min((ui.available_width() / 8.0).max(font));
             ui.add(egui::Label::new(egui::RichText::new("Everything remote.\nOne focused workspace.").font(heading_font(heading_size)).color(c.heading)).wrap());
-            ui.add_space(16.0);
+            ui.add_space(8.0);
             ui.add(egui::Label::new("Open every connection in its own independent tab, keep credentials protected by Windows, and move between terminal, files, applications, and desktops without losing context.").wrap());
-            ui.add_space(24.0);
+            ui.add_space(12.0);
             // A wrapped label inside a wrapping horizontal row can paint back
             // over the preceding button. Choose the row direction before
             // placing either widget, using their full unwrapped text widths.
@@ -200,25 +199,28 @@ impl Theme {
             let button_width = ui.painter().layout_no_wrap("+  New Connection".into(), egui::TextStyle::Button.resolve(ui.style()), c.text).size().x
                 + ui.spacing().button_padding.x * 2.0;
             let shortcut_width = ui.painter().layout_no_wrap(shortcut.clone(), egui::TextStyle::Body.resolve(ui.style()), c.muted).size().x;
-            let layout = if button_width + shortcut_width + ui.spacing().item_spacing.x + 4.0 <= ui.available_width() {
-                egui::Layout::left_to_right(egui::Align::Center)
-            } else {
-                egui::Layout::top_down(egui::Align::Min)
-            };
-            ui.with_layout(layout, |ui| {
+            let inline = button_width + shortcut_width + ui.spacing().item_spacing.x + 4.0 <= ui.available_width();
+            let mut actions = |ui: &mut egui::Ui| {
                 if ui.add(egui::Button::new("+  New Connection").corner_radius(18)).clicked() {
                     chosen = Some(ConnectionType::SshTerminal);
                 }
-                ui.add(egui::Label::new(egui::RichText::new(shortcut).color(c.muted)).wrap());
-            });
-            ui.add_space(28.0);
+                ui.add(egui::Label::new(egui::RichText::new(&shortcut).color(c.muted)).wrap());
+            };
+            // horizontal/vertical size to their contents. with_layout would
+            // inherit the scroll area's remaining height and centre a huge row.
+            if inline {
+                ui.horizontal(&mut actions);
+            } else {
+                ui.vertical(&mut actions);
+            }
+            ui.add_space(16.0);
             let cards = [
                 (ConnectionType::SshTerminal, "SSH Terminal", "Fast interactive shells with verified host keys.", 0),
                 (ConnectionType::SftpOnly, "SFTP Workspace", "Local and remote files beside every live session.", 1),
                 (ConnectionType::RemoteDesktop, "Remote Desktop", "Linux desktops streamed inside AetherDesk.", 2),
                 (ConnectionType::SshX11, "SSH + X11", "Launch individual Linux GUI applications securely.", 3),
             ];
-            let columns = if ui.available_width() >= font * 48.0 { 2 } else { 1 };
+            let columns = if ui.available_width() >= font * 36.0 { 2 } else { 1 };
             for row in cards.chunks(columns) {
                 ui.columns(columns, |columns| {
                     for (column, &(kind, title, description, index)) in columns.iter_mut().zip(row) {
@@ -520,6 +522,91 @@ pub fn icon(p: &egui::Painter, rect: Rect, index: usize, color: Color32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn welcome_actions_and_all_cards_fit_normal_desktop_viewports_without_scrolling() {
+        for dark in [false, true] {
+            for (width, height, font) in [
+                (767.0, 600.0, 13.0),
+                (1120.0, 760.0, 20.0),
+                (1600.0, 900.0, 13.0),
+            ] {
+                let ctx = egui::Context::default();
+                ctx.set_fonts(font_definitions());
+                let mut output = None;
+                for _ in 0..4 {
+                    output = Some(ctx.run(
+                        egui::RawInput {
+                            screen_rect: Some(Rect::from_min_size(
+                                egui::Pos2::ZERO,
+                                egui::vec2(width, height),
+                            )),
+                            ..Default::default()
+                        },
+                        |ctx| {
+                            apply(ctx, dark);
+                            ctx.style_mut(|style| {
+                                for role in [egui::TextStyle::Body, egui::TextStyle::Button] {
+                                    style
+                                        .text_styles
+                                        .insert(role, egui::FontId::proportional(font));
+                                }
+                            });
+                            egui::CentralPanel::default().show(ctx, |ui| {
+                                Theme.home(ui, dark);
+                            });
+                        },
+                    ));
+                }
+                let texts: Vec<_> = output
+                    .unwrap()
+                    .shapes
+                    .into_iter()
+                    .filter_map(|shape| {
+                        if let egui::epaint::Shape::Text(text) = shape.shape {
+                            Some((
+                                text.galley.job.text.clone(),
+                                Rect::from_min_size(text.pos, text.galley.size()),
+                                shape.clip_rect,
+                            ))
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+                for title in [
+                    "SSH Terminal",
+                    "SFTP Workspace",
+                    "Remote Desktop",
+                    "SSH + X11",
+                ] {
+                    let (_, rect, clip) = texts.iter().find(|(text, ..)| text == title).unwrap();
+                    assert!(
+                        clip.contains_rect(*rect),
+                        "{title} requires scrolling at {width}x{height}"
+                    );
+                }
+                let (_, introduction, _) = texts
+                    .iter()
+                    .find(|(text, ..)| text.starts_with("Open every connection"))
+                    .unwrap();
+                let (_, button, _) = texts
+                    .iter()
+                    .find(|(text, ..)| text == "+  New Connection")
+                    .unwrap();
+                assert!(
+                    button.top() - introduction.bottom() < 48.0,
+                    "action row consumed the remaining window height"
+                );
+                // Include descriptions, not just card headings, in the fit check.
+                for (text, rect, clip) in &texts {
+                    assert!(
+                        clip.contains_rect(*rect),
+                        "Welcome content clipped: {text} at {width}x{height}"
+                    );
+                }
+            }
+        }
+    }
     #[test]
     fn welcome_text_reflows_without_overlap_in_narrow_windows_and_large_fonts() {
         for dark in [false, true] {
