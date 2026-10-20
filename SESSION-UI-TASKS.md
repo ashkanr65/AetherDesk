@@ -558,3 +558,11 @@ detection test, and no connection was interrupted.
 | AL5 | Validate and build the next candidate | Build 0.1.2 build 3 prepared. Seven native regressions registered and inventoried. Rust formatting/parser, catalog validation, offline recipe/publisher safeguards and two signature/package fixtures passed without compiling. Eleven guide examples parse; guide copies match. User compilation and packaged/live verification remain pending. |
 | AL6 | Publish source, licences and combined release repository | Complete: full source history merged into public ashkanr65/AetherDesk main (4a7b7dc); anonymous source/licence access verified. Existing build 1/2 tags unchanged; latest build 2 and all three asset digests unchanged. Existing signing key configured as the canonical repository's encrypted Actions secret. Old private source renamed AetherDesk-Source-Archive-20261020 and archived. Publisher/workflow/release guide now use the single public repository and exact main commit. |
 | AL7 | Complete new-package and real upgrade acceptance | Remaining: user build of 0.1.2 build 3, seven new native tests, packaged Preferences/theme/log checks, and real update download/replacement/restart/settings and credential preservation. No new binary release was published. |
+
+## Build 3 compiler compatibility repair — 2026-10-20
+
+| Item | Work | Status |
+| --- | --- | --- |
+| AM1 | Correct the icon-button pressed-state API | Fixed: use Response::is_pointer_button_down_on(), confirmed in the cached pinned egui 0.33.3 source. Keeps the pressed/hover icon colours and normal custom icon colour. |
+| AM2 | Remove reported stroke-width inference warnings | Fixed: explicit f32 widths at all ten reported calls in navigation, Preferences and theme styling. Values and appearance are unchanged. |
+| AM3 | Verify and rebuild | Rust parser/format check and source diff checks passed. Compilation and native regression tests remain for the user's next build; no package or binary release produced. |

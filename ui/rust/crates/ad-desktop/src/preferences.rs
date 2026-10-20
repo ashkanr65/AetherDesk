@@ -630,13 +630,13 @@ fn preview(ui: &mut egui::Ui, palette: Palette) {
     p.hline(
         r.x_range(),
         at(0.0, 0.94).y,
-        egui::Stroke::new(1.0, c.separator),
+        egui::Stroke::new(1.0_f32, c.separator),
     );
     text(0.08, 0.97, "Connected", c.success);
     p.rect_stroke(
         r,
         4,
-        egui::Stroke::new(1.0, c.border),
+        egui::Stroke::new(1.0_f32, c.border),
         egui::StrokeKind::Inside,
     );
 }

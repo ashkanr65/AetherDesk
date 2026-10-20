@@ -235,7 +235,7 @@ impl Strip {
                                     c + egui::vec2(-3.5, -3.5 * direction),
                                     c + egui::vec2(3.5, 3.5 * direction),
                                 ],
-                                egui::Stroke::new(1.3, color),
+                                egui::Stroke::new(1.3_f32, color),
                             );
                         }
                         close_response.widget_info(|| {
