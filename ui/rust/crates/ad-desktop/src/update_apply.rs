@@ -252,6 +252,103 @@ fn extract(stage: &Path, manifest: &Manifest) -> Result<PathBuf, String> {
     Ok(destination)
 }
 
+fn file_error(action: &str, path: &Path, cause: impl std::fmt::Display) -> String {
+    format!("Cannot {action} '{}': {cause}", path.display())
+}
+
+// Windows CopyFile refuses to overwrite a read-only destination, including the
+// Linux runtime files shipped in portable packages. Copying their permissions to
+// a backup also made the old recovery path fail in exactly the same way.
+fn writable_owned_file(path: &Path) -> Result<Option<std::fs::Permissions>, String> {
+    #[cfg(windows)]
+    match std::fs::metadata(path) {
+        Ok(meta) if meta.permissions().readonly() => {
+            let original = meta.permissions();
+            let mut writable = original.clone();
+            writable.set_readonly(false);
+            std::fs::set_permissions(path, writable)
+                .map_err(|e| file_error("make the package file writable", path, e))?;
+            return Ok(Some(original));
+        }
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
+            return Err(file_error("inspect the package file", path, e));
+        }
+        _ => {}
+    }
+    #[cfg(not(windows))]
+    let _ = path;
+    Ok(None)
+}
+
+fn restore_permissions(
+    path: &Path,
+    permissions: Option<std::fs::Permissions>,
+) -> Result<(), String> {
+    if let Some(permissions) = permissions {
+        std::fs::set_permissions(path, permissions)
+            .map_err(|e| file_error("restore file permissions", path, e))?;
+    }
+    Ok(())
+}
+
+// Complete and flush a sibling file before publishing it. A copy/space failure
+// leaves the old destination intact; the temporary file is removed on failure.
+// Byte copies intentionally do not propagate Windows read-only attributes.
+fn publish_file(
+    destination: &Path,
+    write: impl FnOnce(&mut std::fs::File) -> std::io::Result<()>,
+) -> Result<(), String> {
+    no_links(destination)?;
+    let parent = destination.parent().ok_or("Invalid update destination")?;
+    let mut temporary = tempfile::Builder::new()
+        .prefix(".aetherdesk-update-")
+        .tempfile_in(parent)
+        .map_err(|e| file_error("prepare a replacement for", destination, e))?;
+    write(temporary.as_file_mut())
+        .and_then(|_| temporary.as_file().sync_all())
+        .map_err(|e| file_error("write a replacement for", destination, e))?;
+    let permissions = writable_owned_file(destination)?;
+    let mut attempts = 0;
+    loop {
+        match temporary.persist(destination) {
+            Ok(_) => return Ok(()),
+            Err(failure) => {
+                let retry = cfg!(windows)
+                    && matches!(failure.error.raw_os_error(), Some(5 | 32 | 33))
+                    && attempts < 10;
+                if !retry {
+                    restore_permissions(destination, permissions)?;
+                    return Err(file_error(
+                        "replace the package file",
+                        destination,
+                        failure.error,
+                    ));
+                }
+                temporary = failure.file;
+                attempts += 1;
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+        }
+    }
+}
+
+fn copy_owned_file(source: &Path, destination: &Path) -> Result<(), String> {
+    no_links(source)?;
+    publish_file(destination, |output| {
+        std::io::copy(&mut std::fs::File::open(source)?, output).map(|_| ())
+    })
+}
+
+fn remove_owned_file(path: &Path) -> Result<(), String> {
+    no_links(path)?;
+    let permissions = writable_owned_file(path)?;
+    if let Err(cause) = std::fs::remove_file(path) {
+        restore_permissions(path, permissions)?;
+        return Err(file_error("remove the obsolete package file", path, cause));
+    }
+    Ok(())
+}
+
 /// A durable journal is retained beside the update until installation succeeds.
 /// Only signed package paths are touched; unknown files and user data are kept.
 fn replace(
@@ -293,21 +390,20 @@ fn replace(
             }
             let saved = backup.join(path);
             std::fs::create_dir_all(saved.parent().ok_or("Invalid backup path")?).map_err(error)?;
-            std::fs::copy(&destination, saved).map_err(error)?;
+            copy_owned_file(&destination, &saved)?;
         }
         journal.push((path.clone(), existed));
     }
-    std::fs::write(
-        stage.join("rollback.json"),
-        serde_json::to_vec(&journal).map_err(error)?,
-    )
-    .map_err(error)?;
+    let journal_bytes = serde_json::to_vec(&journal).map_err(error)?;
+    publish_file(&stage.join("rollback.json"), |output| {
+        std::io::Write::write_all(output, &journal_bytes)
+    })?;
     let outcome = (|| {
         for file in &manifest.files {
             let destination = target.join(&file.path);
             std::fs::create_dir_all(destination.parent().ok_or("Invalid update path")?)
                 .map_err(error)?;
-            std::fs::copy(source.join(&file.path), &destination).map_err(error)?;
+            copy_owned_file(&source.join(&file.path), &destination)?;
         }
         for (path, existed) in &journal {
             if *existed
@@ -317,33 +413,57 @@ fn replace(
                     .iter()
                     .any(|f| f.path.eq_ignore_ascii_case(path))
             {
-                std::fs::remove_file(target.join(path)).map_err(error)?;
+                remove_owned_file(&target.join(path))?;
             }
         }
-        std::fs::write(target.join("installed-update.json"), envelope).map_err(error)?;
+        publish_file(&target.join("installed-update.json"), |output| {
+            std::io::Write::write_all(output, envelope)
+        })?;
         Ok::<_, String>(())
     })();
-    if outcome.is_err() {
+    if let Err(cause) = outcome {
+        let _ = std::fs::write(stage.join("replacement-error.txt"), &cause);
         rollback(target, stage, &journal)?;
-        return Err("The update failed. The previous files were restored.".into());
+        return Err(format!(
+            "The update failed. The previous files were restored.\n{cause}"
+        ));
     }
     Ok(())
 }
 fn rollback(target: &Path, stage: &Path, journal: &[(String, bool)]) -> Result<(), String> {
+    // Validate the complete journal before touching anything. Then attempt every
+    // restore, so one locked file cannot leave all earlier files unrestored.
+    if journal.iter().any(|(path, _)| !metadata::relative(path)) {
+        return Err("Invalid rollback path".into());
+    }
+    let completed = stage.join("rollback-complete");
+    if completed.exists() {
+        std::fs::remove_file(&completed).map_err(error)?;
+    }
+    let mut failures = Vec::new();
     for (path, existed) in journal.iter().rev() {
-        if !metadata::relative(path) {
-            return Err("Invalid rollback path".into());
-        }
         let destination = target.join(path);
-        no_links(&destination)?;
-        if *existed {
-            std::fs::copy(stage.join("previous").join(path), destination).map_err(|_| {
-                "Automatic recovery could not finish. Keep the update recovery folder.".to_string()
-            })?;
-        } else if destination.is_file() {
-            std::fs::remove_file(destination).map_err(error)?;
+        let outcome = (|| {
+            no_links(&destination)?;
+            if *existed {
+                copy_owned_file(&stage.join("previous").join(path), &destination)?;
+            } else if destination.is_file() {
+                remove_owned_file(&destination)?;
+            }
+            Ok::<_, String>(())
+        })();
+        if let Err(cause) = outcome {
+            failures.push(cause);
         }
     }
+    if !failures.is_empty() {
+        let _ = std::fs::write(stage.join("recovery-errors.txt"), failures.join("\n"));
+        return Err(format!(
+            "Automatic recovery could not finish ({} files). Keep the update recovery folder: {}\n{}",
+            failures.len(), stage.display(), failures[0]
+        ));
+    }
+    std::fs::write(completed, b"restored").map_err(error)?;
     Ok(())
 }
 fn apply(plan_path: &Path) -> Result<(), String> {
@@ -431,8 +551,21 @@ fn apply(plan_path: &Path) -> Result<(), String> {
             );
         }
     } else {
-        let unpacked = extract(&stage, &manifest)?;
-        replace(&plan.target, &unpacked, &stage, &manifest, &envelope)?;
+        let unpacked = match extract(&stage, &manifest) {
+            Ok(unpacked) => unpacked,
+            Err(cause) => {
+                drop(guard);
+                restart(&plan.target)?;
+                return Err(cause);
+            }
+        };
+        if let Err(cause) = replace(&plan.target, &unpacked, &stage, &manifest, &envelope) {
+            drop(guard);
+            if !stage.join("rollback.json").exists() || stage.join("rollback-complete").is_file() {
+                restart(&plan.target)?;
+            }
+            return Err(cause);
+        }
     }
     drop(guard);
     let launched = hidden(
@@ -480,9 +613,12 @@ fn restore_previous(plan: &Plan, stage: &Path) -> Result<(), String> {
             .map_err(error)?;
     rollback(&plan.target, stage, &journal)?;
     drop(guard);
-    hidden(Command::new(plan.target.join("AetherDesk.exe")).current_dir(&plan.target))
+    restart(&plan.target)
+}
+fn restart(target: &Path) -> Result<(), String> {
+    hidden(Command::new(target.join("AetherDesk.exe")).current_dir(target))
         .spawn()
-        .map_err(error)?;
+        .map_err(|e| file_error("restart the restored application", target, e))?;
     Ok(())
 }
 pub fn mark_healthy(stage: &Path) -> Result<(), String> {
@@ -530,6 +666,147 @@ pub fn entry(path: &Path) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn read_only(path: &Path, value: bool) {
+        let mut permissions = std::fs::metadata(path).unwrap().permissions();
+        permissions.set_readonly(value);
+        std::fs::set_permissions(path, permissions).unwrap();
+    }
+    #[test]
+    #[cfg(windows)]
+    fn portable_replacement_and_recovery_handle_readonly_runtime_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("OneDrive - Test/Aether");
+        let source = dir.path().join("unpacked");
+        let stage = dir.path().join("update");
+        for root in [&target, &source, &stage] {
+            std::fs::create_dir_all(root.join("agent/libs")).unwrap();
+        }
+        let paths = ["AetherDesk.exe", "agent/libs/libglib.so"];
+        for path in paths {
+            std::fs::write(target.join(path), b"old package").unwrap();
+            std::fs::write(source.join(path), b"new package").unwrap();
+            read_only(&target.join(path), true);
+            read_only(&source.join(path), true);
+        }
+        std::fs::write(target.join("user.txt"), b"preserve user data").unwrap();
+        read_only(&target.join("user.txt"), true);
+        let manifest = Manifest {
+            schema: 1,
+            product: "AetherDesk".into(),
+            target: "windows-x64".into(),
+            version: "0.1.2".into(),
+            build: 5,
+            published: 0,
+            expires: i64::MAX,
+            notes: String::new(),
+            installer: None,
+            portable: metadata::Asset {
+                name: "fixture.zip".into(),
+                bytes: 0,
+                sha256: String::new(),
+            },
+            files: paths
+                .iter()
+                .map(|path| metadata::File {
+                    path: (*path).into(),
+                    bytes: 11,
+                    sha256: String::new(),
+                })
+                .collect(),
+        };
+        replace(&target, &source, &stage, &manifest, b"fixture manifest").unwrap();
+        assert_eq!(
+            std::fs::read(target.join("installed-update.json")).unwrap(),
+            b"fixture manifest"
+        );
+        for path in paths {
+            assert_eq!(std::fs::read(target.join(path)).unwrap(), b"new package");
+            assert!(!std::fs::metadata(target.join(path))
+                .unwrap()
+                .permissions()
+                .readonly());
+            assert_eq!(
+                std::fs::read(stage.join("previous").join(path)).unwrap(),
+                b"old package"
+            );
+            read_only(&target.join(path), true);
+            read_only(&stage.join("previous").join(path), true);
+        }
+        let journal = serde_json::from_slice::<Vec<(String, bool)>>(
+            &std::fs::read(stage.join("rollback.json")).unwrap(),
+        )
+        .unwrap();
+        rollback(&target, &stage, &journal).unwrap();
+        for path in paths {
+            assert_eq!(std::fs::read(target.join(path)).unwrap(), b"old package");
+            read_only(&source.join(path), false);
+            read_only(&stage.join("previous").join(path), false);
+        }
+        assert!(!target.join("installed-update.json").exists());
+        assert_eq!(
+            std::fs::read(target.join("user.txt")).unwrap(),
+            b"preserve user data"
+        );
+        assert!(std::fs::metadata(target.join("user.txt"))
+            .unwrap()
+            .permissions()
+            .readonly());
+        read_only(&target.join("user.txt"), false);
+    }
+    #[test]
+    fn incomplete_replacement_write_keeps_original_bytes_and_permissions() {
+        let dir = tempfile::tempdir().unwrap();
+        let destination = dir.path().join("runtime.dll");
+        std::fs::write(&destination, b"complete original").unwrap();
+        read_only(&destination, true);
+        let result = publish_file(&destination, |file| {
+            std::io::Write::write_all(file, b"incomplete")?;
+            Err(std::io::Error::other("simulated full disk"))
+        });
+        assert!(result.unwrap_err().contains("simulated full disk"));
+        assert_eq!(std::fs::read(&destination).unwrap(), b"complete original");
+        assert!(std::fs::metadata(&destination)
+            .unwrap()
+            .permissions()
+            .readonly());
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
+        read_only(&destination, false);
+    }
+    #[test]
+    #[cfg(windows)]
+    fn recovery_attempts_other_files_when_one_is_locked_and_records_the_path() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("application");
+        let stage = dir.path().join("update");
+        std::fs::create_dir(&target).unwrap();
+        std::fs::create_dir_all(stage.join("previous")).unwrap();
+        for name in ["AetherDesk.exe", "locked.dll"] {
+            std::fs::write(target.join(name), b"new").unwrap();
+            std::fs::write(stage.join("previous").join(name), b"old").unwrap();
+        }
+        let locked = std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(0)
+            .open(target.join("locked.dll"))
+            .unwrap();
+        let journal = [("AetherDesk.exe".into(), true), ("locked.dll".into(), true)];
+        assert!(rollback(&target, &stage, &journal)
+            .unwrap_err()
+            .contains("locked.dll"));
+        assert_eq!(
+            std::fs::read(target.join("AetherDesk.exe")).unwrap(),
+            b"old"
+        );
+        assert!(!stage.join("rollback-complete").exists());
+        assert!(std::fs::read_to_string(stage.join("recovery-errors.txt"))
+            .unwrap()
+            .contains("locked.dll"));
+        drop(locked);
+        rollback(&target, &stage, &journal).unwrap();
+        assert_eq!(std::fs::read(target.join("locked.dll")).unwrap(), b"old");
+        assert!(stage.join("rollback-complete").is_file());
+    }
     #[test]
     fn interrupted_portable_replacement_can_restore_previous_files_without_touching_user_data() {
         let dir = tempfile::tempdir().unwrap();

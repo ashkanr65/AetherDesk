@@ -34,6 +34,37 @@ Completed update directories are cleaned after a successful startup.
 An installation lock also prevents updating a folder while another AetherDesk
 instance from that folder is open; other instances are never forcibly closed.
 
+### Portable recovery fix prepared for build 5
+
+A real build 3 to build 4 upgrade on 20 October 2026 exposed a Windows
+read-only-file bug: replacement failed on bundled Linux runtime files, and the
+same overwrite operation stopped rollback before restoring all previous files.
+The generic recovery dialog hid the failing path. Earlier package and feed
+verification did not cover this actual upgrade failure.
+
+Build 5 prepares each file beside its destination, flushes the complete bytes,
+and clears a read-only attribute only on the package file it must replace or
+remove. Windows permission/sharing errors on replacement receive a short bounded
+retry. Incomplete writes preserve original bytes and permissions. Recovery tries
+every journal entry, retains detailed errors and restarts the old version only
+when recovery is complete (or no replacement began). Signatures, path checks,
+installation locks and unknown-file preservation remain enforced.
+
+Three required Windows filesystem tests cover read-only package/backup files,
+an interrupted write and one locked recovery file. Build 5 compilation and a
+real automatic two-version upgrade still need validation. Existing clients do
+not gain this fix until upgraded; an affected portable folder may first need
+manual repair using verified release files. Keep its update recovery folder.
+
+The user's affected portable copy was repaired to the signed build 4 inventory,
+then renamed to Documents/AetherDesk. Its read-only package attributes were
+normalized, the failed pending-download reference was cleared, and the saved
+version floor was preserved. All 7,158 files and the release signature verified;
+the existing executable passed isolated rendering/editor checks and reopened
+normally. This manual recovery is not proof that automatic restart now passes.
+The portable folder name can remain AetherDesk across subsequent updates;
+downloaded archives still carry versioned names for release identification.
+
 ## Signing and publication
 
 The verification key and public download repository in `update-config.json` are

@@ -5103,6 +5103,24 @@
         {
           "phase": "windows",
           "package": "ad-desktop",
+          "source": "ui/rust/crates/ad-desktop/src/update_apply.rs",
+          "test": "portable_replacement_and_recovery_handle_readonly_runtime_files"
+        },
+        {
+          "phase": "windows",
+          "package": "ad-desktop",
+          "source": "ui/rust/crates/ad-desktop/src/update_apply.rs",
+          "test": "incomplete_replacement_write_keeps_original_bytes_and_permissions"
+        },
+        {
+          "phase": "windows",
+          "package": "ad-desktop",
+          "source": "ui/rust/crates/ad-desktop/src/update_apply.rs",
+          "test": "recovery_attempts_other_files_when_one_is_locked_and_records_the_path"
+        },
+        {
+          "phase": "windows",
+          "package": "ad-desktop",
           "source": "ui/rust/crates/ad-desktop/src/updates.rs",
           "test": "first_updated_launch_preserves_the_helpers_recovery_files"
         }

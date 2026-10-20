@@ -583,10 +583,10 @@ impl Panel {
             });
             ui.end_row();
             ui.label("Application scale");
-            ui.add(egui::Slider::new(&mut self.draft.ui_scale, 0.8..=1.6).show_value(true));
+            application_slider(ui, &mut self.draft.ui_scale, 0.8..=1.6, 2);
             ui.end_row();
             ui.label("Application font size");
-            ui.add(egui::Slider::new(&mut self.draft.font_size, 11.0..=20.0).show_value(true));
+            application_slider(ui, &mut self.draft.font_size, 11.0..=20.0, 1);
             ui.end_row();
         });
         ui.label("Application colours and scaling do not alter remote monitor resolution, remote pixels or terminal syntax colours.");
@@ -793,6 +793,25 @@ fn preview(ui: &mut egui::Ui, palette: Palette) {
         egui::StrokeKind::Inside,
     );
 }
+fn application_slider(
+    ui: &mut egui::Ui,
+    value: &mut f32,
+    range: std::ops::RangeInclusive<f32>,
+    decimals: usize,
+) {
+    ui.scope(|ui| {
+        let colors = crate::theme::colors(ui.visuals().dark_mode);
+        ui.visuals_mut().widgets.inactive.bg_fill = colors.border;
+        ui.visuals_mut().selection.bg_fill = colors.heading;
+        ui.spacing_mut().slider_rail_height = 6.0;
+        ui.add(
+            egui::Slider::new(value, range)
+                .fixed_decimals(decimals)
+                .trailing_fill(true),
+        );
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

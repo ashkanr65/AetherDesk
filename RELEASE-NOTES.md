@@ -1,20 +1,17 @@
-AetherDesk 0.1.2 build 4 — Preferences layout
+AetherDesk 0.1.2 build 5 — Portable update recovery
 
-- Keep the Preferences window size and left category navigation.
-- Place each category title at the top with options stacked vertically below it.
-- Use the application's body text size consistently for descriptions, labels, inputs and buttons inside the content column.
-- Align labels, values, shortcut controls and palette colour/hex controls in rows; wrap long descriptions and scroll vertically inside the window.
+- Handle read-only bundled runtime files during portable updates and recovery.
+- Flush each replacement to a temporary file in the destination folder before replacing the old file; incomplete copies preserve the original.
+- Continue restoring other files when one recovery file is locked, and keep the failing paths and Windows errors in the recovery folder.
+- Restart the previous portable application after a safely recovered replacement failure or failed archive extraction.
+- Show horizontal tracks and filled progress on Application scale and Application font size sliders in Preferences.
 
 Validation status:
 
-- The user-built installer and portable package passed all seven stages in 52 minutes 6 seconds on 20 October 2026.
-- Windows/Linux regression checks and packaged X11 passed, including the two rendered Preferences layout tests covering all eight categories, normal/large fonts and aligned field rows.
-- Built package inputs match the current source fingerprint. Packaged project licence files match the repository.
-- The completed executable passed isolated dark/light rendering and editor popup open/close checks. No application compilation was run by the assistant.
-- Real two-version upgrades, restart/recovery, data preservation and clean-machine acceptance remain pending. These results do not claim those tests passed.
+- Build 4 passed its build checks, but the user's real portable update exposed a read-only-file failure affecting replacement and rollback. Those earlier checks did not prove successful upgrades.
+- Three new Windows filesystem regressions cover read-only package files, interrupted writes and recovery with a locked file. They are required by the build kit.
+- Build 5 compilation, native regressions and a real two-version automatic upgrade remain pending the user's build. No build 5 package has been published.
 
 Updates use the existing Ed25519 verification key and ask before restarting. Windows Authenticode signing remains separate and unconfigured.
 
-Published as the latest stable auto-update on 20 October 2026:
-https://github.com/ashkanr65/AetherDesk/releases/tag/v0.1.2-build4
-Signed assets, uploaded hashes and anonymous runtime update-feed access verified.
+Existing failed update folders must be retained until recovery has been verified. Older clients with read-only installed package files may need repair or a manual upgrade before they can receive this fix automatically.
