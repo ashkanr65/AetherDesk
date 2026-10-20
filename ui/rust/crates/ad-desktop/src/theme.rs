@@ -193,11 +193,23 @@ impl Theme {
             ui.add_space(16.0);
             ui.add(egui::Label::new("Open every connection in its own independent tab, keep credentials protected by Windows, and move between terminal, files, applications, and desktops without losing context.").wrap());
             ui.add_space(24.0);
-            ui.horizontal_wrapped(|ui| {
+            // A wrapped label inside a wrapping horizontal row can paint back
+            // over the preceding button. Choose the row direction before
+            // placing either widget, using their full unwrapped text widths.
+            let shortcut = format!("Shortcut: {}", crate::preferences::current().shortcuts.new_connection.label());
+            let button_width = ui.painter().layout_no_wrap("+  New Connection".into(), egui::TextStyle::Button.resolve(ui.style()), c.text).size().x
+                + ui.spacing().button_padding.x * 2.0;
+            let shortcut_width = ui.painter().layout_no_wrap(shortcut.clone(), egui::TextStyle::Body.resolve(ui.style()), c.muted).size().x;
+            let layout = if button_width + shortcut_width + ui.spacing().item_spacing.x + 4.0 <= ui.available_width() {
+                egui::Layout::left_to_right(egui::Align::Center)
+            } else {
+                egui::Layout::top_down(egui::Align::Min)
+            };
+            ui.with_layout(layout, |ui| {
                 if ui.add(egui::Button::new("+  New Connection").corner_radius(18)).clicked() {
                     chosen = Some(ConnectionType::SshTerminal);
                 }
-                ui.label(egui::RichText::new(format!("Shortcut: {}", crate::preferences::current().shortcuts.new_connection.label())).color(c.muted));
+                ui.add(egui::Label::new(egui::RichText::new(shortcut).color(c.muted)).wrap());
             });
             ui.add_space(28.0);
             let cards = [
