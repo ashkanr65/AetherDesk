@@ -96,3 +96,24 @@ finishes to include the updater. Failed-build caches remain available for retrie
 
 Offline signature/package and snapshot fixtures passed. Native tests and real
 installation remain for the user's build; formatting is not compilation.
+
+## Build 3 publication — 20 October 2026
+
+[AetherDesk 0.1.2 build 3](https://github.com/ashkanr65/AetherDesk/releases/tag/v0.1.2-build3)
+is published as a normal latest release in the same public source repository.
+The user's build passed all seven stages in 26:29, including Windows/Linux
+regressions and bundled X11. The completed executable passed isolated dark/light
+rendering and editor popup lifecycle checks. Package source inputs match main.
+
+The existing Ed25519 key signed the metadata; all 7,158 portable files and the
+installer copy were verified. GitHub reports matching lengths and SHA-256 digests
+for all three assets. Anonymous latest-release and runtime metadata API requests
+returned build 3, whose downloaded envelope verified with the pinned public key.
+Older eligible clients can use the gear menu → Updates → Check now. A copy already
+running build 3 correctly finds no newer update.
+
+Evidence is under AetherDesk-Rust-output/acceptance/update-build3-20261020;
+LATEST-RELEASE-CHECK.txt and LATEST-SIGNED-RELEASE.txt point to this release.
+No application was compiled by the assistant and no user installation was
+replaced. Real two-version upgrades, restart/recovery and data preservation
+remain pending; feed verification is not an installation test.

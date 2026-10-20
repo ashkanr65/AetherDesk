@@ -551,13 +551,13 @@ detection test, and no connection was interrupted.
 
 | Item | Work | Status |
 | --- | --- | --- |
-| AL1 | Stable Log files popup | Implemented: fixed screen-bounded dialog, bounded scroll viewport and nonwrapping virtualized rows. Scroll regression registered; native run pending. |
+| AL1 | Stable Log files popup | Implemented: fixed screen-bounded dialog, bounded scroll viewport and nonwrapping virtualized rows. Scroll regression passed in the user-run build 3 tests. |
 | AL2 | Categorized application Preferences | Implemented: General, Display, Connections, Files and Editor, AI Assistant, Keyboard, Updates and Logs. Controls are wired to startup/disconnected restoration, quit confirmation, connection defaults/timeouts, editor/directory defaults, custom navigation, log limits and existing AI/update panels. |
 | AL3 | Independent theme customization | Implemented: 30 roles each for light/dark, sample GUI previews, colour pickers/hex values, contrast warnings, apply/cancel/reset and palette-only import/export. Missing/invalid preferences preserve compatibility and damaged files. |
 | AL4 | Public-facing AetherDesk naming | Implemented: Preferences/Log files labels, About version/build/licence/project information, clean package/installer/shortcut names and product README. Historical verification remains developer-only. Existing AppId, install directory, credential targets, data paths and update key preserved. |
-| AL5 | Validate and build the next candidate | Build 0.1.2 build 3 prepared. Seven native regressions registered and inventoried. Rust formatting/parser, catalog validation, offline recipe/publisher safeguards and two signature/package fixtures passed without compiling. Eleven guide examples parse; guide copies match. User compilation and packaged/live verification remain pending. |
+| AL5 | Validate and build the next candidate | Build 0.1.2 build 3 prepared. Seven native regressions registered and inventoried. Rust formatting/parser, catalog validation, offline recipe/publisher safeguards and two signature/package fixtures passed without compiling. Eleven guide examples parse; guide copies match. User build 3 compilation/native tests and isolated packaged rendering/editor verification subsequently passed; see AN1. Broader live/upgrade acceptance remains pending. |
 | AL6 | Publish source, licences and combined release repository | Complete: full source history merged into public ashkanr65/AetherDesk main (4a7b7dc); anonymous source/licence access verified. Existing build 1/2 tags unchanged; latest build 2 and all three asset digests unchanged. Existing signing key configured as the canonical repository's encrypted Actions secret. Old private source renamed AetherDesk-Source-Archive-20261020 and archived. Publisher/workflow/release guide now use the single public repository and exact main commit. |
-| AL7 | Complete new-package and real upgrade acceptance | Remaining: user build of 0.1.2 build 3, seven new native tests, packaged Preferences/theme/log checks, and real update download/replacement/restart/settings and credential preservation. No new binary release was published. |
+| AL7 | Complete new-package and real upgrade acceptance | User build 3, all seven new native tests and isolated packaged dark/light/editor checks passed. Remaining: manual Preferences interactions, broader connection checks and real update download/replacement/restart/settings and credential preservation. Build 3 stable publication is recorded under AN3. |
 
 ## Build 3 compiler compatibility repair — 2026-10-20
 
@@ -565,12 +565,12 @@ detection test, and no connection was interrupted.
 | --- | --- | --- |
 | AM1 | Correct the icon-button pressed-state API | Fixed: use Response::is_pointer_button_down_on(), confirmed in the cached pinned egui 0.33.3 source. Keeps the pressed/hover icon colours and normal custom icon colour. |
 | AM2 | Remove reported stroke-width inference warnings | Fixed: explicit f32 widths at all ten reported calls in navigation, Preferences and theme styling. Values and appearance are unchanged. |
-| AM3 | Verify and rebuild | Rust parser/format check and source diff checks passed. Compilation and native regression tests remain for the user's next build; no package or binary release produced. |
+| AM3 | Verify and rebuild | Rust parser/format check and source diff checks passed. The user's subsequent build passed compilation and native regressions; see AN1 for evidence and AN3 for publication. |
 
 ## Build 3 stable update publication — 2026-10-20
 
 | Item | Work | Status |
 | --- | --- | --- |
 | AN1 | Verify completed user build | Passed: all seven stages in 00:26:29; package fingerprint d7e528b21e02636315f09631031974a09bea416e58cf40eb059d9e0cc4a097c7 matches current source inputs. Windows: 272 registered / 246 required; Linux: 95 registered / 80 required; compiler and bundled X11 evidence pass. Licence files match. Isolated packaged dark/light/editor-popup checks passed under acceptance/r12-20261020-114717. |
-| AN2 | Sign and verify update assets | In progress: prepare build 3 with the established protected Ed25519 key, verify ZIP inventory and installer/metadata hashes, then upload a normal-release draft at the source main commit. |
-| AN3 | Make build 3 available to auto-update | Authorized by user; publication and anonymous stable-feed verification pending. Real installation/restart/data-preservation acceptance remains separate; no user installation is changed by publication. |
+| AN2 | Sign and verify update assets | Passed: existing protected key signs 0.1.2 build 3. All 7,158 ZIP entries match the signed inventory; installer matches build output. All three uploaded asset lengths and SHA-256 digests match local verified files. Release tag targets e17683b6a4952dc4cc09f76c38f653f69ff95899; application/build inputs match d24793c and the recorded source fingerprint. Evidence: output/acceptance/update-build3-20261020; LATEST-SIGNED-RELEASE.txt and LATEST-RELEASE-CHECK.txt updated. |
+| AN3 | Make build 3 available to auto-update | Complete: user-authorized normal/latest v0.1.2-build3 published on 2026-10-20, release 418243553. Anonymous latest feed and the exact runtime metadata API route return build 3; signature verifies with the existing pinned key and all asset hashes match. https://github.com/ashkanr65/AetherDesk/releases/tag/v0.1.2-build3 . Real installation/restart/data-preservation acceptance remains separate; no user installation was changed. |
