@@ -869,7 +869,7 @@
     {
       "id": "preferences.application",
       "area": "Application preferences",
-      "behavior": "Stable log viewport, independent light/dark application palettes, sample GUI, theme import/export, application defaults, configurable navigation and public branding",
+      "behavior": "Stable log viewport, vertically stacked and aligned Preferences categories, independent light/dark application palettes, sample GUI, theme import/export, application defaults, configurable navigation and public branding",
       "references": [
         "ui/rust/crates/ad-desktop/src/main.rs"
       ],

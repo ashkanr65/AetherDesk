@@ -1,23 +1,12 @@
-AetherDesk 0.1.2 build 3 — Preferences and theme customization
+AetherDesk 0.1.2 build 4 — Preferences layout
 
-- Preferences replaces the application Settings page, with General, Display, Connections, Files and Editor, AI Assistant, Keyboard, Updates and Logs categories.
-- Independent light and dark palettes provide 30 editable colour roles, sample GUI previews, hexadecimal input, contrast warnings, reset and theme import/export.
-- Application font size and scaling, system theme, startup window state, reopening disconnected tabs and confirmation before quitting active connections.
-- New-connection defaults, connection timeout, file-opening defaults, directory synchronization and customizable application navigation shortcuts.
-- Configurable log level, log size and rotation retention; the Log files popup keeps stable bounds while scrolling.
-- Public interface, About, package names and installer branding use AetherDesk. Existing settings, protected credentials, installation identity and update verification remain compatible.
+- Keep the Preferences window size and left category navigation.
+- Place each category title at the top with options stacked vertically below it.
+- Use the application's body text size consistently for descriptions, labels, inputs and buttons inside the content column.
+- Align labels, values, shortcut controls and palette colour/hex controls in rows; wrap long descriptions and scroll vertically inside the window.
 
 Validation status:
 
-- The user-built installer and portable package passed all seven build-kit stages in 26 minutes 29 seconds on 20 October 2026.
-- Windows and Linux registered regression checks passed, including the seven new Preferences/theme/log/navigation checks and the packaged X11 test.
-- Built package source fingerprint matches main's application/build inputs. Project licence files match the repository.
-- The completed executable passed isolated dark/light rendering and editor popup open/close checks. No application compilation was run by the assistant.
-- Complete source, releases and MIT OR Apache-2.0 project licences are available together in ashkanr65/AetherDesk.
-- Real two-version installer/portable upgrades, restart/recovery, settings and credential preservation, clean-machine acceptance and broader live connection checks remain pending. This publication does not claim those tests passed.
-
-Update metadata uses the existing Ed25519 key. Windows Authenticode publisher signing remains separate and unconfigured. Updates ask before restarting; use the gear menu → Updates → Check now to find this build.
-
-Published as the latest stable update on 20 October 2026:
-https://github.com/ashkanr65/AetherDesk/releases/tag/v0.1.2-build3
-Signed assets, remote digests and anonymous update-feed access verified.
+- Added two rendered layout regressions covering all eight categories, normal/large fonts and aligned field rows. Registered in the build kit.
+- Source/parser and offline checks do not replace native compilation or packaged UI verification. The user's next build must run these checks before publication.
+- Build 3 remains the published stable release. This candidate has not been built or published; no user installation was changed.

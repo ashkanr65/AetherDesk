@@ -346,86 +346,68 @@ impl Panel {
         let size = egui::vec2(900.0, 650.0).min(
             (ctx.content_rect().size() - egui::vec2(40.0, 70.0)).max(egui::vec2(400.0, 300.0)),
         );
-        egui::Window::new("Preferences").id(egui::Id::new("app-preferences")).open(&mut open).fixed_size(size).resizable(false).collapsible(false).show(ctx,|ui|{
-            let enter=crate::dialog::primary(ui);
-            let footer=72.0;let height=(ui.available_height()-footer).max(140.0);
-            ui.horizontal_top(|ui|{
-                ui.allocate_ui_with_layout(egui::vec2(150.0,height),egui::Layout::top_down(egui::Align::Min),|ui|{
-                    ui.set_min_height(height);
-                    for section in Section::ALL {if ui.selectable_label(self.section==section,section.label()).clicked(){self.section=section;}}
-                });ui.separator();
-                let width=ui.available_width();
-                egui::ScrollArea::both().id_salt(("preferences-content",self.section.label())).auto_shrink([false,false]).min_scrolled_width(0.0).max_height(height).max_width(width).show(ui,|ui|{
-                    ui.set_width(width);ui.heading(self.section.label());ui.add_space(10.0);
-                    match self.section {
-                        Section::General=>{
-                            ui.checkbox(&mut self.draft.start_maximized,"Start with the application window maximized");
-                            ui.checkbox(&mut self.draft.restore_tabs,"Reopen saved connection tabs on startup");
-                            ui.small("Tabs reopen disconnected. Passwords are never stored in this preference.");
-                            ui.checkbox(&mut self.draft.confirm_quit,"Confirm quitting while connections are active");
-                            ui.small("Unsaved editor work is always protected. Startup options take effect at the next launch.");
-                        }
-                        Section::Display=>self.display(ui),
-                        Section::Connections=>{
-                            egui::Grid::new("connection-preferences").spacing([18.0,12.0]).show(ui,|ui|{
-                                ui.label("Default SSH port");ui.add(egui::DragValue::new(&mut self.draft.default_port).range(1..=65535));ui.end_row();
-                                ui.label("Connection timeout");ui.add(egui::DragValue::new(&mut self.draft.connect_timeout).range(10..=300).suffix(" s"));ui.end_row();
-                            });
-                            ui.checkbox(&mut self.draft.remember_username,"Remember usernames by default for new saved connections");
-                            ui.label("New defaults do not modify saved connections. Timeout changes apply to future connection attempts.");
-                            ui.label("Reconnect from the connection tab when needed. Connections are not silently retried with saved credentials.");
-                            ui.small("WireGuard configuration remains isolated to each connection tab.");
-                        }
-                        Section::Files=>{
-                            ui.checkbox(&mut self.follow_cwd,"Synchronize terminal and file directories in new SSH tabs");
-                            ui.small("The Files window can override synchronization for its own tab.");
-                            ui.checkbox(&mut self.draft.system_editor,"Open files with the Windows default application by default");
-                            ui.label("When disabled, supported text files use the built-in editor. Explicit Open with and Open with text editor actions take priority.");
-                            ui.small("Deletion and replacement keep their existing confirmation dialogs. Terminal font and syntax colours remain in Terminal settings.");
-                        }
-                        Section::Assistant=>{
-                            ui.label("Manage services, models, workspace, message limits and tool permissions in the assistant's own preferences.");
-                            if ui.button("Open AI Assistant preferences").clicked(){action=Some(Action::Assistant);}
-                            ui.small("API keys stay in the protected credential store; themes and application preferences do not export them.");
-                        }
-                        Section::Keyboard=>{
-                            ui.label("Application shortcuts use Ctrl. Choose a key and optionally add Shift.");
-                            egui::Grid::new("application-shortcuts").spacing([16.0,10.0]).show(ui,|ui|{
-                                for (label,binding) in self.draft.shortcuts.rows_mut(){
-                                    ui.label(label);egui::ComboBox::from_id_salt(label).width(110.0).selected_text(&binding.key).show_ui(ui,|ui|{for name in KEYS{ui.selectable_value(&mut binding.key,name.to_owned(),name);}});
-                                    ui.checkbox(&mut binding.shift,"Shift");ui.end_row();
+        egui::Window::new("Preferences")
+            .id(egui::Id::new("app-preferences"))
+            .open(&mut open)
+            .fixed_size(size)
+            .resizable(false)
+            .collapsible(false)
+            .show(ctx, |ui| {
+                let enter = crate::dialog::primary(ui);
+                let height = (ui.available_height() - 72.0).max(140.0);
+                ui.horizontal_top(|ui| {
+                    ui.allocate_ui_with_layout(
+                        egui::vec2(150.0, height),
+                        egui::Layout::top_down(egui::Align::Min),
+                        |ui| {
+                            ui.set_min_height(height);
+                            for section in Section::ALL {
+                                if ui
+                                    .selectable_label(self.section == section, section.label())
+                                    .clicked()
+                                {
+                                    self.section = section;
                                 }
-                            });
-                            ui.small("These apply to AetherDesk navigation. Remote desktop and terminal shortcuts keep their own input handling.");
-                            if ui.button("Restore default shortcuts").clicked(){self.draft.shortcuts=Shortcuts::default();}
-                        }
-                        Section::Updates=>{
-                            ui.label("Configure automatic checks and downloads, review releases and install verified updates.");
-                            if ui.button("Open Updates").clicked(){action=Some(Action::Updates);}
-                            ui.small("Installation always asks before restarting. Preview releases are excluded from stable updates.");
-                        }
-                        Section::Logs=>{
-                            egui::Grid::new("logging-preferences").spacing([18.0,12.0]).show(ui,|ui|{
-                                ui.label("Capture level");egui::ComboBox::from_id_salt("capture-level").selected_text(&self.draft.log_level).show_ui(ui,|ui|{for level in ["error","warn","info","debug","trace"]{ui.selectable_value(&mut self.draft.log_level,level.to_owned(),level);}});ui.end_row();
-                                ui.label("Size per log file");ui.add(egui::DragValue::new(&mut self.draft.log_file_mb).range(1..=100).suffix(" MiB"));ui.end_row();
-                                ui.label("Rotated files to retain");ui.add(egui::DragValue::new(&mut self.draft.log_generations).range(1..=20));ui.end_row();
-                            });
-                            ui.label("Limits apply per application instance. Capture level changes take effect after restart; AETHERDESK_LOG_LEVEL overrides the selected level.");
-                            if ui.button("Open Log files").clicked(){action=Some(Action::Logs);}
-                        }
+                            }
+                        },
+                    );
+                    ui.separator();
+                    // The navigation is horizontal, but its sibling form must
+                    // own a vertical layout rather than inherit that direction.
+                    let width = ui.available_width();
+                    ui.allocate_ui_with_layout(
+                        egui::vec2(width, height),
+                        egui::Layout::top_down(egui::Align::Min),
+                        |ui| {
+                            ui.set_width(width);
+                            form_style(ui);
+                            action = egui::ScrollArea::vertical()
+                                .id_salt(("preferences-content", self.section.label()))
+                                .auto_shrink([false, false])
+                                .max_height(height)
+                                .max_width(width)
+                                .show(ui, |ui| self.section_ui(ui))
+                                .inner;
+                        },
+                    );
+                });
+                ui.separator();
+                if !self.message.is_empty() {
+                    ui.add(egui::Label::new(&self.message).truncate())
+                        .on_hover_text(&self.message);
+                }
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    cancel = ui.button("Cancel").clicked();
+                    if ui.button("Reset to defaults").clicked() {
+                        self.draft = Settings::default();
+                        self.follow_cwd = true;
+                        self.hex.clear();
                     }
+                    let response = ui.add_enabled(self.valid, egui::Button::new("Apply and save"));
+                    crate::dialog::focus_on_open(ui, &response);
+                    apply = self.valid && (response.clicked() || enter);
                 });
             });
-            ui.separator();
-            if !self.message.is_empty(){ui.add(egui::Label::new(&self.message).truncate()).on_hover_text(&self.message);}
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center),|ui|{
-                cancel=ui.button("Cancel").clicked();
-                if ui.button("Reset to defaults").clicked(){self.draft=Settings::default();self.follow_cwd=true;self.hex.clear();}
-                let response=ui.add_enabled(self.valid,egui::Button::new("Apply and save"));
-                crate::dialog::focus_on_open(ui,&response);
-                apply=self.valid && (response.clicked() || enter);
-            });
-        });
         if apply {
             if self
                 .hex
@@ -452,28 +434,164 @@ impl Panel {
         }
         action
     }
-    fn display(&mut self, ui: &mut egui::Ui) {
-        ui.horizontal(|ui| {
-            ui.label("Theme mode");
-            for (mode, label) in [
-                (Mode::System, "System"),
-                (Mode::Light, "Light"),
-                (Mode::Dark, "Dark"),
-            ] {
-                ui.selectable_value(&mut self.draft.mode, mode, label);
+    fn section_ui(&mut self, ui: &mut egui::Ui) -> Option<Action> {
+        ui.strong(self.section.label());
+        ui.add_space(8.0);
+        match self.section {
+            Section::General => {
+                ui.checkbox(
+                    &mut self.draft.start_maximized,
+                    "Start with the application window maximized",
+                );
+                ui.checkbox(
+                    &mut self.draft.restore_tabs,
+                    "Reopen saved connection tabs on startup",
+                );
+                ui.label(
+                    "Tabs reopen disconnected. Passwords are never stored in this preference.",
+                );
+                ui.checkbox(
+                    &mut self.draft.confirm_quit,
+                    "Confirm quitting while connections are active",
+                );
+                ui.label("Unsaved editor work is always protected. Startup options take effect at the next launch.");
             }
+            Section::Display => self.display(ui),
+            Section::Connections => {
+                field_grid(ui, "connection-preferences", |ui| {
+                    ui.label("Default SSH port");
+                    ui.add(egui::DragValue::new(&mut self.draft.default_port).range(1..=65535));
+                    ui.end_row();
+                    ui.label("Connection timeout");
+                    ui.add(
+                        egui::DragValue::new(&mut self.draft.connect_timeout)
+                            .range(10..=300)
+                            .suffix(" s"),
+                    );
+                    ui.end_row();
+                });
+                ui.checkbox(
+                    &mut self.draft.remember_username,
+                    "Remember usernames by default for new saved connections",
+                );
+                ui.label("New defaults do not modify saved connections. Timeout changes apply to future connection attempts.");
+                ui.label("Reconnect from the connection tab when needed. Connections are not silently retried with saved credentials.");
+                ui.label("WireGuard configuration remains isolated to each connection tab.");
+            }
+            Section::Files => {
+                ui.checkbox(
+                    &mut self.follow_cwd,
+                    "Synchronize terminal and file directories in new SSH tabs",
+                );
+                ui.label("The Files window can override synchronization for its own tab.");
+                ui.checkbox(
+                    &mut self.draft.system_editor,
+                    "Open files with the Windows default application by default",
+                );
+                ui.label("When disabled, supported text files use the built-in editor. Explicit Open with and Open with text editor actions take priority.");
+                ui.label("Deletion and replacement keep their existing confirmation dialogs. Terminal font and syntax colours remain in Terminal settings.");
+            }
+            Section::Assistant => {
+                ui.label("Manage services, models, workspace, message limits and tool permissions in the assistant's own preferences.");
+                if ui.button("Open AI Assistant preferences").clicked() {
+                    return Some(Action::Assistant);
+                }
+                ui.label("API keys stay in the protected credential store; themes and application preferences do not export them.");
+            }
+            Section::Keyboard => {
+                ui.label("Application shortcuts use Ctrl. Choose a key and optionally add Shift.");
+                field_grid(ui, "application-shortcuts", |ui| {
+                    for (label, binding) in self.draft.shortcuts.rows_mut() {
+                        ui.label(label);
+                        ui.horizontal_wrapped(|ui| {
+                            egui::ComboBox::from_id_salt(label)
+                                .width(100.0)
+                                .selected_text(&binding.key)
+                                .show_ui(ui, |ui| {
+                                    for name in KEYS {
+                                        ui.selectable_value(
+                                            &mut binding.key,
+                                            name.to_owned(),
+                                            name,
+                                        );
+                                    }
+                                });
+                            ui.checkbox(&mut binding.shift, "Shift");
+                        });
+                        ui.end_row();
+                    }
+                });
+                ui.label("These apply to AetherDesk navigation. Remote desktop and terminal shortcuts keep their own input handling.");
+                if ui.button("Restore default shortcuts").clicked() {
+                    self.draft.shortcuts = Shortcuts::default();
+                }
+            }
+            Section::Updates => {
+                ui.label("Configure automatic checks and downloads, review releases and install verified updates.");
+                if ui.button("Open Updates").clicked() {
+                    return Some(Action::Updates);
+                }
+                ui.label("Installation always asks before restarting. Preview releases are excluded from stable updates.");
+            }
+            Section::Logs => {
+                field_grid(ui, "logging-preferences", |ui| {
+                    ui.label("Capture level");
+                    egui::ComboBox::from_id_salt("capture-level")
+                        .width(100.0)
+                        .selected_text(&self.draft.log_level)
+                        .show_ui(ui, |ui| {
+                            for level in ["error", "warn", "info", "debug", "trace"] {
+                                ui.selectable_value(
+                                    &mut self.draft.log_level,
+                                    level.to_owned(),
+                                    level,
+                                );
+                            }
+                        });
+                    ui.end_row();
+                    ui.label("Size per log file");
+                    ui.add(
+                        egui::DragValue::new(&mut self.draft.log_file_mb)
+                            .range(1..=100)
+                            .suffix(" MiB"),
+                    );
+                    ui.end_row();
+                    ui.label("Rotated files to retain");
+                    ui.add(egui::DragValue::new(&mut self.draft.log_generations).range(1..=20));
+                    ui.end_row();
+                });
+                ui.label("Limits apply per application instance. Capture level changes take effect after restart; AETHERDESK_LOG_LEVEL overrides the selected level.");
+                if ui.button("Open Log files").clicked() {
+                    return Some(Action::Logs);
+                }
+            }
+        }
+        None
+    }
+    fn display(&mut self, ui: &mut egui::Ui) {
+        ui.spacing_mut().slider_width = (ui.available_width() * 0.5 - 100.0).clamp(48.0, 180.0);
+        field_grid(ui, "display-preferences", |ui| {
+            ui.label("Theme mode");
+            ui.horizontal_wrapped(|ui| {
+                for (mode, label) in [
+                    (Mode::System, "System"),
+                    (Mode::Light, "Light"),
+                    (Mode::Dark, "Dark"),
+                ] {
+                    ui.selectable_value(&mut self.draft.mode, mode, label);
+                }
+            });
+            ui.end_row();
+            ui.label("Application scale");
+            ui.add(egui::Slider::new(&mut self.draft.ui_scale, 0.8..=1.6).show_value(true));
+            ui.end_row();
+            ui.label("Application font size");
+            ui.add(egui::Slider::new(&mut self.draft.font_size, 11.0..=20.0).show_value(true));
+            ui.end_row();
         });
-        ui.add(
-            egui::Slider::new(&mut self.draft.ui_scale, 0.8..=1.6)
-                .text("Application scale")
-                .show_value(true),
-        );
-        ui.add(
-            egui::Slider::new(&mut self.draft.font_size, 11.0..=20.0).text("Application font size"),
-        );
-        ui.small("Application colours and scaling do not alter remote monitor resolution, remote pixels or terminal syntax colours.");
+        ui.label("Application colours and scaling do not alter remote monitor resolution, remote pixels or terminal syntax colours.");
         ui.separator();
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             ui.selectable_value(&mut self.dark_tab, false, "Light colours");
             ui.selectable_value(&mut self.dark_tab, true, "Dark colours");
         });
@@ -497,16 +615,23 @@ impl Panel {
             *palette = Palette::defaults(self.dark_tab);
             self.hex.clear();
         }
-        let mut group = "";
-        for (section, label, rgb) in palette.roles_mut() {
-            if section != group {
-                ui.add_space(8.0);
-                ui.strong(section);
-                group = section;
-            }
-            ui.push_id((self.dark_tab, label), |ui| {
-                ui.horizontal(|ui| {
-                    ui.add_sized([190.0, 24.0], egui::Label::new(label));
+        let label_width = (ui.available_width() - 160.0).clamp(80.0, 240.0);
+        egui::Grid::new(("palette-fields", self.dark_tab))
+            .num_columns(3)
+            .max_col_width(label_width)
+            .min_row_height(ui.spacing().interact_size.y)
+            .spacing([12.0, 10.0])
+            .show(ui, |ui| {
+                let mut group = "";
+                for (section, label, rgb) in palette.roles_mut() {
+                    if section != group {
+                        ui.strong(section);
+                        ui.label("");
+                        ui.label("");
+                        ui.end_row();
+                        group = section;
+                    }
+                    ui.label(label);
                     let picker = ui.color_edit_button_srgb(rgb);
                     let text = self
                         .hex
@@ -517,6 +642,7 @@ impl Panel {
                     }
                     let response = ui.add(
                         egui::TextEdit::singleline(text)
+                            .font(egui::TextStyle::Body)
                             .desired_width(90.0)
                             .char_limit(7),
                     );
@@ -527,13 +653,16 @@ impl Panel {
                     } else {
                         response.on_hover_text("Enter six hexadecimal digits, for example #C7A2B3");
                     }
-                });
+                    ui.end_row();
+                }
             });
-        }
         ui.separator();
         ui.label("Theme file (.json)");
-        ui.add(egui::TextEdit::singleline(&mut self.path).desired_width(ui.available_width()));
-        ui.horizontal(|ui| {
+        ui.add_sized(
+            [ui.available_width(), ui.spacing().interact_size.y],
+            egui::TextEdit::singleline(&mut self.path).font(egui::TextStyle::Body),
+        );
+        ui.horizontal_wrapped(|ui| {
             if ui.button("Import palettes").clicked() {
                 match import_themes(Path::new(&self.path)) {
                     Ok(themes) => {
@@ -556,6 +685,30 @@ impl Panel {
             }
         });
     }
+}
+// Apply only to the Preferences content column: preserve the chosen body font,
+// use it for labels and controls, and wrap descriptions inside the viewport.
+fn form_style(ui: &mut egui::Ui) {
+    let font = egui::TextStyle::Body.resolve(ui.style());
+    let height = (ui.text_style_height(&egui::TextStyle::Body) + 10.0).max(28.0);
+    let style = ui.style_mut();
+    style.override_font_id = Some(font);
+    style.override_text_style = Some(egui::TextStyle::Body);
+    style.drag_value_text_style = egui::TextStyle::Body;
+    style.wrap_mode = Some(egui::TextWrapMode::Wrap);
+    style.spacing.item_spacing = egui::vec2(12.0, 10.0);
+    style.spacing.interact_size.y = height;
+}
+fn field_grid<R>(ui: &mut egui::Ui, id: &str, contents: impl FnOnce(&mut egui::Ui) -> R) -> R {
+    let column = ((ui.available_width() - 16.0) * 0.5).max(1.0);
+    egui::Grid::new(id)
+        .num_columns(2)
+        .min_col_width(column)
+        .max_col_width(column)
+        .min_row_height(ui.spacing().interact_size.y)
+        .spacing([16.0, 10.0])
+        .show(ui, contents)
+        .inner
 }
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -590,10 +743,10 @@ fn export_themes(path: &Path, themes: Themes) -> Result<(), String> {
 }
 fn preview(ui: &mut egui::Ui, palette: Palette) {
     let c = palette.colors();
-    let width = ui.available_width().clamp(220.0, 620.0);
+    let width = ui.available_width().clamp(1.0, 620.0);
     let height = width * 0.48;
     let (r, _) = ui.allocate_exact_size(egui::vec2(width, height), egui::Sense::hover());
-    let p = ui.painter();
+    let p = ui.painter().with_clip_rect(r.intersect(ui.clip_rect()));
     let at = |x: f32, y: f32| r.min + egui::vec2(x * width, y * height);
     let rect = |x: f32, y: f32, w: f32, h: f32| {
         egui::Rect::from_min_size(at(x, y), egui::vec2(w * width, h * height))
@@ -612,7 +765,7 @@ fn preview(ui: &mut egui::Ui, palette: Palette) {
     text(0.32, 0.20, "Terminal  ×", c.tab_active_text);
     text(0.53, 0.20, "Files  ×", c.tab_text);
     for y in [0.23, 0.40, 0.57, 0.74] {
-        crate::theme::icon(p, rect(0.014, y, 0.030, 0.055), 1, c.icon);
+        crate::theme::icon(&p, rect(0.014, y, 0.030, 0.055), 1, c.icon);
     }
     p.rect_filled(rect(0.08, 0.20, 0.18, 0.10), 2, c.input);
     text(0.09, 0.25, "Search", c.muted);
@@ -643,6 +796,145 @@ fn preview(ui: &mut egui::Ui, palette: Palette) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    struct RestoreSettings(Settings);
+    impl Drop for RestoreSettings {
+        fn drop(&mut self) {
+            install(self.0.clone());
+        }
+    }
+    type PaintedText = (String, egui::Rect, f32, egui::Rect);
+    fn rendered_section(section: Section, font_size: f32) -> Vec<PaintedText> {
+        let _restore = RestoreSettings(current());
+        let directory = tempfile::tempdir().unwrap();
+        crate::storage::with_test_root(directory.path(), || {
+            let ctx = egui::Context::default();
+            ctx.style_mut(|style| {
+                style
+                    .text_styles
+                    .insert(egui::TextStyle::Body, egui::FontId::proportional(font_size));
+                style.text_styles.insert(
+                    egui::TextStyle::Button,
+                    egui::FontId::proportional(font_size),
+                );
+            });
+            let mut panel = Panel::load(true);
+            panel.section = section;
+            panel.show();
+            let mut output = None;
+            // Let egui settle its window/grid measurements before checking geometry.
+            for _ in 0..8 {
+                output = Some(ctx.run(
+                    egui::RawInput {
+                        screen_rect: Some(egui::Rect::from_min_size(
+                            egui::Pos2::ZERO,
+                            egui::vec2(1200.0, 900.0),
+                        )),
+                        ..Default::default()
+                    },
+                    |ctx| {
+                        let _ = panel.ui(ctx);
+                    },
+                ));
+            }
+            output
+                .unwrap()
+                .shapes
+                .into_iter()
+                .filter_map(|shape| {
+                    if let egui::epaint::Shape::Text(text) = shape.shape {
+                        let font_size = text.galley.job.sections.first()?.format.font_id.size;
+                        Some((
+                            text.galley.job.text.clone(),
+                            egui::Rect::from_min_size(text.pos, text.galley.size()),
+                            font_size,
+                            shape.clip_rect,
+                        ))
+                    } else {
+                        None
+                    }
+                })
+                .collect()
+        })
+    }
+    fn find_text(texts: &[PaintedText], label: &str) -> (egui::Rect, f32, egui::Rect) {
+        // Category names appear in both navigation and content. Select the title
+        // in the right column, rather than its navigation counterpart.
+        texts
+            .iter()
+            .filter(|(text, ..)| text == label)
+            .max_by(|a, b| a.1.left().total_cmp(&b.1.left()))
+            .map(|(_, rect, size, clip)| (*rect, *size, *clip))
+            .unwrap_or_else(|| panic!("Missing Preferences text: {label}"))
+    }
+    #[test]
+    fn preference_categories_stack_options_below_titles_with_consistent_fonts() {
+        let cases = [
+            (Section::General, "Start with the application window maximized"),
+            (Section::Display, "Theme mode"),
+            (Section::Connections, "Default SSH port"),
+            (Section::Files, "Synchronize terminal and file directories in new SSH tabs"),
+            (Section::Assistant, "Manage services, models, workspace, message limits and tool permissions in the assistant's own preferences."),
+            (Section::Keyboard, "Application shortcuts use Ctrl. Choose a key and optionally add Shift."),
+            (Section::Updates, "Configure automatic checks and downloads, review releases and install verified updates."),
+            (Section::Logs, "Capture level"),
+        ];
+        for font_size in [13.0, 20.0] {
+            for (section, first_option) in cases {
+                let texts = rendered_section(section, font_size);
+                let (title, title_size, _) = find_text(&texts, section.label());
+                let (option, option_size, clip) = find_text(&texts, first_option);
+                assert!(
+                    option.top() >= title.bottom() + 4.0,
+                    "{} title and option overlap: {title:?} / {option:?}",
+                    section.label()
+                );
+                assert!(
+                    (title_size - font_size).abs() < 0.1 && (option_size - font_size).abs() < 0.1,
+                    "{} text sizes differ",
+                    section.label()
+                );
+                assert!(
+                    option.left() >= clip.left() - 1.0 && option.right() <= clip.right() + 1.0,
+                    "{} option overflows its column: {option:?} / {clip:?}",
+                    section.label()
+                );
+                if section == Section::General {
+                    let (second, size, _) =
+                        find_text(&texts, "Reopen saved connection tabs on startup");
+                    let (third, _, _) =
+                        find_text(&texts, "Confirm quitting while connections are active");
+                    assert!(second.top() > option.bottom() && third.top() > second.bottom());
+                    assert!((size - font_size).abs() < 0.1);
+                }
+            }
+        }
+    }
+    #[test]
+    fn preference_field_rows_align_labels_and_controls_inside_the_content_column() {
+        for font_size in [13.0, 20.0] {
+            for (section, label, value) in [
+                (Section::Display, "Theme mode", "System"),
+                (Section::Connections, "Default SSH port", "22"),
+                (Section::Keyboard, "New connection", "K"),
+                (Section::Logs, "Capture level", "info"),
+            ] {
+                let texts = rendered_section(section, font_size);
+                let (label, _, _) = find_text(&texts, label);
+                let (value, size, clip) = find_text(&texts, value);
+                assert!(
+                    (label.center().y - value.center().y).abs() <= 2.0,
+                    "{} row is misaligned: {label:?} / {value:?}",
+                    section.label()
+                );
+                assert!(
+                    value.left() > label.right() && value.right() <= clip.right() + 1.0,
+                    "{} control escapes its column",
+                    section.label()
+                );
+                assert!((size - font_size).abs() < 0.1);
+            }
+        }
+    }
     #[test]
     fn applied_preferences_round_trip_without_modifying_profiles_or_update_settings() {
         struct Restore(Settings);

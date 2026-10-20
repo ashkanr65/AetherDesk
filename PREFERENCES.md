@@ -14,7 +14,10 @@ to AetherDesk, not the remote host's monitor resolution or streamed pixels.
 | Updates | Open existing update controls, including automatic checking/downloading, release notes and confirmed installation. |
 | Logs | Capture level, size per file, retained rotations per application instance and the Log files viewer. Capture level changes apply after restart. |
 
-Categories remain on the left and content scrolls on the right. **Apply and save**
+Categories remain on the left. Each category title starts the right column, with
+options stacked below it using a consistent body text size. Labels and controls
+align in rows, long text wraps and content scrolls vertically within the existing
+window size. **Apply and save**
 validates and saves changes. **Cancel** discards unapplied changes. **Reset to
 defaults** updates the draft; apply it to save. Separate AI and update management
 windows retain their own save and confirmation behaviour.

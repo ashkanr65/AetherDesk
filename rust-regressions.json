@@ -5205,6 +5205,18 @@
           "package": "ad-desktop",
           "source": "ui/rust/crates/ad-desktop/src/preferences.rs",
           "test": "applied_preferences_round_trip_without_modifying_profiles_or_update_settings"
+        },
+        {
+          "phase": "windows",
+          "package": "ad-desktop",
+          "source": "ui/rust/crates/ad-desktop/src/preferences.rs",
+          "test": "preference_categories_stack_options_below_titles_with_consistent_fonts"
+        },
+        {
+          "phase": "windows",
+          "package": "ad-desktop",
+          "source": "ui/rust/crates/ad-desktop/src/preferences.rs",
+          "test": "preference_field_rows_align_labels_and_controls_inside_the_content_column"
         }
       ],
       "liveAcceptance": "Compile and run the registered fixtures with the build kit. Verify log scrolling, cancel/apply, both theme palettes, import/export, application scaling, startup and preserved credentials in the packaged application."
