@@ -343,70 +343,73 @@ impl Panel {
         let mut action = None;
         let mut apply = false;
         let mut cancel = false;
-        let size = egui::vec2(900.0, 650.0).min(
-            (ctx.content_rect().size() - egui::vec2(40.0, 70.0)).max(egui::vec2(400.0, 300.0)),
-        );
+        let size = crate::app_layout::dialog_size(ctx, egui::vec2(900.0, 650.0));
         egui::Window::new("Preferences")
             .id(egui::Id::new("app-preferences"))
             .open(&mut open)
             .fixed_size(size)
             .resizable(false)
             .collapsible(false)
+            .vscroll(true)
             .show(ctx, |ui| {
                 let enter = crate::dialog::primary(ui);
-                let height = (ui.available_height() - 72.0).max(140.0);
-                ui.horizontal_top(|ui| {
-                    ui.allocate_ui_with_layout(
-                        egui::vec2(150.0, height),
-                        egui::Layout::top_down(egui::Align::Min),
-                        |ui| {
-                            ui.set_min_height(height);
+                let compact = size.x < 660.0;
+                // Scrolling content can have infinite available height. Use
+                // the actual window size so nested scroll areas stay bounded.
+                let height = (size.y - if compact { 190.0 } else { 100.0 }).max(48.0);
+                if compact {
+                    egui::ComboBox::from_id_salt("compact-preferences-section")
+                        .selected_text(self.section.label())
+                        .show_ui(ui, |ui| {
                             for section in Section::ALL {
-                                if ui
-                                    .selectable_label(self.section == section, section.label())
-                                    .clicked()
-                                {
-                                    self.section = section;
-                                }
+                                ui.selectable_value(&mut self.section, section, section.label());
                             }
-                        },
-                    );
+                        });
                     ui.separator();
-                    // The navigation is horizontal, but its sibling form must
-                    // own a vertical layout rather than inherit that direction.
-                    let width = ui.available_width();
-                    ui.allocate_ui_with_layout(
-                        egui::vec2(width, height),
-                        egui::Layout::top_down(egui::Align::Min),
-                        |ui| {
-                            ui.set_width(width);
-                            form_style(ui);
-                            action = egui::ScrollArea::vertical()
-                                .id_salt(("preferences-content", self.section.label()))
-                                .auto_shrink([false, false])
-                                .max_height(height)
-                                .max_width(width)
-                                .show(ui, |ui| self.section_ui(ui))
-                                .inner;
-                        },
-                    );
-                });
+                    action = self.section_scroll(ui, height);
+                } else {
+                    ui.horizontal_top(|ui| {
+                        ui.allocate_ui_with_layout(
+                            egui::vec2(150.0, height),
+                            egui::Layout::top_down(egui::Align::Min),
+                            |ui| {
+                                ui.set_min_height(height);
+                                for section in Section::ALL {
+                                    if ui
+                                        .selectable_label(self.section == section, section.label())
+                                        .clicked()
+                                    {
+                                        self.section = section;
+                                    }
+                                }
+                            },
+                        );
+                        ui.separator();
+                        // The navigation is horizontal, but its sibling form must
+                        // own a vertical layout rather than inherit that direction.
+                        action = self.section_scroll(ui, height);
+                    });
+                }
                 ui.separator();
                 if !self.message.is_empty() {
                     ui.add(egui::Label::new(&self.message).truncate())
                         .on_hover_text(&self.message);
                 }
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    cancel = ui.button("Cancel").clicked();
-                    if ui.button("Reset to defaults").clicked() {
-                        self.draft = Settings::default();
-                        self.follow_cwd = true;
-                        self.hex.clear();
-                    }
-                    let response = ui.add_enabled(self.valid, egui::Button::new("Apply and save"));
-                    crate::dialog::focus_on_open(ui, &response);
-                    apply = self.valid && (response.clicked() || enter);
-                });
+                ui.with_layout(
+                    egui::Layout::right_to_left(egui::Align::Center).with_main_wrap(true),
+                    |ui| {
+                        cancel = ui.button("Cancel").clicked();
+                        if ui.button("Reset to defaults").clicked() {
+                            self.draft = Settings::default();
+                            self.follow_cwd = true;
+                            self.hex.clear();
+                        }
+                        let response =
+                            ui.add_enabled(self.valid, egui::Button::new("Apply and save"));
+                        crate::dialog::focus_on_open(ui, &response);
+                        apply = self.valid && (response.clicked() || enter);
+                    },
+                );
             });
         if apply {
             if self
@@ -433,6 +436,30 @@ impl Panel {
             self.hex.clear();
         }
         action
+    }
+    fn section_scroll(&mut self, ui: &mut egui::Ui, height: f32) -> Option<Action> {
+        let width = ui.available_width();
+        ui.allocate_ui_with_layout(
+            egui::vec2(width, height),
+            egui::Layout::top_down(egui::Align::Min),
+            |ui| {
+                ui.set_width(width);
+                form_style(ui);
+                egui::ScrollArea::both()
+                    .id_salt(("preferences-content", self.section.label()))
+                    .auto_shrink([false, false])
+                    .max_height(height)
+                    .max_width(width)
+                    .show(ui, |ui| {
+                        // Very narrow viewports scroll the form rather than
+                        // compressing labels and controls over one another.
+                        ui.set_width(width.max(360.0));
+                        self.section_ui(ui)
+                    })
+                    .inner
+            },
+        )
+        .inner
     }
     fn section_ui(&mut self, ui: &mut egui::Ui) -> Option<Action> {
         ui.strong(self.section.label());
@@ -823,6 +850,13 @@ mod tests {
     }
     type PaintedText = (String, egui::Rect, f32, egui::Rect);
     fn rendered_section(section: Section, font_size: f32) -> Vec<PaintedText> {
+        rendered_section_at(section, font_size, egui::vec2(1200.0, 900.0))
+    }
+    fn rendered_section_at(
+        section: Section,
+        font_size: f32,
+        screen: egui::Vec2,
+    ) -> Vec<PaintedText> {
         let _restore = RestoreSettings(current());
         let directory = tempfile::tempdir().unwrap();
         crate::storage::with_test_root(directory.path(), || {
@@ -844,10 +878,7 @@ mod tests {
             for _ in 0..8 {
                 output = Some(ctx.run(
                     egui::RawInput {
-                        screen_rect: Some(egui::Rect::from_min_size(
-                            egui::Pos2::ZERO,
-                            egui::vec2(1200.0, 900.0),
-                        )),
+                        screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, screen)),
                         ..Default::default()
                     },
                     |ctx| {
@@ -884,6 +915,40 @@ mod tests {
             .max_by(|a, b| a.1.left().total_cmp(&b.1.left()))
             .map(|(_, rect, size, clip)| (*rect, *size, *clip))
             .unwrap_or_else(|| panic!("Missing Preferences text: {label}"))
+    }
+    #[test]
+    fn compact_preferences_keep_visible_text_separate_and_actions_reachable() {
+        for font in [13.0, 20.0] {
+            for width in [480.0, 640.0] {
+                for section in Section::ALL {
+                    let texts = rendered_section_at(section, font, egui::vec2(width, 500.0));
+                    let visible: Vec<_> = texts
+                        .iter()
+                        .filter_map(|(text, rect, _, clip)| {
+                            let painted = rect.intersect(*clip);
+                            (painted.width() > 1.0 && painted.height() > 1.0)
+                                .then_some((text, painted))
+                        })
+                        .collect();
+                    assert!(
+                        visible
+                            .iter()
+                            .any(|(text, _)| text.as_str() == "Apply and save"),
+                        "Preferences actions missing: {}",
+                        section.label()
+                    );
+                    for (index, (text, rect)) in visible.iter().enumerate() {
+                        assert!(
+                            rect.left() >= -1.0 && rect.right() <= width + 1.0,
+                            "Preferences overflows at {width}: {text}"
+                        );
+                        for (other, other_rect) in &visible[index + 1..] {
+                            assert!(!rect.shrink(0.5).intersects(other_rect.shrink(0.5)), "Preferences text overlaps at {width}, font {font}: {text} / {other}");
+                        }
+                    }
+                }
+            }
+        }
     }
     #[test]
     fn preference_categories_stack_options_below_titles_with_consistent_fonts() {

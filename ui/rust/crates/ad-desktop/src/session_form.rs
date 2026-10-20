@@ -132,16 +132,18 @@ impl Draft {
             "Edit connection"
         };
         // A pending credential write cannot be dismissed halfway through saving.
+        let size = crate::app_layout::dialog_size(ctx, egui::vec2(510.0, 650.0));
         let mut window = egui::Window::new(title)
             .id(egui::Id::new("connection-form"))
-            .default_width(510.0)
+            .fixed_size(size)
             .resizable(false);
         if !busy {
             window = window.open(&mut open);
         }
         window.show(ctx, |ui| {
             let enter = !busy && crate::dialog::primary(ui);
-            egui::ScrollArea::vertical().max_height((ctx.content_rect().height()-160.0).max(180.0)).show(ui, |ui| {
+            egui::ScrollArea::both().max_height(size.y).max_width(size.x).auto_shrink([false, false]).show(ui, |ui| {
+                ui.set_width(510.0);
                 ui.add_enabled_ui(!busy, |ui| {
                     egui::Grid::new("connection-fields").num_columns(2).spacing([14.0, 10.0]).show(ui, |ui| {
                         let p = &mut self.profile;

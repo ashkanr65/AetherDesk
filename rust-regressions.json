@@ -119,6 +119,30 @@
           "package": "ad-desktop",
           "source": "ui/rust/crates/ad-desktop/src/theme.rs",
           "test": "selection_has_visible_foreground_in_both_modes"
+        },
+        {
+          "phase": "windows",
+          "package": "ad-desktop",
+          "source": "ui/rust/crates/ad-desktop/src/theme.rs",
+          "test": "welcome_text_reflows_without_overlap_in_narrow_windows_and_large_fonts"
+        },
+        {
+          "phase": "windows",
+          "package": "ad-desktop",
+          "source": "ui/rust/crates/ad-desktop/src/app_layout.rs",
+          "test": "monitor_dpi_changes_refit_oversized_windows_without_changing_user_zoom"
+        },
+        {
+          "phase": "windows",
+          "package": "ad-desktop",
+          "source": "ui/rust/crates/ad-desktop/src/app_layout.rs",
+          "test": "monitor_layout_checks_do_not_fight_resizing_maximized_or_fullscreen_windows"
+        },
+        {
+          "phase": "windows",
+          "package": "ad-desktop",
+          "source": "ui/rust/crates/ad-desktop/src/preferences.rs",
+          "test": "compact_preferences_keep_visible_text_separate_and_actions_reachable"
         }
       ],
       "liveAcceptance": "Background images and texture loading removed at user request. Verify native controls, selection contrast, resizing and DPI in both modes under R12."
@@ -155,6 +179,12 @@
           "package": "ad-desktop",
           "source": "ui/rust/crates/ad-desktop/src/navigation.rs",
           "test": "switching_sidebars_does_not_expand_the_shared_width_to_fit_controls"
+        },
+        {
+          "phase": "windows",
+          "package": "ad-desktop",
+          "source": "ui/rust/crates/ad-desktop/src/main.rs",
+          "test": "narrow_windows_preserve_sidebar_preference_and_restore_width_on_larger_screens"
         }
       ],
       "liveAcceptance": "Persistent resize/reset and original sidebar shortcut implemented. Native state fixtures preserve workspace; pointer/narrow-layout and restart checks remain R12."

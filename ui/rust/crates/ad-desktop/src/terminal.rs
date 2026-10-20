@@ -164,23 +164,36 @@ impl Terminal {
             let draft = self
                 .settings_draft
                 .get_or_insert_with(|| self.settings.clone());
+            let size = crate::app_layout::dialog_size(ui.ctx(), egui::vec2(650.0, 580.0));
             egui::Window::new("Terminal settings")
                 .id(ui.id().with("terminal-settings"))
                 .open(&mut open)
-                .default_width(650.0)
+                .fixed_size(size)
                 .resizable(false)
                 .show(ui.ctx(), |ui| {
                     let enter = crate::dialog::primary(ui);
-                    crate::terminal_settings::edit(ui, draft);
+                    egui::ScrollArea::both()
+                        .id_salt("terminal-settings-content")
+                        .max_height((size.y - 70.0).max(40.0))
+                        .auto_shrink([false, false])
+                        .show(ui, |ui| {
+                            ui.set_width(
+                                (ui.text_style_height(&egui::TextStyle::Body) * 42.0).max(650.0),
+                            );
+                            crate::terminal_settings::edit(ui, draft);
+                        });
                     if let Some(error) = &self.settings_error {
                         ui.label(error);
                     }
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        cancel = ui.button("Cancel").clicked();
-                        let response = ui.button("Apply and save");
-                        crate::dialog::focus_on_open(ui, &response);
-                        apply = response.clicked() || enter;
-                    });
+                    ui.with_layout(
+                        egui::Layout::right_to_left(egui::Align::Center).with_main_wrap(true),
+                        |ui| {
+                            cancel = ui.button("Cancel").clicked();
+                            let response = ui.button("Apply and save");
+                            crate::dialog::focus_on_open(ui, &response);
+                            apply = response.clicked() || enter;
+                        },
+                    );
                 });
             if apply {
                 match crate::terminal_settings::save(draft.clone()) {

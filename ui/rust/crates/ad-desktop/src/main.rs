@@ -2,6 +2,7 @@
 mod ai_api;
 mod ai_models;
 mod ai_tools;
+mod app_layout;
 mod app_tools;
 mod assistant;
 mod assistant_history;
@@ -94,6 +95,7 @@ struct RustDesktop {
     last_notice: String,
     updates: updates::Updates,
     update_health: Option<PathBuf>,
+    window_sizing: app_layout::WindowSizing,
 }
 impl Default for RustDesktop {
     fn default() -> Self {
@@ -146,6 +148,7 @@ impl Default for RustDesktop {
             notifications: notifications::Center::default(),
             last_notice: String::new(),
             updates: updates::Updates::default(),
+            window_sizing: app_layout::WindowSizing::default(),
             update_health: if std::env::args().nth(1).as_deref() == Some("--update-health") {
                 std::env::args_os().nth(2).map(PathBuf::from)
             } else {
@@ -171,6 +174,307 @@ fn palette(ctx: &egui::Context, dark: bool) {
     theme::apply(ctx, dark);
 }
 impl RustDesktop {
+    fn workspace_sidebar(&mut self, ctx: &egui::Context) {
+        let maximum = app_layout::sidebar_maximum(ctx.available_rect().width());
+        if self.workspace.sidebar_visible && maximum >= 180.0 {
+            let panel = egui::Id::new("workspace");
+            let resize = ctx.read_response(panel.with("__resize"));
+            let resizing = resize
+                .as_ref()
+                .is_some_and(|r| r.is_pointer_button_down_on() || r.drag_stopped());
+            if !resizing {
+                // A temporary small monitor/window must not overwrite the user's
+                // preferred sidebar width, or leave it stuck at the clamped size.
+                if let Some(mut state) = egui::containers::panel::PanelState::load(ctx, panel) {
+                    state.rect.max.x =
+                        state.rect.min.x + self.workspace.sidebar_width.clamp(180.0, maximum);
+                    ctx.data_mut(|d| d.insert_persisted(panel, state));
+                }
+            }
+            let width = egui::SidePanel::left("workspace")
+                .resizable(true)
+                .default_width(self.workspace.sidebar_width.clamp(180.0, maximum))
+                .width_range(180.0..=maximum)
+                .show(ctx, |ui| self.sidebar_contents(ui))
+                .response
+                .rect
+                .width();
+            if ctx
+                .read_response(panel.with("__resize"))
+                .is_some_and(|r| r.drag_stopped())
+            {
+                self.workspace.sidebar_width = width;
+                self.persist_settings();
+            }
+            if ctx
+                .read_response(panel.with("__resize"))
+                .is_some_and(|r| r.double_clicked())
+            {
+                if let Some(mut state) = egui::containers::panel::PanelState::load(ctx, panel) {
+                    self.workspace.sidebar_width = 214.0_f32.min(maximum);
+                    state.rect.max.x = state.rect.min.x + self.workspace.sidebar_width;
+                    self.persist_settings();
+                    ctx.data_mut(|d| d.insert_persisted(panel, state));
+                    ctx.request_repaint();
+                }
+            }
+        } else if self.workspace.sidebar_visible {
+            // At phone-like widths, show the chosen sidebar as a bounded drawer
+            // rather than crush the terminal/desktop and chat into each other.
+            let mut open = true;
+            let screen = ctx.content_rect();
+            egui::Window::new(self.workspace.sidebar.label())
+                .id(egui::Id::new("compact-sidebar"))
+                .open(&mut open)
+                .collapsible(false)
+                .resizable(false)
+                .default_pos(screen.min + egui::vec2(48.0, 52.0))
+                .fixed_size(egui::vec2(
+                    self.workspace
+                        .sidebar_width
+                        .max(240.0)
+                        .min((screen.width() - 70.0).max(80.0)),
+                    (screen.height() - 130.0).max(80.0),
+                ))
+                .show(ctx, |ui| self.sidebar_contents(ui));
+            if !open {
+                self.workspace.sidebar_visible = false;
+            }
+        }
+    }
+    fn sidebar_contents(&mut self, ui: &mut egui::Ui) {
+        self.theme.sidebar(ui, self.dark);
+        ui.add_space(10.0);
+        navigation::sidebar_body(ui, self.workspace.sidebar.label(), |ui| {
+            match self.workspace.sidebar {
+                Sidebar::Sessions | Sidebar::Bookmarks => {
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.filter)
+                            .hint_text("Search connections")
+                            .margin(egui::Margin::symmetric(9, 8))
+                            .desired_width(f32::INFINITY),
+                    );
+                    ui.add_space(16.0);
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            egui::RichText::new(if self.workspace.sidebar == Sidebar::Bookmarks {
+                                "BOOKMARKS"
+                            } else {
+                                "SAVED SESSIONS"
+                            })
+                            .size(10.0),
+                        );
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui.small_button("+").clicked() {
+                                self.new_profile = Some(profile_store::new_profile().into());
+                            }
+                        });
+                    });
+                    ui.add_space(8.0);
+                    let query = self.filter.to_lowercase();
+                    let mut action = None;
+                    let mut open_profile = None;
+                    for (index, profile) in self
+                        .profiles
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, p)| !p.is_deleted())
+                    {
+                        if self.workspace.sidebar == Sidebar::Bookmarks && !profile.favorite {
+                            continue;
+                        }
+                        if !format!("{} {} {}", profile.name, profile.host, profile.username)
+                            .to_lowercase()
+                            .contains(&query)
+                        {
+                            continue;
+                        }
+                        let selected = self
+                            .workspace
+                            .selected
+                            .and_then(|i| self.workspace.tabs.get(i))
+                            .is_some_and(|t| t.profile.id == profile.id);
+                        let c = theme::colors(self.dark);
+                        let response = crate::ui_icons::session_entry(
+                            ui,
+                            &format!(
+                                "{}{}",
+                                if profile.favorite { "★ " } else { "" },
+                                profile.name
+                            ),
+                            &format!(
+                                "{}@{} · {}",
+                                profile.username,
+                                profile.host,
+                                profile.connection_type.label()
+                            ),
+                            if selected { c.selection_text } else { c.text },
+                            if selected {
+                                c.selection
+                            } else {
+                                c.selection.gamma_multiply(0.65)
+                            },
+                            egui::Stroke::new(if selected { 1.5_f32 } else { 0.6_f32 }, c.border),
+                        );
+                        if response.clicked() && !profile.is_deleted() {
+                            open_profile = Some(profile.clone());
+                        }
+                        response.context_menu(|ui| {
+                            for (title, kind) in if profile.is_deleted() {
+                                vec![("Restore", "restore"), ("Delete permanently", "purge")]
+                            } else {
+                                vec![
+                                    ("Edit", "edit"),
+                                    ("Duplicate", "duplicate"),
+                                    (
+                                        if profile.favorite {
+                                            "Remove bookmark"
+                                        } else {
+                                            "Bookmark"
+                                        },
+                                        "favorite",
+                                    ),
+                                    ("Delete session", "trash"),
+                                ]
+                            } {
+                                if ui.button(title).clicked() {
+                                    action = Some((index, kind));
+                                    ui.close();
+                                }
+                            }
+                        });
+                    }
+                    if let Some(profile) = open_profile {
+                        self.open_profile(profile);
+                    }
+                    if let Some((index, kind)) = action {
+                        match kind {
+                            "edit" => self.new_profile = Some(self.profiles[index].clone().into()),
+                            "duplicate" => {
+                                let mut p = self.profiles[index].clone();
+                                p.id = uuid::Uuid::new_v4().to_string();
+                                p.name.push_str(" (copy)");
+                                p.remember_password = false;
+                                p.master_password_protected = false;
+                                self.new_profile = Some(p.into());
+                            }
+                            "favorite" => {
+                                self.profiles[index].favorite = !self.profiles[index].favorite
+                            }
+                            "trash" => {
+                                self.profiles[index].deleted_at =
+                                    Some(chrono::Utc::now().to_rfc3339())
+                            }
+                            "restore" => self.profiles[index].deleted_at = None,
+                            "purge" => {
+                                match crate::vault::delete(&format!(
+                                    "ssh-{}",
+                                    self.profiles[index].id
+                                )) {
+                                    Ok(()) => {
+                                        self.profiles.remove(index);
+                                    }
+                                    Err(error) => self.report_error(error),
+                                }
+                            }
+                            _ => {}
+                        }
+                        if !matches!(kind, "edit" | "duplicate") {
+                            self.persist_profiles();
+                        }
+                    }
+                }
+                Sidebar::Tools => {
+                    let workspace = self
+                        .workspace
+                        .selected
+                        .and_then(|i| self.workspace.tabs.get(i))
+                        .and_then(|t| t.ai_workspace())
+                        .unwrap_or_else(|| {
+                            crate::ai_tools::Workspace::Local(
+                                std::env::var("USERPROFILE")
+                                    .unwrap_or_else(|_| ".".into())
+                                    .into(),
+                            )
+                        });
+                    if let Ok(runtime) = &self.connections {
+                        self.tools.ui(ui, runtime, workspace);
+                    }
+                }
+                Sidebar::Assistant => {
+                    let tab = self
+                        .workspace
+                        .selected
+                        .and_then(|i| self.workspace.tabs.get(i));
+                    let connection = tab.and_then(|t| t.ai_workspace());
+                    let capture = tab.and_then(|t| t.capture());
+                    if let Ok(runtime) = &self.connections {
+                        self.assistant.ui(ui, runtime, connection, capture);
+                    }
+                }
+                Sidebar::Connections => {
+                    let mut selected = None;
+                    let mut disconnect = None;
+                    for (index, tab) in self
+                        .workspace
+                        .tabs
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, t)| t.is_active())
+                    {
+                        ui.horizontal(|ui| {
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    if crate::ui_icons::button(
+                                        ui,
+                                        crate::ui_icons::Icon::Disconnect,
+                                        "Disconnect",
+                                        false,
+                                    )
+                                    .clicked()
+                                    {
+                                        disconnect = Some(index);
+                                    }
+                                    if crate::ui_icons::connection_entry(
+                                        ui,
+                                        &tab.profile.name,
+                                        tab.state_label(),
+                                        self.workspace.selected == Some(index),
+                                    )
+                                    .on_hover_text(format!(
+                                        "{} · {}",
+                                        tab.profile.name,
+                                        tab.state_label()
+                                    ))
+                                    .clicked()
+                                    {
+                                        selected = Some(index);
+                                    }
+                                },
+                            );
+                        });
+                    }
+                    if let Some(index) = selected {
+                        self.select_tab(index);
+                    }
+                    if let Some(index) = disconnect {
+                        self.workspace.tabs[index].disconnect();
+                    }
+                    if !self.workspace.tabs.iter().any(|t| t.is_active()) {
+                        ui.label("No active connections");
+                    }
+                }
+                Sidebar::Logs => {
+                    self.show_logs = true;
+                    ui.label("Log files are open in a popup.");
+                }
+                _ => {
+                    ui.label("This sidebar's functional port is pending. See RUST-FEATURE-PARITY.md for the tracked behavior.");
+                }
+            }
+        });
+    }
     fn report_error(&mut self, error: String) {
         self.last_notice = error.clone();
         self.notice = error.clone();
@@ -385,6 +689,7 @@ impl RustDesktop {
 }
 impl eframe::App for RustDesktop {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.window_sizing.update(ctx);
         self.theme.initialize(ctx);
         let dark = self.preferences.settings.dark(ctx, self.dark);
         if dark != self.dark {
@@ -546,6 +851,10 @@ impl eframe::App for RustDesktop {
         }
         egui::TopBottomPanel::top("toolbar")
             .exact_height(47.0)
+            .frame(
+                egui::Frame::side_top_panel(&ctx.style())
+                    .inner_margin(egui::Margin::symmetric(8, 2)),
+            )
             .show(ctx, |ui| {
                 self.theme.toolbar(ui, self.dark);
                 ui.add_space(6.0);
@@ -594,18 +903,36 @@ impl eframe::App for RustDesktop {
                         ui.separator();
                         ui.label("AetherDesk");
                     });
-                    let (logo, _) =
-                        ui.allocate_exact_size(egui::vec2(26.0, 30.0), egui::Sense::hover());
-                    self.theme.logo(ui, self.dark, logo);
-                    ui.label(
-                        egui::RichText::new("AetherDesk")
-                            .font(theme::heading_font(14.0))
-                            .color(theme::colors(self.dark).heading),
-                    );
-                    ui.label(
-                        egui::RichText::new("SECURE WORKSPACE")
-                            .size(9.0)
-                            .color(theme::colors(self.dark).muted),
+                    // Reserve the settings/theme controls before laying out the
+                    // brand. Optional branding yields space before controls do.
+                    let brand_width = (ui.available_width() - 120.0).max(1.0);
+                    ui.allocate_ui_with_layout(
+                        egui::vec2(brand_width, 30.0),
+                        egui::Layout::left_to_right(egui::Align::Center),
+                        |ui| {
+                            if brand_width >= 110.0 {
+                                let (logo, _) = ui.allocate_exact_size(
+                                    egui::vec2(26.0, 30.0),
+                                    egui::Sense::hover(),
+                                );
+                                self.theme.logo(ui, self.dark, logo);
+                            }
+                            ui.add(
+                                egui::Label::new(
+                                    egui::RichText::new("AetherDesk")
+                                        .font(theme::heading_font(14.0))
+                                        .color(theme::colors(self.dark).heading),
+                                )
+                                .truncate(),
+                            );
+                            if brand_width >= 280.0 {
+                                ui.label(
+                                    egui::RichText::new("SECURE WORKSPACE")
+                                        .size(9.0)
+                                        .color(theme::colors(self.dark).muted),
+                                );
+                            }
+                        },
                     );
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         ui.menu_button("⚙", |ui| {
@@ -706,7 +1033,11 @@ impl eframe::App for RustDesktop {
             }
         }
         egui::TopBottomPanel::bottom("status")
-            .exact_height(24.0)
+            .exact_height((self.preferences.settings.font_size + 12.0).max(24.0))
+            .frame(
+                egui::Frame::side_top_panel(&ctx.style())
+                    .inner_margin(egui::Margin::symmetric(8, 0)),
+            )
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
                     let status = self
@@ -725,30 +1056,45 @@ impl eframe::App for RustDesktop {
                             )
                         })
                         .unwrap_or_else(|| "○  No active session".into());
-                    ui.label(status).on_hover_text(&self.notice);
-                    let connected = self.workspace.tabs.iter().filter(|t| t.connected).count();
-                    let active = self.workspace.tabs.iter().filter(|t| t.is_active()).count();
-                    ui.label(format!("{connected} connected · {active} active"));
-                    if !self.notice.is_empty() {
-                        ui.add(
-                            egui::Label::new(egui::RichText::new(&self.notice).size(11.0))
-                                .truncate(),
-                        )
-                        .on_hover_text(&self.notice);
-                    }
+                    let width = ui.available_width();
+                    let clock_width =
+                        (ui.text_style_height(&egui::TextStyle::Body) * 5.5).max(72.0);
+                    let status_width = (width - clock_width - 12.0).max(1.0);
+                    ui.allocate_ui_with_layout(
+                        egui::vec2(status_width, 18.0),
+                        egui::Layout::left_to_right(egui::Align::Center),
+                        |ui| {
+                            let connected =
+                                self.workspace.tabs.iter().filter(|t| t.connected).count();
+                            let active =
+                                self.workspace.tabs.iter().filter(|t| t.is_active()).count();
+                            let detail = self
+                                .workspace
+                                .selected
+                                .and_then(|i| self.workspace.tabs.get(i))
+                                .map(|tab| {
+                                    format!(
+                                        "{} · {}",
+                                        tab.profile.connection_type.label(),
+                                        tab.profile.authentication
+                                    )
+                                })
+                                .unwrap_or_default();
+                            let full = format!(
+                                "{status} · {connected} connected · {active} active · {detail}\n{}",
+                                self.notice
+                            );
+                            let text = if width > 600.0 {
+                                full.replace('\n', " · ")
+                            } else {
+                                status
+                            };
+                            ui.add(egui::Label::new(text).truncate())
+                                .on_hover_text(full);
+                        },
+                    );
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         ui.label(chrono::Local::now().format("%H:%M:%S").to_string());
-                        if let Some(tab) = self
-                            .workspace
-                            .selected
-                            .and_then(|i| self.workspace.tabs.get(i))
-                        {
-                            ui.label(format!(
-                                "{} · {}",
-                                tab.profile.connection_type.label(),
-                                tab.profile.authentication
-                            ));
-                        }
                     });
                 });
             });
@@ -761,28 +1107,34 @@ impl eframe::App for RustDesktop {
             )
             .show(ctx, |ui| {
                 self.theme.rail(ui, self.dark);
-                let indices = [1, 9, 10, 7, 3, 2, 6, 7];
-                for (section, index) in Sidebar::ALL
-                    .into_iter()
-                    .zip(indices)
-                    .filter(|(section, _)| *section != Sidebar::Logs)
-                {
-                    if theme::rail_button(
-                        ui,
-                        index,
-                        section.label(),
-                        self.workspace.sidebar_visible && self.workspace.sidebar == section,
-                        self.dark,
-                    )
-                    .clicked()
-                    {
-                        if self.workspace.sidebar_visible && self.workspace.sidebar == section {
-                            self.workspace.sidebar_visible = false;
-                        } else {
-                            self.workspace.select_sidebar(section);
+                egui::ScrollArea::vertical()
+                    .id_salt("navigation-rail-scroll")
+                    .show(ui, |ui| {
+                        let indices = [1, 9, 10, 7, 3, 2, 6, 7];
+                        for (section, index) in Sidebar::ALL
+                            .into_iter()
+                            .zip(indices)
+                            .filter(|(section, _)| *section != Sidebar::Logs)
+                        {
+                            if theme::rail_button(
+                                ui,
+                                index,
+                                section.label(),
+                                self.workspace.sidebar_visible && self.workspace.sidebar == section,
+                                self.dark,
+                            )
+                            .clicked()
+                            {
+                                if self.workspace.sidebar_visible
+                                    && self.workspace.sidebar == section
+                                {
+                                    self.workspace.sidebar_visible = false;
+                                } else {
+                                    self.workspace.select_sidebar(section);
+                                }
+                            }
                         }
-                    }
-                }
+                    });
             });
         if self.show_appearance {
             self.preferences.show();
@@ -896,107 +1248,7 @@ impl eframe::App for RustDesktop {
             });
             self.show_migration = open;
         }
-        if self.workspace.sidebar_visible {
-            let maximum = (ctx.available_rect().width() - 360.0).clamp(0.0, 900.0);
-            let width=egui::SidePanel::left("workspace").resizable(true).default_width(self.workspace.sidebar_width)
-                .width_range(190.0_f32.min(maximum)..=maximum).show(ctx,|ui| {
-                    self.theme.sidebar(ui,self.dark);
-                    ui.add_space(10.0);
-                    navigation::sidebar_body(ui, self.workspace.sidebar.label(), |ui| {
-                    match self.workspace.sidebar {
-                        Sidebar::Sessions|Sidebar::Bookmarks=> {
-                            ui.add(egui::TextEdit::singleline(&mut self.filter).hint_text("Search connections").margin(egui::Margin::symmetric(9,8)).desired_width(f32::INFINITY));
-                            ui.add_space(16.0);
-                            ui.horizontal(|ui|{ui.label(egui::RichText::new(if self.workspace.sidebar==Sidebar::Bookmarks{"BOOKMARKS"}else{"SAVED SESSIONS"}).size(10.0));ui.with_layout(egui::Layout::right_to_left(egui::Align::Center),|ui|{if ui.small_button("+").clicked(){self.new_profile=Some(profile_store::new_profile().into());}});});
-                            ui.add_space(8.0);
-                            let query=self.filter.to_lowercase();
-                            let mut action=None;
-                            let mut open_profile=None;
-                            for (index,profile) in self.profiles.iter().enumerate().filter(|(_,p)|!p.is_deleted()) {
-                                if self.workspace.sidebar==Sidebar::Bookmarks && !profile.favorite {continue;}
-                                if !format!("{} {} {}",profile.name,profile.host,profile.username).to_lowercase().contains(&query) {continue;}
-                                let selected=self.workspace.selected.and_then(|i|self.workspace.tabs.get(i)).is_some_and(|t|t.profile.id==profile.id);
-                                let c=theme::colors(self.dark);
-                                let response=crate::ui_icons::session_entry(ui,
-                                    &format!("{}{}",if profile.favorite {"★ "}else{""},profile.name),
-                                    &format!("{}@{} · {}",profile.username,profile.host,profile.connection_type.label()),
-                                    if selected {c.selection_text}else{c.text},
-                                    if selected{c.selection}else{c.selection.gamma_multiply(0.65)},
-                                    egui::Stroke::new(if selected{1.5_f32}else{0.6_f32},c.border));
-                                if response.clicked() && !profile.is_deleted() {
-                                    open_profile=Some(profile.clone());
-                                }
-                                response.context_menu(|ui|{
-                                    for (title,kind) in if profile.is_deleted(){vec![("Restore","restore"),("Delete permanently","purge")]}else{vec![("Edit","edit"),("Duplicate","duplicate"),(if profile.favorite {"Remove bookmark"}else{"Bookmark"},"favorite"),("Delete session","trash")]} {
-                                        if ui.button(title).clicked(){action=Some((index,kind));ui.close();}
-                                    }
-                                });
-                            }
-                            if let Some(profile)=open_profile{self.open_profile(profile);}
-                            if let Some((index,kind))=action {
-                                match kind {
-                                    "edit"=>self.new_profile=Some(self.profiles[index].clone().into()),
-                                    "duplicate"=>{let mut p=self.profiles[index].clone();p.id=uuid::Uuid::new_v4().to_string();p.name.push_str(" (copy)");p.remember_password=false;p.master_password_protected=false;self.new_profile=Some(p.into());},
-                                    "favorite"=>self.profiles[index].favorite=!self.profiles[index].favorite,
-                                    "trash"=>self.profiles[index].deleted_at=Some(chrono::Utc::now().to_rfc3339()),
-                                    "restore"=>self.profiles[index].deleted_at=None,
-                                    "purge"=>{match crate::vault::delete(&format!("ssh-{}",self.profiles[index].id)){Ok(())=>{self.profiles.remove(index);},Err(error)=>self.report_error(error)}},
-                                    _=>{}
-                                }
-                                if !matches!(kind,"edit"|"duplicate"){self.persist_profiles();}
-                            }
-
-                        }
-                        Sidebar::Tools=>{
-                            let workspace=self.workspace.selected.and_then(|i|self.workspace.tabs.get(i)).and_then(|t|t.ai_workspace()).unwrap_or_else(||crate::ai_tools::Workspace::Local(std::env::var("USERPROFILE").unwrap_or_else(|_|".".into()).into()));
-                            if let Ok(runtime)=&self.connections {self.tools.ui(ui,runtime,workspace);}
-                        }
-                        Sidebar::Assistant=>{
-                            let tab=self.workspace.selected.and_then(|i|self.workspace.tabs.get(i));
-                            let connection=tab.and_then(|t|t.ai_workspace());
-                            let capture=tab.and_then(|t|t.capture());
-                            if let Ok(runtime)=&self.connections {self.assistant.ui(ui,runtime,connection,capture);}
-                        }
-                        Sidebar::Connections=>{
-                            let mut selected=None; let mut disconnect=None;
-                            for (index,tab) in self.workspace.tabs.iter().enumerate().filter(|(_,t)|t.is_active()) {
-                                ui.horizontal(|ui| {
-                                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                    if crate::ui_icons::button(ui, crate::ui_icons::Icon::Disconnect, "Disconnect", false).clicked(){disconnect=Some(index);}
-                                    if crate::ui_icons::connection_entry(ui, &tab.profile.name, tab.state_label(), self.workspace.selected==Some(index)).on_hover_text(format!("{} · {}",tab.profile.name,tab.state_label())).clicked(){selected=Some(index);}
-                                });
-                                });
-                            }
-                            if let Some(index)=selected{self.select_tab(index);}
-                            if let Some(index)=disconnect{self.workspace.tabs[index].disconnect();}
-                            if !self.workspace.tabs.iter().any(|t|t.is_active()){ui.label("No active connections");}
-                        }
-                        Sidebar::Logs=>{self.show_logs=true;ui.label("Log files are open in a popup.");}
-                        _=>{ui.label("This sidebar's functional port is pending. See RUST-FEATURE-PARITY.md for the tracked behavior.");}
-                    }
-                    });
-                }).response.rect.width();
-            self.workspace.sidebar_width = width;
-            let panel = egui::Id::new("workspace");
-            if ctx
-                .read_response(panel.with("__resize"))
-                .is_some_and(|r| r.drag_stopped())
-            {
-                self.persist_settings();
-            }
-            if ctx
-                .read_response(panel.with("__resize"))
-                .is_some_and(|r| r.double_clicked())
-            {
-                if let Some(mut state) = egui::containers::panel::PanelState::load(ctx, panel) {
-                    self.workspace.sidebar_width = 214.0_f32.min(maximum);
-                    state.rect.max.x = state.rect.min.x + self.workspace.sidebar_width;
-                    self.persist_settings();
-                    ctx.data_mut(|d| d.insert_persisted(panel, state));
-                    ctx.request_repaint();
-                }
-            }
-        }
+        self.workspace_sidebar(ctx);
         egui::CentralPanel::default()
             .frame(
                 egui::Frame::central_panel(&ctx.style())
@@ -1160,7 +1412,8 @@ fn main() -> eframe::Result {
                     .is_some_and(|p| p.start_maximized),
             )
             .with_inner_size([1280.0, 840.0])
-            .with_min_inner_size([800.0, 500.0]),
+            .with_min_inner_size(app_layout::MINIMUM)
+            .with_clamp_size_to_monitor_size(true),
         ..Default::default()
     };
     eframe::run_native(
@@ -1183,6 +1436,47 @@ fn main() -> eframe::Result {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn narrow_windows_preserve_sidebar_preference_and_restore_width_on_larger_screens() {
+        let directory = tempfile::tempdir().unwrap();
+        storage::with_test_root(directory.path(), || {
+            let mut app = RustDesktop::default();
+            let ctx = egui::Context::default();
+            app.workspace.sidebar_width = 520.0;
+            for width in [1280.0, 480.0, 1280.0, 400.0, 1600.0] {
+                for _ in 0..4 {
+                    let _ = ctx.run(
+                        egui::RawInput {
+                            screen_rect: Some(egui::Rect::from_min_size(
+                                egui::Pos2::ZERO,
+                                egui::vec2(width, 800.0),
+                            )),
+                            ..Default::default()
+                        },
+                        |ctx| {
+                            app.workspace_sidebar(ctx);
+                            egui::CentralPanel::default().show(ctx, |_| {});
+                        },
+                    );
+                }
+                assert_eq!(
+                    app.workspace.sidebar_width, 520.0,
+                    "A temporary resize overwrote the sidebar preference"
+                );
+                if app_layout::sidebar_maximum(width) >= 180.0 {
+                    let state =
+                        egui::containers::panel::PanelState::load(&ctx, egui::Id::new("workspace"))
+                            .unwrap();
+                    let expected = 520.0_f32.min(app_layout::sidebar_maximum(width));
+                    assert!(
+                        (state.rect.width() - expected).abs() < 1.0,
+                        "Sidebar did not refit on width {width}: {:?}",
+                        state.rect
+                    );
+                }
+            }
+        });
+    }
     #[test]
     fn save_and_open_persists_profile_and_never_serializes_the_password() {
         let directory = tempfile::tempdir().unwrap();

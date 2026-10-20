@@ -170,54 +170,144 @@ impl Theme {
     }
     pub fn home(&self, ui: &mut egui::Ui, dark: bool) -> Option<ConnectionType> {
         let c = colors(dark);
-        let area = ui.available_rect_before_wrap();
-        let scale = (area.width() / 767.0).clamp(0.65, 1.5);
-        let two_columns = area.width() >= 620.0;
-        let width = (area.width() - 92.0 * scale).max(200.0);
-        ui.painter().rect_filled(area, 0, c.canvas);
+        ui.painter()
+            .rect_filled(ui.available_rect_before_wrap(), 0, c.canvas);
         let mut chosen = None;
-        egui::ScrollArea::vertical().id_salt("welcome-scroll").show(ui, |ui| {
-            let height = if two_columns { 480.0 } else { 680.0 } * scale;
-            let (canvas, _) = ui.allocate_exact_size(egui::vec2(area.width(), height), egui::Sense::hover());
-            let at = |x: f32, y: f32| canvas.min + egui::vec2(x, y) * scale;
-            let band = Rect::from_min_size(at(46.0, 47.0), egui::vec2(width, 34.0 * scale));
-            ui.painter().rect_filled(band, 2, c.panel);
-            icon(ui.painter(), Rect::from_center_size(band.left_center() + egui::vec2(20.0 * scale, 0.0), egui::vec2(18.0, 18.0)), 8, c.muted);
-            ui.painter().text(band.left_center() + egui::vec2(45.0 * scale, 0.0), egui::Align2::LEFT_CENTER, "SECURE REMOTE WORKSPACE", egui::FontId::proportional(12.0), c.muted);
-            let heading=ui.painter().layout("Everything remote.\nOne focused workspace.".into(),heading_font(32.0*scale.min(1.1)),c.heading,width);
-            ui.painter().galley(at(46.0,103.0),heading,c.heading);
-            let paragraph = ui.painter().layout("Open every connection in its own independent tab, keep credentials protected by Windows, and move between terminal, files, applications, and desktops without losing context.".into(), egui::FontId::proportional(13.0), c.text, width);
-            ui.painter().galley(at(46.0, 184.0), paragraph, c.text);
-            let action_rect=Rect::from_min_size(at(46.0,238.0),egui::vec2(139.0,28.0));
-            if ui.put(action_rect,egui::Button::new("+  New Connection").corner_radius(18)).on_hover_text(format!("Create a connection ({})", crate::preferences::current().shortcuts.new_connection.label())).clicked() { chosen=Some(ConnectionType::SshTerminal); }
-            ui.painter().text(egui::pos2(action_rect.right()+12.0,action_rect.center().y),egui::Align2::LEFT_CENTER,format!("Shortcut: {}",crate::preferences::current().shortcuts.new_connection.label()),egui::FontId::proportional(12.0),c.muted);
+        egui::ScrollArea::vertical().id_salt("welcome-scroll").auto_shrink([false, false]).show(ui, |ui| {
+            let margin = (ui.available_width() * 0.045).clamp(12.0, 46.0);
+            egui::Frame::new().inner_margin(margin).show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Wrap);
+            let font = egui::TextStyle::Body.resolve(ui.style()).size;
+            ui.add_space(20.0);
+            egui::Frame::new().fill(c.panel).inner_margin(12.0).show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    let (rect, _) = ui.allocate_exact_size(egui::vec2(18.0, 18.0), egui::Sense::hover());
+                    icon(ui.painter(), rect, 8, c.muted);
+                    ui.label(egui::RichText::new("SECURE REMOTE WORKSPACE").color(c.muted));
+                });
+            });
+            ui.add_space(24.0);
+            let heading_size = (font * 2.25).min((ui.available_width() / 8.0).max(font));
+            ui.add(egui::Label::new(egui::RichText::new("Everything remote.\nOne focused workspace.").font(heading_font(heading_size)).color(c.heading)).wrap());
+            ui.add_space(16.0);
+            ui.add(egui::Label::new("Open every connection in its own independent tab, keep credentials protected by Windows, and move between terminal, files, applications, and desktops without losing context.").wrap());
+            ui.add_space(24.0);
+            ui.horizontal_wrapped(|ui| {
+                if ui.add(egui::Button::new("+  New Connection").corner_radius(18)).clicked() {
+                    chosen = Some(ConnectionType::SshTerminal);
+                }
+                ui.label(egui::RichText::new(format!("Shortcut: {}", crate::preferences::current().shortcuts.new_connection.label())).color(c.muted));
+            });
+            ui.add_space(28.0);
             let cards = [
                 (ConnectionType::SshTerminal, "SSH Terminal", "Fast interactive shells with verified host keys.", 0),
                 (ConnectionType::SftpOnly, "SFTP Workspace", "Local and remote files beside every live session.", 1),
                 (ConnectionType::RemoteDesktop, "Remote Desktop", "Linux desktops streamed inside AetherDesk.", 2),
                 (ConnectionType::SshX11, "SSH + X11", "Launch individual Linux GUI applications securely.", 3),
             ];
-            let gap = 12.0 * scale;
-            let card_width = if two_columns { (width - gap) / 2.0 } else { width };
-            for (kind, title, description, index) in cards {
-                let x = if two_columns && index % 2 == 1 { 46.0 * scale + card_width + gap } else { 46.0 * scale };
-                let y = if two_columns { if index < 2 { 294.0 } else { 371.0 } } else { 294.0 + index as f32 * 89.0 } * scale;
-                let h = if index < 2 { 66.0 } else { 78.0 } * scale;
-                let rect = Rect::from_min_size(canvas.min + egui::vec2(x, y), egui::vec2(card_width, h));
-                let response = ui.interact(rect, ui.id().with(("welcome-service", index)), egui::Sense::click());
-                response.widget_info(||egui::WidgetInfo::labeled(egui::WidgetType::Button,ui.is_enabled(),title));
-                ui.painter().rect_filled(rect, 5, if response.hovered() { c.selection } else { c.panel });
-                self.card_border(ui.painter(), dark, rect);
-                let foreground = if response.hovered() { c.selection_text } else { c.text };
-                icon(ui.painter(), Rect::from_min_size(rect.min + egui::vec2(22.0, 22.0) * scale, egui::vec2(18.0, 18.0)), index, foreground);
-                ui.painter().text(rect.min + egui::vec2(51.0, 17.0) * scale, egui::Align2::LEFT_TOP, title, egui::FontId::proportional(14.0), foreground);
-                if card_width > 310.0 { let dot = egui::pos2(rect.right() - 50.0, rect.top() + 22.0 * scale); ui.painter().circle_filled(dot, 3.0, if index == 0 { c.success } else { c.information }); ui.painter().text(dot + egui::vec2(7.0, 0.0), egui::Align2::LEFT_CENTER, "Ready", egui::FontId::proportional(9.0), foreground); }
-                let text = ui.painter().layout(description.into(), egui::FontId::proportional(12.0), foreground, card_width - 79.0 * scale);
-                ui.painter().galley(rect.min + egui::vec2(51.0, 37.0) * scale, text, foreground);
-                if response.clicked() { chosen = Some(kind); }
+            let columns = if ui.available_width() >= font * 48.0 { 2 } else { 1 };
+            for row in cards.chunks(columns) {
+                ui.columns(columns, |columns| {
+                    for (column, &(kind, title, description, index)) in columns.iter_mut().zip(row) {
+                        if self.home_card(column, dark, title, description, index).clicked() {
+                            chosen = Some(kind);
+                        }
+                    }
+                });
+                ui.add_space(12.0);
             }
+            });
         });
         chosen
+    }
+    fn home_card(
+        &self,
+        ui: &mut egui::Ui,
+        dark: bool,
+        title: &str,
+        description: &str,
+        index: usize,
+    ) -> egui::Response {
+        let c = colors(dark);
+        let width = ui.available_width().max(1.0);
+        let font = egui::TextStyle::Body.resolve(ui.style()).size;
+        let padding = 16.0;
+        let text_x = if width >= 220.0 { 48.0 } else { padding };
+        let ready_width = if width > font * 28.0 { 60.0 } else { 0.0 };
+        let title_galley = ui.painter().layout(
+            title.into(),
+            egui::FontId::proportional(font + 1.0),
+            Color32::PLACEHOLDER,
+            (width - text_x - padding - ready_width).max(1.0),
+        );
+        let description_galley = ui.painter().layout(
+            description.into(),
+            egui::FontId::proportional(font),
+            Color32::PLACEHOLDER,
+            (width - text_x - padding).max(1.0),
+        );
+        let height = padding * 2.0 + title_galley.size().y + 8.0 + description_galley.size().y;
+        let (rect, response) =
+            ui.allocate_exact_size(egui::vec2(width, height), egui::Sense::click());
+        response.widget_info(|| {
+            egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), title)
+        });
+        let foreground = if response.hovered() {
+            c.selection_text
+        } else {
+            c.text
+        };
+        ui.painter().rect_filled(
+            rect,
+            5,
+            if response.hovered() {
+                c.selection
+            } else {
+                c.panel
+            },
+        );
+        self.card_border(ui.painter(), dark, rect);
+        if width >= 220.0 {
+            icon(
+                ui.painter(),
+                Rect::from_min_size(
+                    rect.min + egui::vec2(padding, padding),
+                    egui::vec2(18.0, 18.0),
+                ),
+                index,
+                foreground,
+            );
+        }
+        ui.painter().galley(
+            rect.min + egui::vec2(text_x, padding),
+            title_galley.clone(),
+            foreground,
+        );
+        ui.painter().galley(
+            rect.min + egui::vec2(text_x, padding + title_galley.size().y + 8.0),
+            description_galley,
+            foreground,
+        );
+        if ready_width > 0.0 {
+            let dot = egui::pos2(
+                rect.right() - 52.0,
+                rect.top() + padding + title_galley.size().y * 0.5,
+            );
+            ui.painter().circle_filled(
+                dot,
+                3.0,
+                if index == 0 { c.success } else { c.information },
+            );
+            ui.painter().text(
+                dot + egui::vec2(7.0, 0.0),
+                egui::Align2::LEFT_CENTER,
+                "Ready",
+                egui::FontId::proportional(font * 0.75),
+                foreground,
+            );
+        }
+        response
     }
 }
 pub fn mode_toggle(ui: &mut egui::Ui, dark: bool) -> bool {
@@ -418,6 +508,77 @@ pub fn icon(p: &egui::Painter, rect: Rect, index: usize, color: Color32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn welcome_text_reflows_without_overlap_in_narrow_windows_and_large_fonts() {
+        for dark in [false, true] {
+            for font in [13.0, 20.0] {
+                for width in [280.0, 420.0, 640.0, 1000.0] {
+                    let ctx = egui::Context::default();
+                    ctx.set_fonts(font_definitions());
+                    let mut output = None;
+                    for _ in 0..3 {
+                        output = Some(ctx.run(
+                            egui::RawInput {
+                                screen_rect: Some(Rect::from_min_size(
+                                    egui::Pos2::ZERO,
+                                    egui::vec2(width, 3000.0),
+                                )),
+                                ..Default::default()
+                            },
+                            |ctx| {
+                                apply(ctx, dark);
+                                ctx.style_mut(|s| {
+                                    s.text_styles.insert(
+                                        egui::TextStyle::Body,
+                                        egui::FontId::proportional(font),
+                                    );
+                                    s.text_styles.insert(
+                                        egui::TextStyle::Button,
+                                        egui::FontId::proportional(font),
+                                    );
+                                });
+                                egui::CentralPanel::default().show(ctx, |ui| {
+                                    Theme.home(ui, dark);
+                                });
+                            },
+                        ));
+                    }
+                    let texts: Vec<_> = output
+                        .unwrap()
+                        .shapes
+                        .into_iter()
+                        .filter_map(|shape| {
+                            if let egui::epaint::Shape::Text(text) = shape.shape {
+                                Some((
+                                    text.galley.job.text.clone(),
+                                    Rect::from_min_size(text.pos, text.galley.size()),
+                                    shape.clip_rect,
+                                ))
+                            } else {
+                                None
+                            }
+                        })
+                        .collect();
+                    for (index, (text, rect, clip)) in texts.iter().enumerate() {
+                        assert!(rect.left() >= clip.left() - 1.0 && rect.right() <= clip.right() + 1.0,
+                            "Welcome text overflows at width {width}, font {font}: {text}: {rect:?} / {clip:?}");
+                        for (other, other_rect, _) in &texts[index + 1..] {
+                            assert!(!rect.shrink(0.5).intersects(other_rect.shrink(0.5)),
+                                "Welcome text overlaps at width {width}, font {font}: {text} / {other}");
+                        }
+                    }
+                    for name in [
+                        "SSH Terminal",
+                        "SFTP Workspace",
+                        "Remote Desktop",
+                        "SSH + X11",
+                    ] {
+                        assert!(texts.iter().any(|(text, ..)| text == name));
+                    }
+                }
+            }
+        }
+    }
     #[test]
     fn solid_themes_keep_welcome_controls_and_product_icon() {
         let ctx = egui::Context::default();
