@@ -67,6 +67,8 @@ if ($LASTEXITCODE -ne 0) { throw 'Publisher Python check failed' }</code></pre><
 </details>
 <div class="notice"><strong>Keep the existing signing key.</strong> It is protected in Windows Credential Manager under <code>AetherDesk-Rust/provider/updates-release-signing</code>. The project repository also has the encrypted <code>UPDATE_SIGNING_KEY</code> Actions secret. Do not run key initialization as a routine release step, change the pinned public key, export secrets into the source tree, or upload keys. Replacing the key prevents existing clients from trusting updates. Arrange an approved key backup before replacing this PC.</div>
 
+<div class="success"><strong>Public project, 20 October 2026:</strong> Full source and releases now share <a href="https://github.com/ashkanr65/AetherDesk">ashkanr65/AetherDesk</a> on main. Original code is MIT OR Apache-2.0. The previous source location is archived; do not push releases there. Existing update URLs, signing key and published assets are unchanged. Local folder names remain compatible.</div>
+
 <h2 id="version">2 Prepare the next version</h2>
 <p>Finish and commit feature changes first. Pull the current main only when your working tree is clean. All source changes and pushes stay on main.</p>
 <div class="snippet"><div class="snippet-label">PowerShell • synchronize clean source</div><pre><code data-language="powershell">Set-Location -LiteralPath $Source
