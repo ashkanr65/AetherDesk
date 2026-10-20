@@ -582,3 +582,10 @@ detection test, and no connection was interrupted.
 | AO1 | Stack category content vertically | Implemented: explicit top-down content layout isolates the form from the horizontal navigation/container. All eight category titles start their own column; options follow below. Existing window sizing and left navigation are preserved. |
 | AO2 | Align controls and use consistent text | Implemented: body-sized labels, descriptions, values and buttons; shared field grids; aligned palette picker/hex rows; wrapped descriptions and vertical scrolling bounded to the content column. Preview drawing clips to its sample area. |
 | AO3 | Verify and prepare the next build | Build 0.1.2 build 4 reserved because build 3 is already published. Two rendered category/font/row geometry regressions registered for Windows. Rust parser/format, catalog mapping and offline recipe checks passed (Cargo/network/signing mocked in recipe fixtures); native compilation and packaged visual verification remain for the user's build. No new release published. |
+
+## Build 4 stable update preparation — 2026-10-20
+
+| Item | Work | Status |
+| --- | --- | --- |
+| AP1 | Verify user build 4 | Passed: all seven stages in 00:52:06. Source fingerprint 8acf6660e3f333fb5523a15be2149f010f5ade12dae2494a63e7ed47b578766a matches current inputs. Windows 274 registered / 248 required and Linux 95 / 80 pass, including both new rendered Preferences tests. Bundled X11 and licence checks pass. Isolated dark/light/editor check: acceptance/r12-20261020-130828. |
+| AP2 | Sign, upload and enable stable update | In progress: sign with the existing protected key, verify all ZIP entries and installer hashes, upload and verify assets, then publish build 4 as the normal latest release and verify the anonymous update feed. Real upgrade/restart/data-preservation tests remain separate. |

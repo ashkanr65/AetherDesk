@@ -7,6 +7,10 @@ AetherDesk 0.1.2 build 4 — Preferences layout
 
 Validation status:
 
-- Added two rendered layout regressions covering all eight categories, normal/large fonts and aligned field rows. Registered in the build kit.
-- Source/parser and offline checks do not replace native compilation or packaged UI verification. The user's next build must run these checks before publication.
-- Build 3 remains the published stable release. This candidate has not been built or published; no user installation was changed.
+- The user-built installer and portable package passed all seven stages in 52 minutes 6 seconds on 20 October 2026.
+- Windows/Linux regression checks and packaged X11 passed, including the two rendered Preferences layout tests covering all eight categories, normal/large fonts and aligned field rows.
+- Built package inputs match the current source fingerprint. Packaged project licence files match the repository.
+- The completed executable passed isolated dark/light rendering and editor popup open/close checks. No application compilation was run by the assistant.
+- Real two-version upgrades, restart/recovery, data preservation and clean-machine acceptance remain pending. These results do not claim those tests passed.
+
+Updates use the existing Ed25519 verification key and ask before restarting. Windows Authenticode signing remains separate and unconfigured.
