@@ -566,3 +566,11 @@ detection test, and no connection was interrupted.
 | AM1 | Correct the icon-button pressed-state API | Fixed: use Response::is_pointer_button_down_on(), confirmed in the cached pinned egui 0.33.3 source. Keeps the pressed/hover icon colours and normal custom icon colour. |
 | AM2 | Remove reported stroke-width inference warnings | Fixed: explicit f32 widths at all ten reported calls in navigation, Preferences and theme styling. Values and appearance are unchanged. |
 | AM3 | Verify and rebuild | Rust parser/format check and source diff checks passed. Compilation and native regression tests remain for the user's next build; no package or binary release produced. |
+
+## Build 3 stable update publication — 2026-10-20
+
+| Item | Work | Status |
+| --- | --- | --- |
+| AN1 | Verify completed user build | Passed: all seven stages in 00:26:29; package fingerprint d7e528b21e02636315f09631031974a09bea416e58cf40eb059d9e0cc4a097c7 matches current source inputs. Windows: 272 registered / 246 required; Linux: 95 registered / 80 required; compiler and bundled X11 evidence pass. Licence files match. Isolated packaged dark/light/editor-popup checks passed under acceptance/r12-20261020-114717. |
+| AN2 | Sign and verify update assets | In progress: prepare build 3 with the established protected Ed25519 key, verify ZIP inventory and installer/metadata hashes, then upload a normal-release draft at the source main commit. |
+| AN3 | Make build 3 available to auto-update | Authorized by user; publication and anonymous stable-feed verification pending. Real installation/restart/data-preservation acceptance remains separate; no user installation is changed by publication. |

@@ -9,9 +9,11 @@ AetherDesk 0.1.2 build 3 — Preferences and theme customization
 
 Validation status:
 
-- Rust formatting/parser and offline build-recipe checks are performed without compiling the application.
-- Seven new native regression checks are registered for the user's build-kit test stage. They have not been compiled or run by the assistant.
-- Source and releases are consolidated in public ashkanr65/AetherDesk; MIT OR Apache-2.0 licence files are included.
-- Packaged UI checks, real upgrades, restart/recovery and data preservation remain pending.
+- The user-built installer and portable package passed all seven build-kit stages in 26 minutes 29 seconds on 20 October 2026.
+- Windows and Linux registered regression checks passed, including the seven new Preferences/theme/log/navigation checks and the packaged X11 test.
+- Built package source fingerprint matches main's application/build inputs. Project licence files match the repository.
+- The completed executable passed isolated dark/light rendering and editor popup open/close checks. No application compilation was run by the assistant.
+- Complete source, releases and MIT OR Apache-2.0 project licences are available together in ashkanr65/AetherDesk.
+- Real two-version installer/portable upgrades, restart/recovery, settings and credential preservation, clean-machine acceptance and broader live connection checks remain pending. This publication does not claim those tests passed.
 
-This release must be built, tested and signed before publication. No new binary is published by these source changes. Update metadata uses the existing Ed25519 key; Windows Authenticode publisher signing remains separate.
+Update metadata uses the existing Ed25519 key. Windows Authenticode publisher signing remains separate and unconfigured. Updates ask before restarting; use the gear menu → Updates → Check now to find this build.
