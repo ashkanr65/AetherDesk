@@ -995,13 +995,29 @@ impl SessionTab {
             remote.ui(ui);
             remote.take_action()
         });
-        match desktop_action {
+        self.apply_desktop_action(desktop_action);
+        if !self.files_visible || self.profile.connection_type == ConnectionType::SftpOnly {
+            self.file_dialogs(&ctx, runtime);
+        }
+    }
+    /// Fullscreen desktops remain independent of the currently selected tab.
+    pub fn remote_window(&mut self, ctx: &egui::Context) -> bool {
+        let mut return_to_tab = false;
+        let action = self.remote.as_mut().and_then(|remote| {
+            let was_external = remote.is_external();
+            remote.external_window(ctx);
+            let action = remote.take_action();
+            return_to_tab = was_external && !remote.is_external() && action.is_none();
+            action
+        });
+        self.apply_desktop_action(action);
+        return_to_tab
+    }
+    fn apply_desktop_action(&mut self, action: Option<crate::remote_view::SessionAction>) {
+        match action {
             Some(crate::remote_view::SessionAction::Disconnect) => self.disconnect(),
             Some(crate::remote_view::SessionAction::End) => self.end_desktop(),
             None => {}
-        }
-        if !self.files_visible || self.profile.connection_type == ConnectionType::SftpOnly {
-            self.file_dialogs(&ctx, runtime);
         }
     }
     fn file_dialogs(&mut self, ctx: &egui::Context, runtime: &Connections) {

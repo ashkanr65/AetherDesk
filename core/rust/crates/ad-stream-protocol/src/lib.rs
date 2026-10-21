@@ -5,6 +5,7 @@
 //! routed or malicious frames before dispatching them to a subsystem.
 
 pub mod framing;
+pub mod lossless;
 pub mod messages;
 pub mod pointer;
 pub mod transport;
@@ -509,6 +510,22 @@ pub enum DisplayMessage {
         height: u32,
         visible: bool,
         rgba: Vec<u8>,
+    },
+    /// Atomic lossless transaction, sent only after explicit client opt-in.
+    /// base_frame_id=0 replaces the surface (including unused monitor gaps).
+    LosslessBegin {
+        frame_id: u64,
+        base_frame_id: u64,
+        width: u32,
+        height: u32,
+        tile_count: u32,
+    },
+    LosslessTile {
+        frame_id: u64,
+        tile: lossless::LosslessTile,
+    },
+    LosslessCommit {
+        frame_id: u64,
     },
 }
 

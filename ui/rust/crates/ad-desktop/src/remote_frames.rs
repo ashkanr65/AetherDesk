@@ -48,6 +48,38 @@ impl PreparedFrame {
     }
 }
 fn changed_region(before: &Image, after: &Image) -> Option<Damage> {
+    // Validated transaction damage avoids rescanning the entire multi-monitor
+    // surface. Skipped preparations still compare the complete immutable images.
+    if let Some(damage) = after
+        .damage
+        .as_ref()
+        .filter(|d| d.base_sequence == before.sequence)
+    {
+        let (mut left, mut top, mut right, mut bottom) = (after.width, after.height, 0, 0);
+        let mut valid = true;
+        for r in &damage.regions {
+            if r.width == 0
+                || r.height == 0
+                || r.x.checked_add(r.width).is_none_or(|n| n > after.width)
+                || r.y.checked_add(r.height).is_none_or(|n| n > after.height)
+            {
+                valid = false;
+                break;
+            }
+            left = left.min(r.x);
+            top = top.min(r.y);
+            right = right.max(r.x + r.width);
+            bottom = bottom.max(r.y + r.height);
+        }
+        if valid && right > left && bottom > top {
+            return Some(Damage {
+                x: left as usize,
+                y: top as usize,
+                width: (right - left) as usize,
+                height: (bottom - top) as usize,
+            });
+        }
+    }
     let width = after.width as usize;
     let height = after.height as usize;
     let (mut left, mut top, mut right, mut bottom) = (width, height, 0, 0);
@@ -143,6 +175,8 @@ pub(crate) async fn prepare(
     ctx: egui::Context,
 ) -> Result<(), String> {
     let mut previous: Option<PreparedFrame> = None;
+    let mut report_at = std::time::Instant::now();
+    let (mut count, mut preparation_us) = (0_u64, 0_u128);
     while frames.changed().await.is_ok() {
         let frame = { frames.borrow_and_update().clone() };
         let Some(frame) = frame else {
@@ -151,12 +185,25 @@ pub(crate) async fn prepare(
         // Exactly one bounded CPU job per desktop; no blocking work on either
         // the GUI thread or the asynchronous input transport workers.
         let base = previous.take();
+        let started = std::time::Instant::now();
         let (prepared, base) = tokio::task::spawn_blocking(move || {
             let prepared = convert(frame, base.as_ref());
             (prepared, base)
         })
         .await
         .map_err(|e| e.to_string())?;
+        count += 1;
+        preparation_us += started.elapsed().as_micros();
+        if report_at.elapsed() >= std::time::Duration::from_secs(5) {
+            tracing::info!(
+                interval_ms = report_at.elapsed().as_millis() as u64,
+                frames = count,
+                preparation_us = preparation_us as u64,
+                "remote texture preparation performance"
+            );
+            report_at = std::time::Instant::now();
+            (count, preparation_us) = (0, 0);
+        }
         if let Some(prepared) = prepared? {
             previous = Some(prepared.clone());
             *output.lock() = Some(prepared);
@@ -172,6 +219,7 @@ mod tests {
     use super::*;
     fn frame(sequence: u64, bytes: &[u8]) -> Image {
         Image {
+            damage: None,
             width: 1,
             height: 1,
             sequence,
@@ -181,6 +229,7 @@ mod tests {
     #[test]
     fn partial_uploads_preserve_colours_and_fall_back_after_skips_or_resize() {
         let initial = Image {
+            damage: None,
             width: 8,
             height: 4,
             sequence: 1,
@@ -214,6 +263,7 @@ mod tests {
         assert_eq!(full.pixels[2 * 8 + 3].to_array(), [240, 21, 7, 255]);
         let resized = convert(
             Image {
+                damage: None,
                 width: 1,
                 height: 1,
                 sequence: 4,
@@ -226,6 +276,50 @@ mod tests {
         assert_eq!(resized.upload_after(3, true).0, None);
         assert_eq!(&second_source.pixels[index..index + 4], &[7, 21, 240, 255]);
     }
+    #[test]
+    fn lossless_damage_uses_only_its_exact_base_and_recovers_after_skipped_preparation() {
+        let initial = Image {
+            width: 1024,
+            height: 512,
+            sequence: 1,
+            pixels: Arc::new([7, 21, 240, 255].repeat(1024 * 512)),
+            damage: None,
+        };
+        let first = convert(initial.clone(), None).unwrap().unwrap();
+        let mut second = initial.clone();
+        second.sequence = 2;
+        Arc::make_mut(&mut second.pixels)[..4].copy_from_slice(&[11, 22, 33, 255]);
+        second.damage = Some(crate::remote::ImageDamage {
+            base_sequence: 1,
+            regions: vec![ad_stream_protocol::Rectangle {
+                x: 0,
+                y: 0,
+                width: 256,
+                height: 256,
+            }],
+        });
+        let prepared = convert(second.clone(), Some(&first)).unwrap().unwrap();
+        assert_eq!(prepared.upload_after(1, true).1.size, [256, 256]);
+        assert_eq!(prepared.image.pixels[0].to_array(), [33, 22, 11, 255]);
+        let mut third = second.clone();
+        third.sequence = 3;
+        Arc::make_mut(&mut third.pixels)[256 * 4..256 * 4 + 4].copy_from_slice(&[44, 55, 66, 255]);
+        third.damage = Some(crate::remote::ImageDamage {
+            base_sequence: 2,
+            regions: vec![ad_stream_protocol::Rectangle {
+                x: 256,
+                y: 0,
+                width: 256,
+                height: 256,
+            }],
+        });
+        let recovered = convert(third, Some(&first)).unwrap().unwrap();
+        assert_eq!(recovered.image.pixels[0].to_array(), [33, 22, 11, 255]);
+        assert_eq!(recovered.image.pixels[256].to_array(), [66, 55, 44, 255]);
+        assert_eq!(first.image.pixels[0].to_array(), [240, 21, 7, 255]);
+        assert_eq!(recovered.upload_after(0, true).1.size, [1024, 512]);
+    }
+
     #[tokio::test]
     async fn preparation_preserves_bgra_source_and_publishes_isolated_latest_frames() {
         let original = frame(1, &[7, 21, 240, 255]);

@@ -152,7 +152,7 @@ impl RemoteView {
         });
         self.display_settings = open;
     }
-    pub fn ui(&mut self, ui: &mut egui::Ui) {
+    fn refresh_monitors(&mut self) {
         if self.monitor_tick.elapsed() > Duration::from_millis(500) {
             self.monitor_tick = Instant::now();
             self.monitor_snapshot = crate::remote_geometry::monitors();
@@ -162,13 +162,23 @@ impl RemoteView {
                 .map(crate::remote_geometry::monitor_properties)
                 .collect();
         }
-        if self.mode == Mode::Tab {
-            self.surface(ui);
-            self.display_preferences(ui.ctx());
-            self.resolution_preferences(ui.ctx());
+    }
+    pub fn ui(&mut self, ui: &mut egui::Ui) {
+        if self.mode != Mode::Tab {
             return;
         }
-        let ctx = ui.ctx().clone();
+        self.refresh_monitors();
+        self.surface(ui);
+        self.display_preferences(ui.ctx());
+        self.resolution_preferences(ui.ctx());
+    }
+    /// Register presentation windows once per root pass, including connections
+    /// whose tab is not selected. Egui closes an unregistered child viewport.
+    pub fn external_window(&mut self, ctx: &egui::Context) {
+        if self.mode == Mode::Tab {
+            return;
+        }
+        self.refresh_monitors();
         let mut builder = egui::ViewportBuilder::default()
             .with_icon(crate::theme::native_icon())
             .with_title(&self.window_title)
@@ -221,7 +231,8 @@ impl RemoteView {
             self.resolution_preferences(ctx);
             if self.mode != Mode::Tab {
                 self.toolbar(ctx);
-            } else {
+            }
+            if self.mode == Mode::Tab {
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             }
         });
@@ -454,5 +465,148 @@ impl RemoteView {
                 self.error=Some("Toolbar settings are damaged; saved file preserved. Current position works for this session.".into());
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn external_desktops_remain_registered_when_another_connection_is_selected() {
+        use std::{
+            cell::{Cell, RefCell},
+            rc::Rc,
+        };
+
+        let ctx = egui::Context::default();
+        ctx.set_embed_viewports(false);
+        ctx.options_mut(|options| options.max_passes = 1.try_into().unwrap());
+        struct ResetRenderer;
+        impl Drop for ResetRenderer {
+            fn drop(&mut self) {
+                // The renderer is thread-local. Release all captured fixture
+                // state even when an assertion unwinds on a reused test thread.
+                egui::Context::set_immediate_viewport_renderer(|ctx, mut viewport| {
+                    (viewport.viewport_ui_cb)(ctx);
+                });
+            }
+        }
+        let _reset_renderer = ResetRenderer;
+        let registered = Rc::new(RefCell::new(Vec::new()));
+        let recorded = registered.clone();
+        let close_next = Rc::new(Cell::new(None));
+        let close_request = close_next.clone();
+        egui::Context::set_immediate_viewport_renderer(move |ctx, mut viewport| {
+            recorded.borrow_mut().push(viewport.ids.this);
+            let mut input = egui::RawInput {
+                viewport_id: viewport.ids.this,
+                focused: false,
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(800.0, 600.0),
+                )),
+                ..Default::default()
+            };
+            input.viewports.insert(
+                viewport.ids.this,
+                egui::ViewportInfo {
+                    parent: Some(viewport.ids.parent),
+                    focused: Some(false),
+                    events: if close_request.get() == Some(viewport.ids.this) {
+                        close_request.set(None);
+                        vec![egui::ViewportEvent::Close]
+                    } else {
+                        vec![]
+                    },
+                    ..Default::default()
+                },
+            );
+            let _ = ctx.run(input, |ctx| (viewport.viewport_ui_cb)(ctx));
+        });
+        let mut views = [Mode::Current, Mode::Tab, Mode::All].map(|mode| {
+            let mut view =
+                RemoteView::new(RemoteClient::test_stub(ctx.clone()), uuid::Uuid::new_v4());
+            view.mode = mode;
+            view.monitor_snapshot = vec![crate::remote_geometry::Monitor {
+                device: "fullscreen-fixture".into(),
+                rect: crate::remote_geometry::PhysicalRect {
+                    x: -800,
+                    y: 0,
+                    width: 800,
+                    height: 600,
+                },
+                dpi: 96,
+                primary: true,
+            }];
+            // Keep native monitor enumeration out of this isolated UI fixture.
+            view.monitor_tick = Instant::now() + Duration::from_secs(60);
+            view.monitor_properties.clear();
+            view
+        });
+        let expected = vec![views[0].id, views[2].id];
+        for selected in [0, 1, 2, 1, 0] {
+            registered.borrow_mut().clear();
+            let output = ctx.run(
+                egui::RawInput {
+                    focused: false,
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(1000.0, 700.0),
+                    )),
+                    ..Default::default()
+                },
+                |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| views[selected].ui(ui));
+                    for view in &mut views {
+                        view.external_window(ctx);
+                    }
+                },
+            );
+            assert_eq!(
+                *registered.borrow(),
+                expected,
+                "selection {selected} closed or registered an external desktop twice"
+            );
+            for id in &expected {
+                assert!(output.viewport_output.contains_key(id));
+            }
+            assert!(views.iter().all(|view| !view.captures_keyboard()));
+        }
+        // A native child close also returns to its own tab, without ending the
+        // desktop session. The caller can select that tab after its render loop.
+        close_next.set(Some(views[0].id));
+        let mut returned_to_tab = Vec::new();
+        let _ = ctx.run(Default::default(), |ctx| {
+            for view in &mut views {
+                let was_external = view.is_external();
+                view.external_window(ctx);
+                if was_external && !view.is_external() && view.action.is_none() {
+                    returned_to_tab.push(view.id);
+                }
+            }
+        });
+        assert_eq!(returned_to_tab, vec![views[0].id]);
+        views[2].session_action(SessionAction::Disconnect);
+        registered.borrow_mut().clear();
+        let _ = ctx.run(Default::default(), |ctx| {
+            for view in &mut views {
+                view.external_window(ctx);
+            }
+        });
+        assert!(registered.borrow().is_empty());
+        assert_eq!(
+            views[0].take_action(),
+            None,
+            "returning to a tab disconnected it"
+        );
+        assert_eq!(views[2].take_action(), Some(SessionAction::Disconnect));
+        assert_eq!(
+            views[2].take_action(),
+            None,
+            "disconnect action was replayed"
+        );
+        views[2].session_action(SessionAction::End);
+        assert_eq!(views[2].take_action(), Some(SessionAction::End));
     }
 }

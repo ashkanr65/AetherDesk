@@ -35,6 +35,7 @@ pub struct SupervisorConfig {
 }
 
 enum MediaCommand {
+    Lossless(bool),
     Pause,
     Resume,
     Stop,
@@ -66,6 +67,9 @@ pub struct AgentSupervisor {
     clients: Arc<Mutex<HashSet<Uuid>>>,
     media_tx: mpsc::Sender<MediaCommand>,
     refresh: Arc<Notify>,
+    lossless_refresh: watch::Sender<u64>,
+    captured_frames: watch::Receiver<Option<Arc<agent_wayland::damage::CapturedFrame>>>,
+    monitors: watch::Sender<Vec<ad_stream_protocol::Rectangle>>,
     rate: Mutex<MediaRate>,
     rate_tx: watch::Sender<(u32, u32)>,
     capture_tx: mpsc::Sender<CaptureCommand>,
@@ -98,6 +102,14 @@ impl AgentSupervisor {
         let (media_tx, media_rx) = mpsc::channel(3);
         let refresh = Arc::new(Notify::new());
         let (frames_tx, frames_rx) = watch::channel(None);
+        let captured_frames = frames_rx.clone();
+        let (lossless_refresh, _) = watch::channel(0_u64);
+        let (monitors, _) = watch::channel(vec![ad_stream_protocol::Rectangle {
+            x: 0,
+            y: 0,
+            width: size.0,
+            height: size.1,
+        }]);
         let (capture_tx, capture_rx) = mpsc::channel(8);
         // A slightly deeper media queue keeps encode bursts from starving the
         // writer at moderate RTT without hiding sustained overload.
@@ -126,6 +138,7 @@ impl AgentSupervisor {
         let capture_state = state.clone();
         let capture_clients = clients.clone();
         let clipboard_output = clipboards.clone();
+        let capture_rate = rate_tx.subscribe();
         let capture_task = tokio::spawn(async move {
             if let Err(error) = run_capture_loop(
                 &mut compositor,
@@ -133,6 +146,7 @@ impl AgentSupervisor {
                 frames_tx,
                 clipboard_output,
                 capture_clients,
+                capture_rate,
             )
             .await
             {
@@ -149,6 +163,9 @@ impl AgentSupervisor {
             clients,
             media_tx,
             refresh,
+            lossless_refresh,
+            captured_frames,
+            monitors,
             rate: Mutex::new(rate),
             rate_tx,
             capture_tx,
@@ -168,6 +185,22 @@ impl AgentSupervisor {
             .read()
             .map(|state| *state)
             .unwrap_or(SessionState::Failed)
+    }
+
+    pub(crate) fn lossless_source(&self) -> crate::lossless::Source {
+        crate::lossless::Source {
+            frames: self.captured_frames.clone(),
+            monitors: self.monitors.subscribe(),
+            rate: self.rate_tx.subscribe(),
+            refresh: self.lossless_refresh.subscribe(),
+        }
+    }
+
+    pub(crate) async fn set_lossless_mode(&self, enabled: bool) -> Result<(), SupervisorError> {
+        self.media_tx
+            .send(MediaCommand::Lossless(enabled))
+            .await
+            .map_err(|_| SupervisorError::Stopped)
     }
 
     pub fn subscribe_packets(&self) -> broadcast::Receiver<EncodedPacket> {
@@ -207,6 +240,8 @@ impl AgentSupervisor {
     pub async fn request_refresh(&self) -> Result<(), SupervisorError> {
         self.ensure_running()?;
         self.refresh.notify_one();
+        self.lossless_refresh
+            .send_modify(|generation| *generation = generation.wrapping_add(1));
         Ok(())
     }
 
@@ -258,7 +293,15 @@ impl AgentSupervisor {
         self.capture_tx
             .send(CaptureCommand::Resize { width, height })
             .await
-            .map_err(|_| SupervisorError::Stopped)
+            .map_err(|_| SupervisorError::Stopped)?;
+        self.monitors
+            .send_replace(vec![ad_stream_protocol::Rectangle {
+                x: 0,
+                y: 0,
+                width,
+                height,
+            }]);
+        Ok(())
     }
 
     pub async fn set_keyboard_layout(
@@ -293,10 +336,14 @@ impl AgentSupervisor {
                 properties,
                 width,
                 height,
-                monitors,
+                monitors: monitors.clone(),
             })
             .await
-            .map_err(|_| SupervisorError::Stopped)
+            .map_err(|_| SupervisorError::Stopped)?;
+        if *self.monitors.borrow() != monitors {
+            self.monitors.send_replace(monitors);
+        }
+        Ok(())
     }
 
     pub async fn set_clipboard(
@@ -338,9 +385,15 @@ async fn run_capture_loop(
     frames: watch::Sender<Option<Arc<agent_wayland::damage::CapturedFrame>>>,
     clipboard_output: broadcast::Sender<CapturedClipboard>,
     clients: Arc<Mutex<HashSet<Uuid>>>,
+    mut rate: watch::Receiver<(u32, u32)>,
 ) -> Result<(), SupervisorError> {
+    compositor.set_capture_rate(rate.borrow().1)?;
     loop {
         tokio::select! {
+            changed = rate.changed() => {
+                if changed.is_err() { return Err(SupervisorError::Stopped); }
+                compositor.set_capture_rate(rate.borrow_and_update().1)?;
+            }
             command = commands.recv() => match command {
                 Some(CaptureCommand::Resize { width, height }) => compositor.resize(width, height)?,
                 Some(CaptureCommand::Input(input)) => compositor.inject_input(input)?,
@@ -369,6 +422,13 @@ async fn run_capture_loop(
     }
 }
 
+struct OwnedCapture(Arc<agent_wayland::damage::CapturedFrame>);
+impl AsRef<[u8]> for OwnedCapture {
+    fn as_ref(&self) -> &[u8] {
+        &self.0.pixels_bgra
+    }
+}
+
 async fn run_media_loop(
     mut encoder: EncoderPipeline,
     mut commands: mpsc::Receiver<MediaCommand>,
@@ -378,6 +438,7 @@ async fn run_media_loop(
     mut rate: watch::Receiver<(u32, u32)>,
 ) -> Result<(), SupervisorError> {
     let mut paused = true;
+    let mut lossless = false;
     let mut in_flight = false;
     let mut refresh_pending = false;
     let mut frame_interval = Duration::from_secs_f64(1.0 / rate.borrow().1 as f64);
@@ -389,6 +450,7 @@ async fn run_media_loop(
                 // Gate captured frames while detached. Keeping the live pipeline
                 // running avoids PAUSED/PLAYING flushing races on rapid reconnects.
                 // With no frames submitted, the encoder has no work to do.
+                Some(MediaCommand::Lossless(enabled)) => { lossless = enabled; false }
                 Some(MediaCommand::Pause) => { paused = true; false }
                 Some(MediaCommand::Resume) => { encoder.request_keyframe(); paused = false; true }
                 Some(MediaCommand::Stop) | None => break,
@@ -411,12 +473,12 @@ async fn run_media_loop(
                 let _ = packets.send(packet?);
                 refresh_pending && !paused
             },
-            _ = tokio::time::sleep_until(next_frame), if !paused && !in_flight => {
+            _ = tokio::time::sleep_until(next_frame), if !paused && !in_flight && !lossless => {
                 next_frame = tokio::time::Instant::now() + frame_interval;
                 frames.has_changed().unwrap_or(false)
             }
         };
-        if send_frame && !in_flight {
+        if send_frame && !in_flight && !lossless {
             // Resume/resize and a rate update may be ready together. Apply
             // the current budget before encoding even that first refresh.
             let (bitrate, fps) = *rate.borrow_and_update();
@@ -426,7 +488,7 @@ async fn run_media_loop(
             let frame = frames.borrow_and_update().clone();
             if let Some(frame) = frame {
                 encoder.resize(frame.width, frame.height)?;
-                encoder.push_bgra_frame(&frame.pixels_bgra, frame.stride, &frame.damage)?;
+                encoder.push_owned_bgra_frame(OwnedCapture(frame.clone()), frame.stride)?;
                 in_flight = true;
                 refresh_pending = false;
             }

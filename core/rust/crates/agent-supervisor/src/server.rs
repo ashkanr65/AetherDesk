@@ -207,6 +207,9 @@ async fn run_client(
     let session = Arc::new(ArppSession::new(adapter));
     let client_id = Uuid::new_v4();
     let mut attached = false;
+    let mut lossless = false;
+    let mut hello_received = false;
+    let (media_mode_tx, mut media_mode_rx) = tokio::sync::watch::channel(None::<bool>);
     let (mut width, mut height) = *dimensions;
     let mut packets = supervisor.subscribe_packets();
     let delivery = crate::delivery::DeliveryWindow::default();
@@ -246,7 +249,7 @@ async fn run_client(
 
     // Poll the media writer alongside input/control. A slow media channel must
     // never hold the control loop while a whole encoded frame is being written.
-    let media_output = async {
+    let legacy_output = async {
         let mut needs_keyframe = true;
         loop {
             tokio::time::timeout(Duration::from_secs(15), delivery.wait_ready())
@@ -289,6 +292,23 @@ async fn run_client(
             }
         }
     };
+    let media_output = async {
+        let lossless = loop {
+            let mode = *media_mode_rx.borrow_and_update();
+            if let Some(enabled) = mode {
+                break enabled;
+            }
+            media_mode_rx
+                .changed()
+                .await
+                .map_err(|_| AgentServerError::SupervisorStopped)?;
+        };
+        if lossless {
+            crate::lossless::serve(supervisor.lossless_source(), &session, &delivery).await
+        } else {
+            legacy_output.await
+        }
+    };
     tokio::pin!(media_output);
 
     let control_loop = async {
@@ -307,17 +327,20 @@ async fn run_client(
                         None => break ClientDisposition::Detached,
                     };
                     match frame.message {
-                        ArppMessage::Control(ControlMessage::ClientHello { protocol_version, .. }) => {
+                        ArppMessage::Control(ControlMessage::ClientHello { protocol_version, client_nonce }) if !attached => {
                             if protocol_version != PROTOCOL_VERSION {
                                 break ClientDisposition::Detached;
                             }
+                            hello_received = true;
+                            lossless = ad_stream_protocol::lossless::supported(&client_nonce);
+                            supervisor.set_lossless_mode(lossless).await?;
                             session.send(ArppMessage::Control(ControlMessage::ServerHello {
                                 protocol_version: PROTOCOL_VERSION,
                                 server_nonce: random_token()?,
                             })).await?;
                             session.send(ArppMessage::Control(ControlMessage::Capabilities(capabilities()))).await?;
                         }
-                        ArppMessage::Control(ControlMessage::StartSession(parameters)) => {
+                        ArppMessage::Control(ControlMessage::StartSession(parameters)) if hello_received => {
                             ensure_session(supervisor, parameters.session_id)?;
                             width = parameters.width;
                             height = parameters.height;
@@ -331,8 +354,9 @@ async fn run_client(
                                 session_id: supervisor.session_id(),
                                 resumed: false,
                             })).await?;
+                            media_mode_tx.send_replace(Some(lossless));
                         }
-                        ArppMessage::Control(ControlMessage::ResumeSession { session_id, .. }) => {
+                        ArppMessage::Control(ControlMessage::ResumeSession { session_id, .. }) if hello_received => {
                             ensure_session(supervisor, session_id)?;
                             if !attached {
                                 supervisor.attach_client(client_id).await?;
@@ -346,6 +370,7 @@ async fn run_client(
                                 height,
                                 full_refresh_required: true,
                             })).await?;
+                            media_mode_tx.send_replace(Some(lossless));
                         }
                         ArppMessage::Control(ControlMessage::Resize { width: next_width, height: next_height, .. }) => {
                             if attached && ad_stream_protocol::valid_desktop_size(next_width, next_height) {
@@ -1159,7 +1184,7 @@ mod tests {
         .unwrap();
         let endpoint = server.endpoint().clone();
         let task = tokio::spawn(server.run());
-        async fn open(endpoint: &AgentServerEndpoint) -> Arc<ArppSession> {
+        async fn open(endpoint: &AgentServerEndpoint, lossless: bool) -> Arc<ArppSession> {
             let mut streams = Vec::new();
             for channel in 0..3 {
                 let mut stream = TcpStream::connect((std::net::Ipv4Addr::LOCALHOST, endpoint.port))
@@ -1179,10 +1204,14 @@ mod tests {
                 SshChannelIo::from_stream(streams.next().unwrap()),
                 SshChannelIo::from_stream(streams.next().unwrap()),
             ))));
+            let mut nonce = [1; 32];
+            if lossless {
+                ad_stream_protocol::lossless::advertise(&mut nonce);
+            }
             session
                 .send(ArppMessage::Control(ControlMessage::ClientHello {
                     protocol_version: PROTOCOL_VERSION,
-                    client_nonce: [1; 32],
+                    client_nonce: nonce,
                 }))
                 .await
                 .unwrap();
@@ -1194,7 +1223,7 @@ mod tests {
             }
             session
         }
-        let first = open(&endpoint).await;
+        let first = open(&endpoint, false).await;
         first
             .send(ArppMessage::Control(ControlMessage::ResumeSession {
                 session_id,
@@ -1249,7 +1278,7 @@ mod tests {
             !task.is_finished(),
             "detaching terminated the desktop server"
         );
-        let second = open(&endpoint).await;
+        let second = open(&endpoint, false).await;
         second
             .send(ArppMessage::Control(ControlMessage::ResumeSession {
                 session_id,
@@ -1269,7 +1298,7 @@ mod tests {
         // An unexpected transport loss also retains work and its dimensions.
         second.close("simulated network loss").await.unwrap();
         drop(second);
-        let third = open(&endpoint).await;
+        let third = open(&endpoint, true).await;
         third
             .send(ArppMessage::Control(ControlMessage::ResumeSession {
                 session_id,
@@ -1291,6 +1320,38 @@ mod tests {
                 ..
             })
         ));
+        // Same retained desktop: a new client can negotiate lossless delivery
+        // without restarting its applications, while the older clients above
+        // keep the established video stream. Display waits for consumer opt-in.
+        third
+            .send(ArppMessage::Control(ControlMessage::Acknowledge {
+                sequence: 0,
+            }))
+            .await
+            .unwrap();
+        let mut assembler = ad_display_decoder::LosslessAssembler::default();
+        let update = timeout(Duration::from_secs(5), async {
+            loop {
+                if let ArppMessage::Display(message) = third.receive().await.unwrap().message {
+                    if let Some(update) = assembler.push(message).unwrap() {
+                        break update;
+                    }
+                }
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(
+            (update.width, update.height, update.base_frame_id),
+            (640, 400, 0)
+        );
+        assert!(!update.patches.is_empty());
+        third
+            .send(ArppMessage::Control(ControlMessage::Acknowledge {
+                sequence: update.frame_id,
+            }))
+            .await
+            .unwrap();
         third
             .send(ArppMessage::Control(ControlMessage::Close {
                 reason_code: 0,

@@ -25,4 +25,5 @@ ring.workspace = true
 subtle.workspace = true
 
 [dev-dependencies]
+ad-display-decoder = { path = "../ad-display-decoder" }
 tempfile = '3'

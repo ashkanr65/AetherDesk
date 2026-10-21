@@ -161,6 +161,7 @@ impl ApplicationSpec {
 }
 
 enum CompositorCommand {
+    CaptureRate(u32),
     Launch(ApplicationSpec),
     Resize {
         width: u32,
@@ -282,6 +283,12 @@ impl HeadlessCompositor {
         application.validate()?;
         self.commands
             .send(CompositorCommand::Launch(application))
+            .map_err(|_| CompositorError::Stopped)
+    }
+
+    pub fn set_capture_rate(&self, fps: u32) -> Result<(), CompositorError> {
+        self.commands
+            .send(CompositorCommand::CaptureRate(fps.clamp(1, 240)))
             .map_err(|_| CompositorError::Stopped)
     }
 
@@ -422,6 +429,7 @@ pub(crate) struct AgentCompositorState {
     pub(crate) width: u32,
     pub(crate) height: u32,
     pub(crate) refresh_millihz: u32,
+    capture_fps: u32,
     pub(crate) registry: SurfaceRegistry,
     pub(crate) surface_output: Arc<RwLock<Vec<SurfaceSnapshot>>>,
     pub(crate) frame_tx: watch::Sender<Option<Arc<CapturedFrame>>>,
@@ -473,7 +481,6 @@ fn run_compositor(
     }
     let _ = ready_tx.send(Ok(socket_name));
 
-    let frame_interval = Duration::from_secs_f64(1000.0 / f64::from(state.refresh_millihz));
     let mut next_frame = Instant::now();
     while state.running {
         event_loop.dispatch(Some(Duration::from_millis(4)), &mut state)?;
@@ -481,7 +488,8 @@ fn run_compositor(
         if Instant::now() >= next_frame {
             state.render_frame()?;
             // Never catch up by rendering a burst of outdated frames.
-            next_frame = Instant::now() + frame_interval;
+            next_frame =
+                Instant::now() + Duration::from_secs_f64(1.0 / f64::from(state.capture_fps));
         }
         state.reap_applications();
         state.space.refresh();
@@ -582,6 +590,7 @@ impl AgentCompositorState {
             width: config.width,
             height: config.height,
             refresh_millihz: config.refresh_millihz,
+            capture_fps: (config.refresh_millihz / 1000).clamp(1, 240),
             registry: SurfaceRegistry::default(),
             surface_output,
             frame_tx,
@@ -614,6 +623,7 @@ impl AgentCompositorState {
                 CompositorCommand::Launch(application) => {
                     self.pending_applications.push(application)
                 }
+                CompositorCommand::CaptureRate(fps) => self.capture_fps = fps.clamp(1, 240),
                 CompositorCommand::Resize { width, height } => self.resize_output(width, height)?,
                 CompositorCommand::Input(input) => self.inject_arpp_input(input)?,
                 CompositorCommand::Clipboard(selection) => {

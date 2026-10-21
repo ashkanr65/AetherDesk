@@ -32,11 +32,17 @@ pub struct Status {
     pub clipboard: Option<String>,
 }
 #[derive(Clone)]
+pub struct ImageDamage {
+    pub base_sequence: u64,
+    pub regions: Vec<ad_stream_protocol::Rectangle>,
+}
+#[derive(Clone)]
 pub struct Image {
     pub width: u32,
     pub height: u32,
     pub sequence: u64,
     pub pixels: Arc<Vec<u8>>,
+    pub damage: Option<ImageDamage>,
 }
 struct FrameSlot {
     image: Mutex<Option<Image>>,
@@ -139,6 +145,7 @@ impl RemoteClient {
         };
         let mut lifecycle =
             RemoteSessionLifecycle::new(Arc::new(SshAgentHost::new(ssh)), session_id);
+        lifecycle.enable_lossless_tiles(std::env::var_os("AETHERDESK_DESKTOP_VIDEO").is_none());
         let session = lifecycle
             .connect_saved_desktop_cancellable(&artifact, Some(&runtime), &parameters, cancel)
             .await
@@ -196,6 +203,31 @@ impl RemoteClient {
         *handle.task.lock() = Some(task);
         Ok(handle)
     }
+    #[cfg(test)]
+    pub(crate) fn test_stub(ctx: egui::Context) -> Arc<Self> {
+        let (commands, receiver) = mpsc::channel(1);
+        drop(receiver);
+        Arc::new(Self {
+            commands,
+            input: Arc::new(InputQueue::default()),
+            status: Arc::new(Mutex::new(Status {
+                state: "connected",
+                error: None,
+                width: 1280,
+                height: 720,
+                frames: 0,
+                clipboard: None,
+            })),
+            latest: Arc::new(FrameSlot {
+                image: Mutex::new(None),
+                prepared: Arc::new(Mutex::new(None)),
+                ctx,
+            }),
+            task: Mutex::new(None),
+            newly_created: false,
+        })
+    }
+
     pub fn peek_status(&self) -> Status {
         self.status.lock().clone()
     }
@@ -417,10 +449,20 @@ async fn run_display(
     mut framebuffer: Framebuffer,
     frame_updates: watch::Sender<Option<Image>>,
 ) -> Result<(), String> {
+    enum Work {
+        Legacy(PresentationUpdate),
+        Lossless(ad_display_decoder::LosslessUpdate),
+    }
+    let mut lossless = ad_display_decoder::LosslessAssembler::default();
+    let mut reported_at = std::time::Instant::now();
+    let (mut commits, mut apply_us) = (0_u64, 0_u128);
     loop {
         let update = tokio::select! {
             message = display.recv() => {
-                match presentation.handle(message.ok_or("display channel closed")?).map_err(|e| e.to_string())? {
+                let message = message.ok_or("display channel closed")?;
+                if ad_display_decoder::LosslessAssembler::handles(&message) {
+                    lossless.push(message).map_err(str::to_owned)?.map(Work::Lossless)
+                } else { match presentation.handle(message).map_err(|e| e.to_string())? {
                     PresentationUpdate::Decode { message, damage } => {
                         if let ad_stream_protocol::DisplayMessage::EncodedFrame { width, height, .. } = &message {
                             decoder.prepare_dimensions(*width, *height).map_err(|e| e.to_string())?;
@@ -428,17 +470,35 @@ async fn run_display(
                         decoder.submit(&message, damage).await.map_err(|e| e.to_string())?;
                         None
                     }
-                    update => Some(update),
-                }
+                    update => Some(Work::Legacy(update)),
+                } }
             }
-            frame = decoder.next_frame() => Some(presentation.accept_decoded(frame.map_err(|e| e.to_string())?).map_err(|e| e.to_string())?),
+            frame = decoder.next_frame() => Some(Work::Legacy(presentation.accept_decoded(frame.map_err(|e| e.to_string())?).map_err(|e| e.to_string())?)),
         };
         if let Some(update) = update {
-            let decoded_sequence = match &update {
-                PresentationUpdate::VideoLayer(frame) => Some(frame.frame_id),
-                _ => None,
+            let started = std::time::Instant::now();
+            let (decoded_sequence, damage, changed) = match update {
+                Work::Lossless(update) => {
+                    let sequence = update.frame_id;
+                    let damage = (update.base_frame_id != 0).then(|| ImageDamage {
+                        base_sequence: status.lock().frames,
+                        regions: update.patches.iter().map(|p| p.region).collect(),
+                    });
+                    framebuffer
+                        .apply_lossless(update)
+                        .map_err(|e| e.to_string())?;
+                    (Some(sequence), damage, true)
+                }
+                Work::Legacy(update) => {
+                    let decoded_sequence = match &update {
+                        PresentationUpdate::VideoLayer(frame) => Some(frame.frame_id),
+                        _ => None,
+                    };
+                    let changed = framebuffer.apply_owned(update).map_err(|e| e.to_string())?;
+                    (decoded_sequence, None, changed)
+                }
             };
-            if framebuffer.apply_owned(update).map_err(|e| e.to_string())? {
+            if changed {
                 let (width, height, pixels) = framebuffer.snapshot();
                 let sequence = {
                     let mut state = status.lock();
@@ -452,11 +512,26 @@ async fn run_display(
                     height,
                     sequence,
                     pixels,
+                    damage,
                 };
                 *latest.image.lock() = Some(image.clone());
                 frame_updates.send_replace(Some(image));
                 if let Some(sequence) = decoded_sequence {
                     receipts.send_replace(sequence);
+                }
+                commits += 1;
+                apply_us += started.elapsed().as_micros();
+                if reported_at.elapsed() >= Duration::from_secs(5) {
+                    tracing::info!(
+                        interval_ms = reported_at.elapsed().as_millis() as u64,
+                        frames = commits,
+                        apply_us = apply_us as u64,
+                        width,
+                        height,
+                        "remote client presentation performance"
+                    );
+                    reported_at = std::time::Instant::now();
+                    (commits, apply_us) = (0, 0);
                 }
             }
         }

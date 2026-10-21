@@ -147,7 +147,20 @@ impl RemoteView {
     pub fn take_action(&mut self) -> Option<SessionAction> {
         self.action.take()
     }
+    pub fn is_external(&self) -> bool {
+        self.mode != Mode::Tab
+    }
     pub fn captures_keyboard(&self) -> bool {
+        #[cfg(windows)]
+        if self.mode != Mode::Tab
+            && self
+                .window
+                .is_none_or(|window| crate::remote_geometry::foreground() != Some(window))
+        {
+            // A visible external desktop must not suppress shortcuts in the
+            // main SSH window after Windows has moved keyboard focus there.
+            return false;
+        }
         self.input_focus
     }
     fn session_action(&mut self, action: SessionAction) {

@@ -106,6 +106,14 @@ impl EncoderPipeline {
             .property_from_str("leaky", "downstream")
             .build()?;
         let convert = gst::ElementFactory::make("videoconvert").build()?;
+        // Conversion was single-threaded even on the 24-vCPU host. Bound this
+        // pool so several sessions still leave CPU available for input/apps.
+        if convert.find_property("n-threads").is_some() {
+            convert.set_property(
+                "n-threads",
+                std::thread::available_parallelism().map_or(1, |n| n.get().min(4)) as u32,
+            );
+        }
         // Keep the wire stream in 8-bit 4:2:0. Without this constraint x264
         // selects 4:4:4 from BGRA, which D3D11 H.264 decoders cannot accept.
         let raw_filter = gst::ElementFactory::make("capsfilter")
@@ -299,7 +307,11 @@ impl EncoderPipeline {
         _damage: &[Rectangle],
     ) -> Result<(), EncoderError> {
         let row_bytes = self.config.width as usize * 4;
-        if stride < row_bytes || pixels.len() < stride * self.config.height as usize {
+        if stride < row_bytes
+            || stride
+                .checked_mul(self.config.height as usize)
+                .is_none_or(|size| size > pixels.len())
+        {
             return Err(EncoderError::InvalidFrame);
         }
         let packed_len = row_bytes * self.config.height as usize;
@@ -321,6 +333,29 @@ impl EncoderPipeline {
             buffer.set_duration(duration);
             self.next_pts = self.next_pts.saturating_add(duration.nseconds());
         }
+        self.source.push_buffer(buffer)?;
+        Ok(())
+    }
+
+    /// Hold the immutable capture owner until GStreamer releases its buffer.
+    /// Packed frames need no allocation or full-frame copy at this boundary.
+    /// Padded inputs retain the established row-copy fallback.
+    pub fn push_owned_bgra_frame<T: AsRef<[u8]> + Send + 'static>(
+        &mut self,
+        pixels: T,
+        stride: usize,
+    ) -> Result<(), EncoderError> {
+        let packed_stride = self.config.width as usize * 4;
+        let length = packed_stride * self.config.height as usize;
+        if stride != packed_stride || pixels.as_ref().len() != length {
+            return self.push_bgra_frame(pixels.as_ref(), stride, &[]);
+        }
+        let mut buffer = gst::Buffer::from_slice(pixels);
+        let metadata = buffer.get_mut().ok_or(EncoderError::BufferNotWritable)?;
+        let duration = gst::ClockTime::SECOND / self.config.framerate as u64;
+        metadata.set_pts(gst::ClockTime::from_nseconds(self.next_pts));
+        metadata.set_duration(duration);
+        self.next_pts = self.next_pts.saturating_add(duration.nseconds());
         self.source.push_buffer(buffer)?;
         Ok(())
     }
@@ -655,16 +690,7 @@ mod tests {
         })
         .unwrap();
         encoder
-            .push_bgra_frame(
-                &vec![0_u8; 64 * 64 * 4],
-                64 * 4,
-                &[Rectangle {
-                    x: 0,
-                    y: 0,
-                    width: 64,
-                    height: 64,
-                }],
-            )
+            .push_owned_bgra_frame(vec![0_u8; 64 * 64 * 4], 64 * 4)
             .unwrap();
         let packet = tokio::time::timeout(std::time::Duration::from_secs(5), encoder.next_packet())
             .await

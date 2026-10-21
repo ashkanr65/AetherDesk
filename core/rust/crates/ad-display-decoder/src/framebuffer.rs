@@ -26,6 +26,43 @@ impl Framebuffer {
         })
     }
 
+    /// Validate the entire transaction before changing any backing pixels. One
+    /// copy-on-write per commit preserves every already-published screenshot.
+    pub fn apply_lossless(
+        &mut self,
+        update: crate::LosslessUpdate,
+    ) -> Result<(), PresentationError> {
+        checked_size(update.width, update.height)?;
+        for patch in &update.patches {
+            let r = patch.region;
+            if r.width == 0
+                || r.height == 0
+                || r.x.checked_add(r.width).is_none_or(|n| n > update.width)
+                || r.y.checked_add(r.height).is_none_or(|n| n > update.height)
+                || patch.pixels_bgra.len() != r.width as usize * r.height as usize * 4
+            {
+                return Err(PresentationError::DecodedFrame);
+            }
+        }
+        if update.base_frame_id == 0 {
+            *self = Self::new(update.width, update.height)?;
+        } else if (self.width, self.height) != (update.width, update.height) {
+            return Err(PresentationError::Dimensions);
+        }
+        for patch in update.patches {
+            let r = patch.region;
+            self.patch(
+                r.x,
+                r.y,
+                r.width,
+                r.height,
+                r.width as usize * 4,
+                &patch.pixels_bgra,
+            )?;
+        }
+        Ok(())
+    }
+
     /// Transfer tightly packed decoded frames without a second full-frame copy.
     pub fn apply_owned(&mut self, update: PresentationUpdate) -> Result<bool, PresentationError> {
         if let PresentationUpdate::VideoLayer(frame) = update {

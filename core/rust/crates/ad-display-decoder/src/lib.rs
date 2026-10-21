@@ -2,7 +2,9 @@
 
 mod cache;
 mod framebuffer;
+mod lossless;
 pub use framebuffer::Framebuffer;
+pub use lossless::{LosslessAssembler, LosslessPatch, LosslessUpdate};
 mod decoder;
 mod state;
 

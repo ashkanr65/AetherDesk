@@ -17,6 +17,7 @@ struct State {
     pending: VecDeque<(u64, Instant, usize)>,
     pending_bytes: usize,
     baseline: Option<Duration>,
+    reported_at: Option<Instant>,
 }
 
 /// Bound frames across the entire transport, including SSH and kernel buffers.
@@ -28,6 +29,16 @@ pub(crate) struct DeliveryWindow {
 }
 
 impl DeliveryWindow {
+    pub async fn wait_enabled(&self) {
+        loop {
+            let notified = self.ready.notified();
+            if self.state.lock().expect("delivery state").enabled {
+                return;
+            }
+            notified.await;
+        }
+    }
+
     pub async fn wait_ready(&self) {
         loop {
             let notified = self.ready.notified();
@@ -71,6 +82,7 @@ impl DeliveryWindow {
         let mut state = self.state.lock().expect("delivery state");
         if sequence == 0 && !state.enabled {
             state.enabled = true;
+            self.ready.notify_one();
             return None;
         }
         if sequence <= state.last_ack || sequence > state.last_sent {
@@ -92,6 +104,19 @@ impl DeliveryWindow {
         // Do not mistake unavoidable propagation RTT for bandwidth congestion.
         let baseline = state.baseline.map_or(elapsed, |old| old.min(elapsed));
         state.baseline = Some(baseline);
+        if state
+            .reported_at
+            .is_none_or(|last| last.elapsed() >= Duration::from_secs(5))
+        {
+            tracing::info!(
+                receipt_ms = elapsed.as_millis() as u64,
+                excess_ms = elapsed.saturating_sub(baseline).as_millis() as u64,
+                queued_frames = state.pending.len(),
+                queued_bytes = state.pending_bytes,
+                "remote display receipt performance"
+            );
+            state.reported_at = Some(Instant::now());
+        }
         self.ready.notify_one();
         Some(elapsed.saturating_sub(baseline))
     }

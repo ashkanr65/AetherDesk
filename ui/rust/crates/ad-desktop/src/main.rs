@@ -795,9 +795,9 @@ impl eframe::App for RustDesktop {
         // Remote desktop owns host shortcuts while its surface has key focus.
         let remote_keyboard = self
             .workspace
-            .selected
-            .and_then(|i| self.workspace.tabs.get(i))
-            .is_some_and(|tab| tab.captures_remote_keyboard());
+            .tabs
+            .iter()
+            .any(|tab| tab.captures_remote_keyboard());
         ctx.options_mut(|options| options.zoom_with_keyboard = !remote_keyboard);
         let shortcuts = if remote_keyboard {
             vec![]
@@ -1311,6 +1311,19 @@ impl eframe::App for RustDesktop {
                     }
                 }
             });
+        // Register external desktops for every connection, even when another
+        // tab is selected. Registering inside selected-tab UI closes them when
+        // the user switches to SSH or SSH + X11 in the main window.
+        let mut returned_desktop = None;
+        for (index, tab) in self.workspace.tabs.iter_mut().enumerate() {
+            if tab.remote_window(ctx) {
+                returned_desktop = Some(index);
+            }
+        }
+        if let Some(index) = returned_desktop {
+            self.select_tab(index);
+            ctx.request_repaint();
+        }
         if let Ok(runtime) = &self.connections {
             for tab in &mut self.workspace.tabs {
                 tab.files_window(ctx, runtime);

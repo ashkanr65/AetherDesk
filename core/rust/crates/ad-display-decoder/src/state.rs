@@ -94,6 +94,12 @@ impl RemotePresentation {
         message: DisplayMessage,
     ) -> Result<PresentationUpdate, PresentationError> {
         match message {
+            DisplayMessage::LosslessBegin { .. }
+            | DisplayMessage::LosslessTile { .. }
+            | DisplayMessage::LosslessCommit { .. } => {
+                // Only explicitly opted-in hosts own the atomic lossless assembler.
+                Err(PresentationError::DecodedFrame)
+            }
             DisplayMessage::DamageRegions { frame_id, regions } => {
                 validate_regions(self.width, self.height, &regions)?;
                 // Damage metadata may arrive ahead of its encoded frame. Keep

@@ -2801,6 +2801,7 @@ mod tests {
     #[test]
     fn screen_attachments_preserve_colours_and_reuse_stable_bytes_without_modifying_frames() {
         let frame = crate::remote::Image {
+            damage: None,
             width: 2,
             height: 1,
             sequence: 7,
@@ -2822,6 +2823,7 @@ mod tests {
             .into_rgba8();
         assert_eq!(decoded, image);
         assert!(encode_screen(crate::remote::Image {
+            damage: None,
             width: 1,
             height: 1,
             pixels: std::sync::Arc::new(vec![0; 5]),
@@ -2829,6 +2831,7 @@ mod tests {
         })
         .is_err());
         let (_, thumbnail) = encode_screen(crate::remote::Image {
+            damage: None,
             width: 3200,
             height: 1,
             pixels: std::sync::Arc::new(vec![0; 12800]),
@@ -2837,6 +2840,7 @@ mod tests {
         .unwrap();
         assert!(thumbnail.width() <= 1600);
         let (_, portrait) = encode_screen(crate::remote::Image {
+            damage: None,
             width: 1,
             height: 3200,
             sequence: 8,
