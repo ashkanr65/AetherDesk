@@ -46,6 +46,7 @@ pub struct SessionTab {
     terminal: Terminal,
     pty_size: Option<(u16, u16)>,
     files_visible: bool,
+    files_local_pane: bool,
     sync_directories: bool,
     local_path: String,
     local_loaded_path: String,
@@ -124,6 +125,7 @@ impl SessionTab {
             terminal: Terminal::default(),
             pty_size: None,
             files_visible,
+            files_local_pane: false,
             sync_directories: crate::preferences::current()
                 .follow_cwd
                 .unwrap_or_else(|| crate::terminal_settings::current().1.follow_cwd),
@@ -1082,17 +1084,56 @@ impl SessionTab {
         self.action = None;
         self.property_text = None;
     }
+    pub(crate) fn files_viewport_id(&self) -> egui::ViewportId {
+        egui::ViewportId::from_hash_of(("session-files", self.tab_id))
+    }
+    pub(crate) fn diagnostic_files_open(&self) -> bool {
+        self.files_visible
+    }
+    /// Only used by the explicitly isolated UI self-check. No network is opened.
+    pub(crate) fn diagnostic_files(directory: &std::path::Path) -> Self {
+        let mut profile = crate::profile_store::new_profile();
+        profile.host = "fixture.invalid".into();
+        profile.name = "Isolated file-window check".into();
+        profile.connection_type = ConnectionType::SshX11;
+        let mut tab = Self::new(profile);
+        tab.connected = true;
+        tab.files_visible = true;
+        tab.credentials_open = false;
+        tab.sync_directories = false;
+        tab.local_path = directory.display().to_string();
+        tab.local_loaded_path = tab.local_path.clone();
+        tab.remote_path = "/fixture".into();
+        tab.remote_loaded_path = tab.remote_path.clone();
+        tab.local_entries = vec![LocalEntry {
+            path: directory.join("local-fixture"),
+            name: "local-fixture".into(),
+            directory: true,
+            size: 0,
+        }];
+        tab.remote_entries = vec![SftpEntry {
+            path: "/fixture/server-fixture".into(),
+            name: "server-fixture".into(),
+            kind: "directory".into(),
+            size: None,
+            permissions: None,
+            modified: None,
+        }];
+        tab
+    }
     pub fn files_window(&mut self, ctx: &egui::Context, runtime: &Connections) {
         if !self.files_visible || self.profile.connection_type == ConnectionType::SftpOnly {
             return;
         }
-        let id = egui::ViewportId::from_hash_of(("session-files", self.tab_id));
-        let builder = egui::ViewportBuilder::default()
-            .with_title(format!("Files · {}", self.profile.name))
-            .with_icon(crate::theme::native_icon())
-            .with_inner_size([1100.0, 650.0])
-            .with_min_inner_size([620.0, 360.0]);
+        let id = self.files_viewport_id();
+        let builder = crate::app_layout::builder(
+            ctx,
+            id,
+            format!("Files · {}", self.profile.name),
+            egui::vec2(1100.0, 650.0),
+        );
         ctx.show_viewport_immediate(id, builder, |ctx, _| {
+            crate::app_layout::update(ctx, "files");
             if ctx.input(|i| i.viewport().close_requested()) {
                 self.close_files();
                 ctx.send_viewport_cmd_to(id, egui::ViewportCommand::Close);
@@ -1118,375 +1159,439 @@ impl SessionTab {
         let mut new_action = None;
         let mut open_files = Vec::new();
         let mut insert_path = None;
-        ui.columns(2, |columns| {
-            columns[0].label("This computer");
-            columns[0].horizontal(|ui| {
-                let width = (ui.available_width() - 180.0).max(40.0);
-                let response =
-                    ui.add(egui::TextEdit::singleline(&mut self.local_path).desired_width(width));
-                local_go = crate::dialog::field_submit(ui, &response);
-                local_go |= ui.button("Go").clicked();
-                if ui.button("↑").clicked() {
-                    next_local = PathBuf::from(&self.local_loaded_path)
-                        .parent()
-                        .map(|p| p.to_string_lossy().into_owned());
-                }
-                if ui.button("New folder").clicked() {
-                    new_action = Some(FileAction {
-                        operation: "local_mkdir".into(),
-                        path: String::new(),
-                        value: PathBuf::from(&self.local_loaded_path)
-                            .join("new-folder")
-                            .display()
-                            .to_string(),
-                        directory: true,
-                    });
-                }
+        let narrow = files_narrow(
+            ui.available_width(),
+            ui.text_style_height(&egui::TextStyle::Body),
+        );
+        if narrow {
+            ui.horizontal_wrapped(|ui| {
+                ui.selectable_value(&mut self.files_local_pane, true, "This computer");
+                ui.selectable_value(&mut self.files_local_pane, false, "Server");
             });
-            let row_height = (columns[0].text_style_height(&egui::TextStyle::Button)
-                + 2.0 * columns[0].spacing().button_padding.y)
-                .max(columns[0].spacing().interact_size.y);
-            egui::ScrollArea::vertical()
-                .id_salt("local-files")
-                .max_height(columns[0].available_height().max(60.0) - 32.0)
-                .show_rows(
-                    &mut columns[0],
-                    row_height,
-                    self.local_entries.len(),
-                    |ui, range| {
-                        ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
-                        for entry in &self.local_entries[range] {
-                            let label = if entry.directory {
-                                entry.name.clone()
-                            } else {
-                                format!("{}  ({} B)", entry.name, entry.size)
-                            };
-                            let response = crate::ui_icons::file_entry(
-                                ui,
-                                entry.directory,
-                                &label,
-                                self.selected_local.as_deref() == entry.path.to_str(),
-                            );
-                            let response = response.interact(egui::Sense::click_and_drag());
-                            response.dnd_set_drag_payload(FileDrag {
-                                connection: self.identity(),
-                                local: true,
-                                path: entry.path.to_string_lossy().into_owned(),
-                                name: entry.name.clone(),
-                                directory: entry.directory,
-                            });
-                            if response.clicked() {
-                                self.selected_local = Some(entry.path.display().to_string());
-                            }
-                            if response.clicked_by(egui::PointerButton::Middle) {
-                                insert_path = Some(entry.path.display().to_string());
-                            }
-                            if response.double_clicked() && !entry.directory {
-                                open_files.push(crate::editor::OpenFile {
-                                    location: crate::editor::Location::Local(entry.path.clone()),
-                                    force_text: false,
-                                    action: crate::editor::OpenAction::Default,
+        }
+        let show_local = !narrow || self.files_local_pane;
+        let show_remote = !narrow || !self.files_local_pane;
+        // Bound each child to the remaining client area. Its contents cannot
+        // enlarge the native window or spill across the other pane on a DPI change.
+        let available = ui.available_rect_before_wrap().intersect(ui.clip_rect());
+        let bounds =
+            egui::Rect::from_min_size(available.min, available.size().max(egui::Vec2::ZERO));
+        let rects = file_pane_rects(bounds, narrow, ui.spacing().item_spacing.x);
+        let mut columns = [
+            ui.new_child(
+                egui::UiBuilder::new()
+                    .id_salt("local-pane")
+                    .max_rect(rects[0])
+                    .layout(egui::Layout::top_down(egui::Align::Min)),
+            ),
+            ui.new_child(
+                egui::UiBuilder::new()
+                    .id_salt("remote-pane")
+                    .max_rect(rects[1])
+                    .layout(egui::Layout::top_down(egui::Align::Min)),
+            ),
+        ];
+        for (column, rect) in columns.iter_mut().zip(rects) {
+            column.set_clip_rect(rect.intersect(ui.clip_rect()));
+        }
+        {
+            if show_local {
+                columns[0].label("This computer");
+                let path_size = [
+                    columns[0].available_width(),
+                    columns[0].spacing().interact_size.y,
+                ];
+                let response = columns[0]
+                    .add_sized(path_size, egui::TextEdit::singleline(&mut self.local_path));
+                local_go |= crate::dialog::field_submit(&columns[0], &response);
+                columns[0].horizontal_wrapped(|ui| {
+                    local_go |= ui.button("Go").clicked();
+                    if ui.button("↑").clicked() {
+                        next_local = PathBuf::from(&self.local_loaded_path)
+                            .parent()
+                            .map(|p| p.to_string_lossy().into_owned());
+                    }
+                    if ui.button("New folder").clicked() {
+                        new_action = Some(FileAction {
+                            operation: "local_mkdir".into(),
+                            path: String::new(),
+                            value: PathBuf::from(&self.local_loaded_path)
+                                .join("new-folder")
+                                .display()
+                                .to_string(),
+                            directory: true,
+                        });
+                    }
+                });
+                let row_height = (columns[0].text_style_height(&egui::TextStyle::Button)
+                    + 2.0 * columns[0].spacing().button_padding.y)
+                    .max(columns[0].spacing().interact_size.y);
+                egui::ScrollArea::vertical()
+                    .id_salt("local-files")
+                    .max_height((columns[0].available_height() - 8.0).max(1.0))
+                    .show_rows(
+                        &mut columns[0],
+                        row_height,
+                        self.local_entries.len(),
+                        |ui, range| {
+                            ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
+                            for entry in &self.local_entries[range] {
+                                let label = if entry.directory {
+                                    entry.name.clone()
+                                } else {
+                                    format!("{}  ({} B)", entry.name, entry.size)
+                                };
+                                let response = crate::ui_icons::file_entry(
+                                    ui,
+                                    entry.directory,
+                                    &label,
+                                    self.selected_local.as_deref() == entry.path.to_str(),
+                                );
+                                let response = response.interact(egui::Sense::click_and_drag());
+                                response.dnd_set_drag_payload(FileDrag {
+                                    connection: self.identity(),
+                                    local: true,
+                                    path: entry.path.to_string_lossy().into_owned(),
+                                    name: entry.name.clone(),
+                                    directory: entry.directory,
                                 });
-                            }
-                            if response.double_clicked() && entry.directory {
-                                next_local = Some(entry.path.to_string_lossy().into_owned());
-                            }
-                            response.context_menu(|ui| {
-                                if ui.button("Open").clicked() {
-                                    if entry.directory {
-                                        next_local = Some(entry.path.display().to_string());
-                                    } else {
-                                        open_files.push(crate::editor::OpenFile {
-                                            location: crate::editor::Location::Local(
-                                                entry.path.clone(),
-                                            ),
-                                            force_text: false,
-                                            action: crate::editor::OpenAction::Default,
-                                        });
-                                    }
-                                    ui.close();
+                                if response.clicked() {
+                                    self.selected_local = Some(entry.path.display().to_string());
                                 }
-                                if !entry.directory {
-                                    for (label, action) in [
-                                        ("Open with…", crate::editor::OpenAction::ChooseProgram),
-                                        (
-                                            "Open with default program",
-                                            crate::editor::OpenAction::DefaultProgram,
+                                if response.clicked_by(egui::PointerButton::Middle) {
+                                    insert_path = Some(entry.path.display().to_string());
+                                }
+                                if response.double_clicked() && !entry.directory {
+                                    open_files.push(crate::editor::OpenFile {
+                                        location: crate::editor::Location::Local(
+                                            entry.path.clone(),
                                         ),
-                                    ] {
-                                        if ui.button(label).clicked() {
+                                        force_text: false,
+                                        action: crate::editor::OpenAction::Default,
+                                    });
+                                }
+                                if response.double_clicked() && entry.directory {
+                                    next_local = Some(entry.path.to_string_lossy().into_owned());
+                                }
+                                response.context_menu(|ui| {
+                                    if ui.button("Open").clicked() {
+                                        if entry.directory {
+                                            next_local = Some(entry.path.display().to_string());
+                                        } else {
                                             open_files.push(crate::editor::OpenFile {
                                                 location: crate::editor::Location::Local(
                                                     entry.path.clone(),
                                                 ),
                                                 force_text: false,
-                                                action,
+                                                action: crate::editor::OpenAction::Default,
+                                            });
+                                        }
+                                        ui.close();
+                                    }
+                                    if !entry.directory {
+                                        for (label, action) in [
+                                            (
+                                                "Open with…",
+                                                crate::editor::OpenAction::ChooseProgram,
+                                            ),
+                                            (
+                                                "Open with default program",
+                                                crate::editor::OpenAction::DefaultProgram,
+                                            ),
+                                        ] {
+                                            if ui.button(label).clicked() {
+                                                open_files.push(crate::editor::OpenFile {
+                                                    location: crate::editor::Location::Local(
+                                                        entry.path.clone(),
+                                                    ),
+                                                    force_text: false,
+                                                    action,
+                                                });
+                                                ui.close();
+                                            }
+                                        }
+                                    }
+                                    for (label, operation) in [
+                                        ("Rename…", "local_rename"),
+                                        ("Delete…", "local_delete"),
+                                        ("Properties", "local_properties"),
+                                        ("Permissions…", "local_permissions"),
+                                    ] {
+                                        if ui.button(label).clicked() {
+                                            new_action = Some(FileAction {
+                                                operation: operation.into(),
+                                                path: entry.path.display().to_string(),
+                                                value: entry.path.display().to_string(),
+                                                directory: entry.directory,
                                             });
                                             ui.close();
                                         }
                                     }
-                                }
-                                for (label, operation) in [
-                                    ("Rename…", "local_rename"),
-                                    ("Delete…", "local_delete"),
-                                    ("Properties", "local_properties"),
-                                    ("Permissions…", "local_permissions"),
-                                ] {
-                                    if ui.button(label).clicked() {
+                                    if !entry.directory && ui.button("Compare file with…").clicked()
+                                    {
                                         new_action = Some(FileAction {
-                                            operation: operation.into(),
+                                            operation: "local_compare".into(),
                                             path: entry.path.display().to_string(),
-                                            value: entry.path.display().to_string(),
-                                            directory: entry.directory,
-                                        });
-                                        ui.close();
-                                    }
-                                }
-                                if !entry.directory && ui.button("Compare file with…").clicked() {
-                                    new_action = Some(FileAction {
-                                        operation: "local_compare".into(),
-                                        path: entry.path.display().to_string(),
-                                        value: self
-                                            .selected_local
-                                            .clone()
-                                            .filter(|p| p != &entry.path.display().to_string())
-                                            .unwrap_or_default(),
-                                        directory: false,
-                                    });
-                                    ui.close();
-                                }
-                                if ui.button("Copy file path to terminal").clicked() {
-                                    insert_path = Some(entry.path.display().to_string());
-                                    ui.close();
-                                }
-                                if !entry.directory && ui.button("Open with text editor").clicked()
-                                {
-                                    open_files.push(crate::editor::OpenFile {
-                                        location: crate::editor::Location::Local(
-                                            entry.path.clone(),
-                                        ),
-                                        force_text: true,
-                                        action: crate::editor::OpenAction::Default,
-                                    });
-                                    ui.close();
-                                }
-                                if ui.button("Copy file path").clicked() {
-                                    ui.ctx()
-                                        .copy_text(entry.path.to_string_lossy().into_owned());
-                                    ui.close();
-                                }
-                                if ui
-                                    .add_enabled(
-                                        !self.remote_loaded_path.is_empty(),
-                                        egui::Button::new("Copy to server…"),
-                                    )
-                                    .clicked()
-                                {
-                                    new_action = Some(FileAction {
-                                        operation: "upload".into(),
-                                        path: entry.path.to_string_lossy().into_owned(),
-                                        value: join_remote(&self.remote_loaded_path, &entry.name),
-                                        directory: entry.directory,
-                                    });
-                                    ui.close();
-                                }
-                            });
-                        }
-                    },
-                );
-            columns[1].label("Server");
-            columns[1].horizontal(|ui| {
-                let width = (ui.available_width() - 180.0).max(40.0);
-                let response =
-                    ui.add(egui::TextEdit::singleline(&mut self.remote_path).desired_width(width));
-                remote_go = crate::dialog::field_submit(ui, &response);
-                remote_go |= ui.button("Go").clicked();
-                if ui.button("↑").clicked() {
-                    next_remote = Some(remote_parent(&self.remote_loaded_path));
-                }
-                if ui
-                    .add_enabled(
-                        !self.remote_loaded_path.is_empty(),
-                        egui::Button::new("New folder"),
-                    )
-                    .clicked()
-                {
-                    new_action = Some(FileAction {
-                        operation: "mkdir".into(),
-                        path: String::new(),
-                        value: join_remote(&self.remote_loaded_path, "new-folder"),
-                        directory: true,
-                    });
-                }
-            });
-            let row_height = (columns[1].text_style_height(&egui::TextStyle::Button)
-                + 2.0 * columns[1].spacing().button_padding.y)
-                .max(columns[1].spacing().interact_size.y);
-            egui::ScrollArea::vertical()
-                .id_salt("remote-files")
-                .max_height(columns[1].available_height().max(60.0) - 32.0)
-                .show_rows(
-                    &mut columns[1],
-                    row_height,
-                    self.remote_entries.len(),
-                    |ui, range| {
-                        ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
-                        for entry in &self.remote_entries[range] {
-                            let directory = entry.kind == "directory";
-                            let response = crate::ui_icons::file_entry(
-                                ui,
-                                directory,
-                                &entry.name,
-                                self.selected_remote.as_deref() == Some(entry.path.as_str()),
-                            );
-                            let response = response.interact(egui::Sense::click_and_drag());
-                            response.dnd_set_drag_payload(FileDrag {
-                                connection: self.identity(),
-                                local: false,
-                                path: entry.path.clone(),
-                                name: entry.name.clone(),
-                                directory,
-                            });
-                            if response.clicked() {
-                                self.selected_remote = Some(entry.path.clone());
-                            }
-                            if response.clicked_by(egui::PointerButton::Middle) {
-                                insert_path = Some(entry.path.clone());
-                            }
-                            if response.double_clicked() && !directory {
-                                if let Some(session) = &self.backend {
-                                    open_files.push(crate::editor::OpenFile {
-                                        location: crate::editor::Location::Remote {
-                                            session: session.clone(),
-                                            path: entry.path.clone(),
-                                        },
-                                        force_text: false,
-                                        action: crate::editor::OpenAction::Default,
-                                    });
-                                }
-                            }
-                            if response.double_clicked() && directory {
-                                next_remote = Some(entry.path.clone());
-                            }
-                            response.context_menu(|ui| {
-                                if ui.button("Open").clicked() {
-                                    if directory {
-                                        next_remote = Some(entry.path.clone());
-                                    } else if let Some(session) = &self.backend {
-                                        open_files.push(crate::editor::OpenFile {
-                                            location: crate::editor::Location::Remote {
-                                                session: session.clone(),
-                                                path: entry.path.clone(),
-                                            },
-                                            force_text: false,
-                                            action: crate::editor::OpenAction::Default,
-                                        });
-                                    }
-                                    ui.close();
-                                }
-                                if !directory {
-                                    for (label, action) in [
-                                        ("Open with…", crate::editor::OpenAction::ChooseProgram),
-                                        (
-                                            "Open with default program",
-                                            crate::editor::OpenAction::DefaultProgram,
-                                        ),
-                                    ] {
-                                        if ui.button(label).clicked() {
-                                            if let Some(session) = &self.backend {
-                                                open_files.push(crate::editor::OpenFile {
-                                                    location: crate::editor::Location::Remote {
-                                                        session: session.clone(),
-                                                        path: entry.path.clone(),
-                                                    },
-                                                    force_text: false,
-                                                    action,
-                                                });
-                                            }
-                                            ui.close();
-                                        }
-                                    }
-                                    if ui.button("Compare file with…").clicked() {
-                                        new_action = Some(FileAction {
-                                            operation: "remote_compare".into(),
-                                            path: entry.path.clone(),
-                                            value: self.selected_local.clone().unwrap_or_default(),
+                                            value: self
+                                                .selected_local
+                                                .clone()
+                                                .filter(|p| p != &entry.path.display().to_string())
+                                                .unwrap_or_default(),
                                             directory: false,
                                         });
                                         ui.close();
                                     }
+                                    if ui.button("Copy file path to terminal").clicked() {
+                                        insert_path = Some(entry.path.display().to_string());
+                                        ui.close();
+                                    }
+                                    if !entry.directory
+                                        && ui.button("Open with text editor").clicked()
+                                    {
+                                        open_files.push(crate::editor::OpenFile {
+                                            location: crate::editor::Location::Local(
+                                                entry.path.clone(),
+                                            ),
+                                            force_text: true,
+                                            action: crate::editor::OpenAction::Default,
+                                        });
+                                        ui.close();
+                                    }
+                                    if ui.button("Copy file path").clicked() {
+                                        ui.ctx()
+                                            .copy_text(entry.path.to_string_lossy().into_owned());
+                                        ui.close();
+                                    }
+                                    if ui
+                                        .add_enabled(
+                                            !self.remote_loaded_path.is_empty(),
+                                            egui::Button::new("Copy to server…"),
+                                        )
+                                        .clicked()
+                                    {
+                                        new_action = Some(FileAction {
+                                            operation: "upload".into(),
+                                            path: entry.path.to_string_lossy().into_owned(),
+                                            value: join_remote(
+                                                &self.remote_loaded_path,
+                                                &entry.name,
+                                            ),
+                                            directory: entry.directory,
+                                        });
+                                        ui.close();
+                                    }
+                                });
+                            }
+                        },
+                    );
+            }
+            if show_remote {
+                columns[1].label("Server");
+                let path_size = [
+                    columns[1].available_width(),
+                    columns[1].spacing().interact_size.y,
+                ];
+                let response = columns[1]
+                    .add_sized(path_size, egui::TextEdit::singleline(&mut self.remote_path));
+                remote_go |= crate::dialog::field_submit(&columns[1], &response);
+                columns[1].horizontal_wrapped(|ui| {
+                    remote_go |= ui.button("Go").clicked();
+                    if ui.button("↑").clicked() {
+                        next_remote = Some(remote_parent(&self.remote_loaded_path));
+                    }
+                    if ui
+                        .add_enabled(
+                            !self.remote_loaded_path.is_empty(),
+                            egui::Button::new("New folder"),
+                        )
+                        .clicked()
+                    {
+                        new_action = Some(FileAction {
+                            operation: "mkdir".into(),
+                            path: String::new(),
+                            value: join_remote(&self.remote_loaded_path, "new-folder"),
+                            directory: true,
+                        });
+                    }
+                });
+                let row_height = (columns[1].text_style_height(&egui::TextStyle::Button)
+                    + 2.0 * columns[1].spacing().button_padding.y)
+                    .max(columns[1].spacing().interact_size.y);
+                egui::ScrollArea::vertical()
+                    .id_salt("remote-files")
+                    .max_height((columns[1].available_height() - 8.0).max(1.0))
+                    .show_rows(
+                        &mut columns[1],
+                        row_height,
+                        self.remote_entries.len(),
+                        |ui, range| {
+                            ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
+                            for entry in &self.remote_entries[range] {
+                                let directory = entry.kind == "directory";
+                                let response = crate::ui_icons::file_entry(
+                                    ui,
+                                    directory,
+                                    &entry.name,
+                                    self.selected_remote.as_deref() == Some(entry.path.as_str()),
+                                );
+                                let response = response.interact(egui::Sense::click_and_drag());
+                                response.dnd_set_drag_payload(FileDrag {
+                                    connection: self.identity(),
+                                    local: false,
+                                    path: entry.path.clone(),
+                                    name: entry.name.clone(),
+                                    directory,
+                                });
+                                if response.clicked() {
+                                    self.selected_remote = Some(entry.path.clone());
                                 }
-                                if !directory && ui.button("Open with text editor").clicked() {
+                                if response.clicked_by(egui::PointerButton::Middle) {
+                                    insert_path = Some(entry.path.clone());
+                                }
+                                if response.double_clicked() && !directory {
                                     if let Some(session) = &self.backend {
                                         open_files.push(crate::editor::OpenFile {
                                             location: crate::editor::Location::Remote {
                                                 session: session.clone(),
                                                 path: entry.path.clone(),
                                             },
-                                            force_text: true,
+                                            force_text: false,
                                             action: crate::editor::OpenAction::Default,
                                         });
                                     }
-                                    ui.close();
                                 }
-                                if ui.button("Copy file path to terminal").clicked() {
-                                    insert_path = Some(entry.path.clone());
-                                    ui.close();
+                                if response.double_clicked() && directory {
+                                    next_remote = Some(entry.path.clone());
                                 }
-                                if ui.button("Copy file path").clicked() {
-                                    ui.ctx().copy_text(entry.path.clone());
-                                    ui.close();
-                                }
-                                if ui
-                                    .add_enabled(
-                                        !self.local_loaded_path.is_empty(),
-                                        egui::Button::new("Copy to this computer…"),
-                                    )
-                                    .clicked()
-                                {
-                                    new_action = Some(FileAction {
-                                        operation: "download".into(),
-                                        path: entry.path.clone(),
-                                        value: PathBuf::from(&self.local_loaded_path)
-                                            .join(ad_desktop_model::files::safe_local_name(
-                                                &entry.name,
-                                            ))
-                                            .to_string_lossy()
-                                            .into_owned(),
-                                        directory,
-                                    });
-                                    ui.close();
-                                }
-                                for (label, operation) in [
-                                    ("Rename…", "rename"),
-                                    ("Properties", "stat"),
-                                    ("Permissions…", "chmod"),
-                                    ("Delete…", "delete"),
-                                ] {
-                                    if ui.button(label).clicked() {
+                                response.context_menu(|ui| {
+                                    if ui.button("Open").clicked() {
+                                        if directory {
+                                            next_remote = Some(entry.path.clone());
+                                        } else if let Some(session) = &self.backend {
+                                            open_files.push(crate::editor::OpenFile {
+                                                location: crate::editor::Location::Remote {
+                                                    session: session.clone(),
+                                                    path: entry.path.clone(),
+                                                },
+                                                force_text: false,
+                                                action: crate::editor::OpenAction::Default,
+                                            });
+                                        }
+                                        ui.close();
+                                    }
+                                    if !directory {
+                                        for (label, action) in [
+                                            (
+                                                "Open with…",
+                                                crate::editor::OpenAction::ChooseProgram,
+                                            ),
+                                            (
+                                                "Open with default program",
+                                                crate::editor::OpenAction::DefaultProgram,
+                                            ),
+                                        ] {
+                                            if ui.button(label).clicked() {
+                                                if let Some(session) = &self.backend {
+                                                    open_files.push(crate::editor::OpenFile {
+                                                        location: crate::editor::Location::Remote {
+                                                            session: session.clone(),
+                                                            path: entry.path.clone(),
+                                                        },
+                                                        force_text: false,
+                                                        action,
+                                                    });
+                                                }
+                                                ui.close();
+                                            }
+                                        }
+                                        if ui.button("Compare file with…").clicked() {
+                                            new_action = Some(FileAction {
+                                                operation: "remote_compare".into(),
+                                                path: entry.path.clone(),
+                                                value: self
+                                                    .selected_local
+                                                    .clone()
+                                                    .unwrap_or_default(),
+                                                directory: false,
+                                            });
+                                            ui.close();
+                                        }
+                                    }
+                                    if !directory && ui.button("Open with text editor").clicked() {
+                                        if let Some(session) = &self.backend {
+                                            open_files.push(crate::editor::OpenFile {
+                                                location: crate::editor::Location::Remote {
+                                                    session: session.clone(),
+                                                    path: entry.path.clone(),
+                                                },
+                                                force_text: true,
+                                                action: crate::editor::OpenAction::Default,
+                                            });
+                                        }
+                                        ui.close();
+                                    }
+                                    if ui.button("Copy file path to terminal").clicked() {
+                                        insert_path = Some(entry.path.clone());
+                                        ui.close();
+                                    }
+                                    if ui.button("Copy file path").clicked() {
+                                        ui.ctx().copy_text(entry.path.clone());
+                                        ui.close();
+                                    }
+                                    if ui
+                                        .add_enabled(
+                                            !self.local_loaded_path.is_empty(),
+                                            egui::Button::new("Copy to this computer…"),
+                                        )
+                                        .clicked()
+                                    {
                                         new_action = Some(FileAction {
-                                            operation: operation.into(),
+                                            operation: "download".into(),
                                             path: entry.path.clone(),
-                                            value: if operation == "chmod" {
-                                                format!(
-                                                    "{:o}",
-                                                    entry.permissions.unwrap_or(0o644) & 0o7777
-                                                )
-                                            } else {
-                                                entry.path.clone()
-                                            },
+                                            value: PathBuf::from(&self.local_loaded_path)
+                                                .join(ad_desktop_model::files::safe_local_name(
+                                                    &entry.name,
+                                                ))
+                                                .to_string_lossy()
+                                                .into_owned(),
                                             directory,
                                         });
                                         ui.close();
                                     }
-                                }
-                            });
-                        }
-                    },
-                );
+                                    for (label, operation) in [
+                                        ("Rename…", "rename"),
+                                        ("Properties", "stat"),
+                                        ("Permissions…", "chmod"),
+                                        ("Delete…", "delete"),
+                                    ] {
+                                        if ui.button(label).clicked() {
+                                            new_action = Some(FileAction {
+                                                operation: operation.into(),
+                                                path: entry.path.clone(),
+                                                value: if operation == "chmod" {
+                                                    format!(
+                                                        "{:o}",
+                                                        entry.permissions.unwrap_or(0o644) & 0o7777
+                                                    )
+                                                } else {
+                                                    entry.path.clone()
+                                                },
+                                                directory,
+                                            });
+                                            ui.close();
+                                        }
+                                    }
+                                });
+                            }
+                        },
+                    );
+            }
             for (column, local) in [(0, true), (1, false)] {
+                if (local && !show_local) || (!local && !show_remote) {
+                    continue;
+                }
                 let drop = columns[column].interact(
-                    columns[column].max_rect(),
+                    rects[column],
                     egui::Id::new(("file-drop", local)),
                     egui::Sense::hover(),
                 );
@@ -1522,7 +1627,8 @@ impl SessionTab {
                 let position = ctx
                     .input(|i| i.pointer.latest_pos())
                     .or(self.explorer_hover.take());
-                if position.is_some_and(|p| columns[1].max_rect().contains(p))
+                if show_remote
+                    && position.is_some_and(|p| rects[1].contains(p))
                     && !self.remote_loaded_path.is_empty()
                 {
                     for file in dropped {
@@ -1558,7 +1664,8 @@ impl SessionTab {
                     }
                 }
             }
-        });
+        }
+        ui.allocate_rect(bounds, egui::Sense::hover());
         if let Some(path) = insert_path {
             if matches!(
                 self.profile.connection_type,
@@ -1798,6 +1905,23 @@ fn retained_desktop_id(profile: &str) -> uuid::Uuid {
     bytes[8] = (bytes[8] & 0x3f) | 0x80;
     uuid::Uuid::from_bytes(bytes)
 }
+fn files_narrow(width: f32, row_height: f32) -> bool {
+    width < 700.0_f32.max(row_height * 48.0)
+}
+fn file_pane_rects(bounds: egui::Rect, narrow: bool, gap: f32) -> [egui::Rect; 2] {
+    if narrow {
+        return [bounds; 2];
+    }
+    let width = ((bounds.width() - gap).max(0.0)) * 0.5;
+    [
+        egui::Rect::from_min_size(bounds.min, egui::vec2(width, bounds.height())),
+        egui::Rect::from_min_size(
+            egui::pos2(bounds.right() - width, bounds.top()),
+            egui::vec2(width, bounds.height()),
+        ),
+    ]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1840,6 +1964,83 @@ mod tests {
             tab.set_directory_sync(true);
             assert!(tab.pending_terminal_navigation(6).unwrap().is_none());
         }
+    }
+    #[test]
+    fn files_reflow_into_one_pane_without_overlap_or_losing_navigation() {
+        let runtime = Connections::new().unwrap();
+        let directory = tempfile::tempdir().unwrap();
+        crate::storage::with_test_root(directory.path(), || {
+            let mut tab = SessionTab::diagnostic_files(directory.path());
+            for font in [13.0, 20.0] {
+                let ctx = egui::Context::default();
+                ctx.style_mut(|style| {
+                    for key in [egui::TextStyle::Body, egui::TextStyle::Button] {
+                        style
+                            .text_styles
+                            .insert(key, egui::FontId::proportional(font));
+                    }
+                });
+                for width in [360.0, 480.0, 700.0, 1200.0, 480.0] {
+                    for local in [false, true] {
+                        tab.files_local_pane = local;
+                        let mut output = None;
+                        let mut narrow = false;
+                        for _ in 0..4 {
+                            output = Some(ctx.run(
+                                egui::RawInput {
+                                    screen_rect: Some(egui::Rect::from_min_size(
+                                        egui::Pos2::ZERO,
+                                        egui::vec2(width, 420.0),
+                                    )),
+                                    ..Default::default()
+                                },
+                                |ctx| {
+                                    egui::CentralPanel::default().show(ctx, |ui| {
+                                        narrow = files_narrow(
+                                            ui.available_width(),
+                                            ui.text_style_height(&egui::TextStyle::Body),
+                                        );
+                                        tab.files_ui(ui, &runtime);
+                                    });
+                                },
+                            ));
+                        }
+                        let mut visible = Vec::new();
+                        for shape in output.unwrap().shapes {
+                            if let egui::epaint::Shape::Text(text) = shape.shape {
+                                if ["local-fixture", "server-fixture"]
+                                    .contains(&text.galley.job.text.as_str())
+                                {
+                                    let rect =
+                                        egui::Rect::from_min_size(text.pos, text.galley.size());
+                                    assert!(shape.clip_rect.expand(1.0).contains_rect(rect),"File entry escaped its pane at width {width}, font {font}: {rect:?} / {:?}",shape.clip_rect);
+                                    visible.push(text.galley.job.text.clone());
+                                }
+                            }
+                        }
+                        if narrow {
+                            assert_eq!(
+                                visible,
+                                vec![if local {
+                                    "local-fixture"
+                                } else {
+                                    "server-fixture"
+                                }]
+                            );
+                        } else {
+                            assert_eq!(visible, vec!["local-fixture", "server-fixture"]);
+                        }
+                        assert_eq!(tab.remote_loaded_path, "/fixture");
+                        assert_eq!(
+                            tab.local_loaded_path,
+                            directory.path().display().to_string()
+                        );
+                        assert!(tab.connected);
+                        assert!(tab.pending.is_empty());
+                    }
+                }
+            }
+        });
     }
     #[test]
     fn files_popup_does_not_shrink_or_disconnect_the_desktop_or_terminal() {

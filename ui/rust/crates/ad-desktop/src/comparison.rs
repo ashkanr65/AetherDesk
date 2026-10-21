@@ -93,13 +93,17 @@ impl Comparison {
         if !self.open {
             return false;
         }
+        let id = egui::ViewportId::from_hash_of(self.id);
         ctx.show_viewport_immediate(
-            egui::ViewportId::from_hash_of(self.id),
-            egui::ViewportBuilder::default()
-                .with_icon(crate::theme::native_icon())
-                .with_title("AetherDesk · Compare files")
-                .with_inner_size([1100.0, 700.0]),
+            id,
+            crate::app_layout::builder(
+                ctx,
+                id,
+                "AetherDesk · Compare files",
+                egui::vec2(1100.0, 700.0),
+            ),
             |ctx, _| {
+                crate::app_layout::update(ctx, "comparison");
                 if ctx.input(|i| i.viewport().close_requested()) {
                     self.open = false;
                     return;
@@ -107,7 +111,7 @@ impl Comparison {
                 egui::TopBottomPanel::top("diff-actions").show(ctx, |ui| {
                     ui.label(&self.title);
                     ui.add(egui::Label::new(&self.summary).selectable(true));
-                    ui.horizontal(|ui| {
+                    ui.horizontal_wrapped(|ui| {
                         ui.label(format!("{} change groups", self.changes.len()));
                         if !self.changes.is_empty() {
                             if ui.button("Previous change").clicked() {

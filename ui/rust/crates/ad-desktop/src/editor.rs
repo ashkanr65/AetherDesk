@@ -727,17 +727,37 @@ impl Editors {
         }
         let mut apply = false;
         let mut dismiss = false;
+        let id = egui::ViewportId::from_hash_of((review.source, "language-edit-review"));
         ctx.show_viewport_immediate(
-            egui::ViewportId::from_hash_of((review.source, "language-edit-review")),
-            egui::ViewportBuilder::default()
-                .with_title("AetherDesk · Review language edits")
-                .with_icon(crate::theme::native_icon())
-                .with_inner_size([900.0, 500.0]),
+            id,
+            crate::app_layout::builder(
+                ctx,
+                id,
+                "AetherDesk · Review language edits",
+                egui::vec2(900.0, 500.0),
+            ),
             |ctx, _| {
+                crate::app_layout::update(ctx, "edit-review");
                 if ctx.input(|i| i.viewport().close_requested()) {
                     dismiss = true;
                     return;
                 }
+                egui::TopBottomPanel::bottom("review-actions").show(ctx, |ui| {
+                    if let Some(error) = &review.error {
+                        ui.colored_label(egui::Color32::LIGHT_RED, error);
+                    }
+                    ui.horizontal_wrapped(|ui| {
+                        apply = ui
+                            .add_enabled(
+                                ready
+                                    && review.error.is_none()
+                                    && review.targets.iter().all(|t| t.after.is_some()),
+                                egui::Button::new("Apply all edits"),
+                            )
+                            .clicked();
+                        dismiss = ui.button("Dismiss").clicked();
+                    });
+                });
                 egui::CentralPanel::default().show(ctx, |ui| {
                     ui.label(
                     "Apply these changes to the editor buffers? Save each file when you are ready.",
@@ -748,13 +768,13 @@ impl Editors {
                         ctx.request_repaint_after(std::time::Duration::from_millis(50));
                     }
                     egui::ScrollArea::vertical()
-                        .max_height(320.0)
+                        .max_height(ui.available_height().max(1.0))
                         .show(ui, |ui| {
                             for target in &review.targets {
                                 if let Some(document) =
                                     self.documents.iter().find(|d| d.id == target.id)
                                 {
-                                    ui.horizontal(|ui| {
+                                    ui.horizontal_wrapped(|ui| {
                                         ui.label(format!(
                                             "{} · {} edits",
                                             document.title,
@@ -779,20 +799,6 @@ impl Editors {
                                 }
                             }
                         });
-                    if let Some(error) = &review.error {
-                        ui.colored_label(egui::Color32::LIGHT_RED, error);
-                    }
-                    ui.horizontal(|ui| {
-                        apply = ui
-                            .add_enabled(
-                                ready
-                                    && review.error.is_none()
-                                    && review.targets.iter().all(|t| t.after.is_some()),
-                                egui::Button::new("Apply all edits"),
-                            )
-                            .clicked();
-                        dismiss = ui.button("Dismiss").clicked();
-                    });
                 });
             },
         );
@@ -842,12 +848,16 @@ impl Editors {
                 if document.dirty() { "● " } else { "" },
                 document.title
             );
-            ctx.show_viewport_immediate(egui::ViewportId::from_hash_of(document.id),egui::ViewportBuilder::default().with_icon(crate::theme::native_icon()).with_title(title).with_inner_size([1000.0,720.0]),|ctx,_|{
+            let id = egui::ViewportId::from_hash_of(document.id);
+            ctx.show_viewport_immediate(id,crate::app_layout::builder(ctx,id,title,egui::vec2(1000.0,720.0)),|ctx,_|{
+                crate::app_layout::update(ctx,"editor");
                 if ctx.input(|i|i.viewport().close_requested()) {
                     if !document.request_close(){ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);}else{return;}
                 }
                 let mut save_now=false;
-                egui::TopBottomPanel::top("editor-actions").show(ctx,|ui| {
+                let controls_height=(ctx.content_rect().height()*0.4).max(1.0);
+                egui::TopBottomPanel::top("editor-actions").max_height(controls_height).show(ctx,|ui| {
+                    egui::ScrollArea::vertical().id_salt(("editor-controls-scroll",document.id)).max_height(controls_height).auto_shrink([false,true]).show(ui,|ui| {
                     ui.horizontal_wrapped(|ui|{for (id,title) in &windows{if ui.selectable_label(*id==document.id,title.rsplit(['/', '\\']).next().unwrap_or(title)).clicked(){ctx.send_viewport_cmd_to(egui::ViewportId::from_hash_of(*id),egui::ViewportCommand::Focus);}}});
                     ui.horizontal_wrapped(|ui| {
                         if !document.external && document.file.is_some() && ui.button("Compare with saved").clicked(){if let Some(saved)=TextFile::decode(&document.saved){diffs.push(crate::comparison::Comparison::text(document.title.clone()+" · Saved ↔ Editor",saved.text,document.text.clone(),runtime,ctx));}}
@@ -869,10 +879,11 @@ impl Editors {
                         if before!=document.tools.revision() {document.language.changed();document.backup_dirty=true;}
                     }
                     if let Some(error)=&document.error {ui.colored_label(egui::Color32::LIGHT_RED,error);}
+                    });
                 });
                 if !document.external {
                     let remote=match (&document.location,&document.metadata){(Location::Remote{session,..},Some(metadata))=>Some((session.clone(),metadata.canonical_path.clone())),_=>None};
-                    egui::TopBottomPanel::bottom("editor-language").show(ctx,|ui|{let previous=document.language.revision();let focused=document.tools.has_focus(ctx);document.language.ui(ui,runtime,remote,document.path.clone(),&mut document.text,document.cursor,document.tools.width,document.tools.tabs,focused);if previous!=document.language.revision(){document.backup_dirty=true;document.tools.observe(&document.text);}});
+                    egui::TopBottomPanel::bottom("editor-language").max_height((ctx.content_rect().height()*0.25).max(1.0)).show(ctx,|ui|{egui::ScrollArea::vertical().id_salt(("editor-language-scroll",document.id)).max_height((ctx.content_rect().height()*0.25).max(1.0)).auto_shrink([false,true]).show(ui,|ui|{let previous=document.language.revision();let focused=document.tools.has_focus(ctx);document.language.ui(ui,runtime,remote,document.path.clone(),&mut document.text,document.cursor,document.tools.width,document.tools.tabs,focused);if previous!=document.language.revision(){document.backup_dirty=true;document.tools.observe(&document.text);}});});
                 }
                 egui::CentralPanel::default().show(ctx,|ui| {
                     if document.external {ui.label(if matches!(document.location,Location::Remote{..}){"Editing with a Windows application. Save there, then upload the working copy here to update the server file."}else{"Editing the local file with a Windows application. Save changes in that application."});if let Some(path)=&document.path{ui.add(egui::Label::new(path.display().to_string()).selectable(true));}ctx.request_repaint_after(std::time::Duration::from_secs(1));}
@@ -1375,6 +1386,7 @@ mod tests {
             let runtime = crate::connection::Connections::new().unwrap();
             let ctx = egui::Context::default();
             let mut editors = Editors::default();
+            let mut layout_time = 0.0;
             for _ in 0..3 {
                 editors.open(
                     OpenFile {
@@ -1396,6 +1408,44 @@ mod tests {
                 assert!(editors.documents[index].file.is_some());
                 editors.documents[index].closing = false;
                 editors.documents[index].text.push_str(" changed");
+                let edited = editors.documents[index].text.clone();
+                for (width, height, dpi) in [
+                    (1000.0, 720.0, 1.0),
+                    (480.0, 340.0, 2.0),
+                    (800.0, 560.0, 1.5),
+                    (1000.0, 720.0, 1.0),
+                ] {
+                    for _ in 0..4 {
+                        layout_time += 0.25;
+                        let mut input = egui::RawInput {
+                            screen_rect: Some(egui::Rect::from_min_size(
+                                egui::Pos2::ZERO,
+                                egui::vec2(width, height),
+                            )),
+                            time: Some(layout_time),
+                            ..Default::default()
+                        };
+                        let viewport = input.viewports.get_mut(&egui::ViewportId::ROOT).unwrap();
+                        viewport.inner_rect = input.screen_rect;
+                        viewport.monitor_size = Some(egui::vec2(1920.0 / dpi, 1080.0 / dpi));
+                        viewport.native_pixels_per_point = Some(dpi);
+                        let _ = ctx.run(input, |ctx| {
+                            crate::app_layout::update(ctx, "editor-fixture");
+                            egui::CentralPanel::default().show(ctx, |ui| {
+                                let document = &mut editors.documents[index];
+                                document.tools.code(
+                                    ui,
+                                    &mut document.text,
+                                    document.language.revision(),
+                                    &runtime,
+                                );
+                            });
+                        });
+                    }
+                    assert_eq!(editors.documents[index].text, edited);
+                    assert!(editors.documents[index].dirty());
+                    assert_eq!(std::fs::read(&path).unwrap(), b"saved");
+                }
                 assert!(!editors.can_close());
                 assert!(!editors.documents[index].request_close());
                 assert!(!editors.documents[index].closed);

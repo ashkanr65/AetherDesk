@@ -115,6 +115,7 @@ pub struct Settings {
     pub mode: Mode,
     pub ui_scale: f32,
     pub font_size: f32,
+    pub renderer: crate::graphics::Renderer,
     pub themes: Themes,
     pub start_maximized: bool,
     pub restore_tabs: bool,
@@ -136,6 +137,7 @@ impl Default for Settings {
             mode: Mode::Dark,
             ui_scale: 1.0,
             font_size: 13.0,
+            renderer: Default::default(),
             themes: Themes::default(),
             start_maximized: false,
             restore_tabs: false,
@@ -690,7 +692,30 @@ impl Panel {
             ui.label("Application font size");
             application_slider(ui, &mut self.draft.font_size, 11.0..=20.0, 1);
             ui.end_row();
+            ui.label("Graphics renderer");
+            egui::ComboBox::from_id_salt("graphics-renderer")
+                .selected_text(self.draft.renderer.label())
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(
+                        &mut self.draft.renderer,
+                        crate::graphics::Renderer::Automatic,
+                        "Automatic",
+                    );
+                    #[cfg(windows)]
+                    ui.selectable_value(
+                        &mut self.draft.renderer,
+                        crate::graphics::Renderer::Direct3D,
+                        "Direct3D 12",
+                    );
+                    ui.selectable_value(
+                        &mut self.draft.renderer,
+                        crate::graphics::Renderer::OpenGl,
+                        "OpenGL (compatibility)",
+                    );
+                });
+            ui.end_row();
         });
+        ui.label("Renderer changes take effect after restarting AetherDesk.");
         ui.label("Application colours and scaling do not alter remote monitor resolution, remote pixels or terminal syntax colours.");
         ui.separator();
         ui.horizontal_wrapped(|ui| {
@@ -801,6 +826,7 @@ fn copy_section(target: &mut Settings, source: &Settings, section: Section) {
             target.mode = source.mode;
             target.ui_scale = source.ui_scale;
             target.font_size = source.font_size;
+            target.renderer = source.renderer;
             target.themes = source.themes;
         }
         Section::Connections => {

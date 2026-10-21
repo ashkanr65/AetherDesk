@@ -8,6 +8,7 @@ mod assistant;
 mod assistant_history;
 mod comparison;
 mod connection;
+mod crash_diagnostics;
 mod credentials;
 mod desktop_recovery;
 mod dialog;
@@ -17,6 +18,7 @@ mod editor_tools;
 mod editor_transport;
 mod file_picker;
 mod file_workspace;
+mod graphics;
 mod log_panel;
 mod logging;
 mod migration;
@@ -51,6 +53,7 @@ mod update_manifest;
 mod updates;
 mod user_tools;
 mod vault;
+mod window_geometry;
 mod working_copies;
 mod x11;
 use ad_desktop_model::{
@@ -96,7 +99,6 @@ struct RustDesktop {
     last_notice: String,
     updates: updates::Updates,
     update_health: Option<PathBuf>,
-    window_sizing: app_layout::WindowSizing,
 }
 impl Default for RustDesktop {
     fn default() -> Self {
@@ -149,7 +151,6 @@ impl Default for RustDesktop {
             notifications: notifications::Center::default(),
             last_notice: String::new(),
             updates: updates::Updates::default(),
-            window_sizing: app_layout::WindowSizing::default(),
             update_health: if std::env::args().nth(1).as_deref() == Some("--update-health") {
                 std::env::args_os().nth(2).map(PathBuf::from)
             } else {
@@ -690,7 +691,7 @@ impl RustDesktop {
 }
 impl eframe::App for RustDesktop {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        self.window_sizing.update(ctx);
+        app_layout::update(ctx, "main");
         self.theme.initialize(ctx);
         let dark = self.preferences.settings.dark(ctx, self.dark);
         if dark != self.dark {
@@ -1401,9 +1402,10 @@ fn main() -> eframe::Result {
     };
     if let Ok(root) = storage::root() {
         logging::init(&root.join("logs/application.log"));
+        crash_diagnostics::init(&root.join("logs"));
     }
     tracing::info!("AetherDesk starting");
-    let options = eframe::NativeOptions {
+    let mut options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_icon(theme::native_icon())
             .with_maximized(
@@ -1417,10 +1419,19 @@ fn main() -> eframe::Result {
             .with_clamp_size_to_monitor_size(true),
         ..Default::default()
     };
+    graphics::configure(
+        &mut options,
+        preferences::load()
+            .ok()
+            .flatten()
+            .unwrap_or_default()
+            .renderer,
+    );
     eframe::run_native(
         "AetherDesk",
         options,
         Box::new(|creation| {
+            graphics::log_adapter(creation);
             let app = RustDesktop::default();
             creation.egui_ctx.set_fonts(theme::font_definitions());
             creation

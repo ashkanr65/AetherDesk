@@ -13,7 +13,9 @@ Extract the complete portable ZIP and run `AetherDesk.exe`. Required application
 runtimes are bundled; users do not install Rust, Flutter, Node, Python,
 GStreamer or an X server to run the Windows client.
 
-Windows 10/11 x64 and an OpenGL 3.3 capable graphics driver are required.
+Windows 10/11 x64 and a Direct3D 12 capable graphics driver are required for
+the default renderer. An OpenGL 3.3 compatibility option is available under
+Preferences > Display; renderer changes require restarting the application.
 Connections need a reachable host and suitable credentials. AI providers use
 the user's service configuration and may have their own charges.
 

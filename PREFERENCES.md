@@ -68,3 +68,26 @@ Registered regressions cover persistence, independent palettes, contrast,
 imports/exports, navigation and log-window bounds. Compiler and packaged Windows
 verification run when the user builds; formatting and offline recipe checks
 do not substitute for those tests.
+
+### Graphics compatibility and native window sizing
+
+Display > Graphics renderer offers Automatic (Direct3D 12 on Windows), Direct3D
+12 and OpenGL compatibility. Apply and save, then restart AetherDesk. This setting
+changes only the local application renderer; it does not change remote codecs,
+resolution, terminal highlighting or frame colours. Other platforms retain OpenGL.
+If a graphics driver prevents startup, launch with `AETHERDESK_RENDERER=opengl`
+in the process environment to reach Preferences and choose compatibility mode.
+Direct3D uses the system Fxc compiler; no extra DXC installation is needed.
+
+Main, Files, Editor and review windows fit the destination monitor's usable area
+after a move settles. Their preferred normal size is remembered for that window's
+lifetime; temporary fits do not change application zoom. Narrow Files windows
+show local/server selectors instead of compressing two panes into each other.
+
+Window geometry transitions and the selected graphics adapter are recorded in
+application logs. `crash-<PID>.log` is a best-effort, synchronous last-chance report
+for panic locations or native exception code/address/thread. It can be empty in
+a healthy run and cannot capture every fatal failure. It contains no process-memory
+dump, API keys, chat messages or terminal text. Windows Error Reporting remains
+available for native module/stack investigations. Do not treat synthetic sizing
+checks as proof that a graphics-driver crash is resolved.

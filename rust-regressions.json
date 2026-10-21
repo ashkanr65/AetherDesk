@@ -143,9 +143,39 @@
           "package": "ad-desktop",
           "source": "ui/rust/crates/ad-desktop/src/preferences.rs",
           "test": "compact_preferences_keep_visible_text_separate_and_actions_reachable"
+        },
+        {
+          "phase": "windows",
+          "package": "ad-desktop",
+          "source": "ui/rust/crates/ad-desktop/src/app_layout.rs",
+          "test": "native_drag_and_incoherent_dpi_never_trigger_corrective_resizes"
+        },
+        {
+          "phase": "windows",
+          "package": "ad-desktop",
+          "source": "ui/rust/crates/ad-desktop/src/app_layout.rs",
+          "test": "popup_sizing_state_is_independent_and_initial_builder_size_stays_constant"
+        },
+        {
+          "phase": "windows",
+          "package": "ad-desktop",
+          "source": "ui/rust/crates/ad-desktop/src/session.rs",
+          "test": "files_reflow_into_one_pane_without_overlap_or_losing_navigation"
+        },
+        {
+          "phase": "windows",
+          "package": "ad-desktop",
+          "source": "ui/rust/crates/ad-desktop/src/graphics.rs",
+          "test": "windows_automatic_avoids_opengl_and_preserves_an_explicit_compatibility_choice"
+        },
+        {
+          "phase": "windows",
+          "package": "ad-desktop",
+          "source": "ui/rust/crates/ad-desktop/src/crash_diagnostics.rs",
+          "test": "native_crash_record_contains_only_exception_metadata"
         }
       ],
-      "liveAcceptance": "Background images and texture loading removed at user request. Verify native controls, selection contrast, resizing and DPI in both modes under R12."
+      "liveAcceptance": "Verify drag/drop in both directions across 100%/200% monitors with negative origins; main, Files, Editor and comparisons; minimize/restore, snap and dirty-editor recovery. Run isolated UI acceptance on Direct3D and OpenGL compatibility, check colours and native resize stability. Native driver crash resolution is not established by synthetic tests."
     },
     {
       "id": "ui.sidebar",
