@@ -311,7 +311,7 @@ impl Theme {
             ui.painter().circle_filled(
                 dot,
                 3.0,
-                if index == 0 { c.success } else { c.information },
+                c.information,
             );
             ui.painter().text(
                 dot + egui::vec2(7.0, 0.0),
