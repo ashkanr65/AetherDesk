@@ -33,6 +33,7 @@ mod remote_frames;
 mod remote_geometry;
 mod remote_input;
 mod remote_keyboard;
+mod remote_mouse;
 mod remote_toolbar;
 mod remote_view;
 mod session;

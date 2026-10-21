@@ -6,6 +6,7 @@
 
 pub mod framing;
 pub mod messages;
+pub mod pointer;
 pub mod transport;
 
 use bincode::Options;
@@ -427,13 +428,16 @@ pub enum InputMessage {
         monitor: u8,
     },
     PointerButton {
+        /// IDs in the shared `pointer` module; not X11 button numbers.
         button: u8,
         pressed: bool,
         x: i32,
         y: i32,
     },
     PointerWheel {
+        /// 120 units per detent, positive to the right.
         horizontal: i32,
+        /// 120 units per detent, positive upward. Wayland inverts this.
         vertical: i32,
     },
     Touch {

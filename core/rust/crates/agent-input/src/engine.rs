@@ -10,9 +10,6 @@ use evdev::{
 use thiserror::Error;
 
 const KEY_MAX: u16 = 0x2ff;
-const BTN_LEFT: u8 = 1;
-const BTN_RIGHT: u8 = 2;
-const BTN_MIDDLE: u8 = 3;
 const MOD_SHIFT: u16 = 1 << 0;
 const MOD_CONTROL: u16 = 1 << 1;
 const MOD_ALT: u16 = 1 << 2;
@@ -227,16 +224,10 @@ impl InputEngine {
     }
 
     fn pointer_button(&mut self, button: u8, pressed: bool) -> Result<(), InputError> {
-        let key = match button {
-            BTN_LEFT => KeyCode::BTN_LEFT,
-            BTN_RIGHT => KeyCode::BTN_RIGHT,
-            BTN_MIDDLE => KeyCode::BTN_MIDDLE,
-            4 => KeyCode::BTN_SIDE,
-            5 => KeyCode::BTN_EXTRA,
-            _ => return Err(InputError::InvalidPointerButton(button)),
-        };
+        let code = ad_stream_protocol::pointer::evdev_button(button)
+            .ok_or(InputError::InvalidPointerButton(button))?;
         self.pointer
-            .emit(&[InputEvent::new(EventType::KEY.0, key.0, i32::from(pressed))])?;
+            .emit(&[InputEvent::new(EventType::KEY.0, code, i32::from(pressed))])?;
         Ok(())
     }
 

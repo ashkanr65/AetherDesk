@@ -471,13 +471,7 @@ impl RemoteView {
                     {
                         let (x, y) = point(pos, image_rect, self.size);
                         self.last_pointer = (x, y);
-                        let button = match button {
-                            egui::PointerButton::Primary => 1,
-                            egui::PointerButton::Middle => 2,
-                            egui::PointerButton::Secondary => 3,
-                            egui::PointerButton::Extra1 => 8,
-                            egui::PointerButton::Extra2 => 9,
-                        };
+                        let button = crate::remote_mouse::gui_button(button);
                         if pressed {
                             self.buttons.insert(button);
                         } else {
@@ -493,15 +487,7 @@ impl RemoteView {
                     egui::Event::MouseWheel { unit, delta, .. }
                         if !self.raw_active && response.hovered() && !toolbar_blocked =>
                     {
-                        let scale = match unit {
-                            egui::MouseWheelUnit::Point => 3.0,
-                            egui::MouseWheelUnit::Line => 120.0,
-                            egui::MouseWheelUnit::Page => 360.0,
-                        };
-                        self.input(InputMessage::PointerWheel {
-                            horizontal: (delta.x * scale) as i32,
-                            vertical: (delta.y * scale) as i32,
-                        });
+                        self.input(crate::remote_mouse::gui_wheel(unit, delta));
                     }
                     _ => {}
                 }

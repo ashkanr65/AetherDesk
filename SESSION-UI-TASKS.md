@@ -644,3 +644,13 @@ or chats were modified during this publication. A real automatic
 replacement/restart with preserved user data, installer upgrade and clean-machine
 acceptance remain separate pending checks; build and feed verification do not
 claim those checks passed. Local release and old-recovery evidence are retained.
+
+## Remote mouse mappings and wheel direction - 2026-10-21
+
+| Item | Work | Status |
+| --- | --- | --- |
+| AV1 | Diagnose without changes | Complete: found X11-style client button IDs conflicting with host evdev-style IDs, unchanged Windows vertical deltas entering positive-down Wayland axes, inconsistent native/GUI horizontal signs and rejected side-button IDs. Diagnosis was read-only. |
+| AV2 | Repair both client routes and the host | Implemented for build 7: shared documented pointer contract (1 left, 2 right, 3 middle, 4 Back, 5 Forward); common client conversion helpers; shared host evdev mapping including legacy side IDs 8/9; right-positive/up-positive wheel contract converted once to Wayland. Continuous and v120 directions agree and wheel source is identified. Unknown button IDs no longer stop the Wayland capture loop. Keyboard, framebuffer and colour processing are unchanged. |
+| AV3 | Add meaningful regression coverage | Added three required native checks for native/GUI parity, full wire/evdev mappings and Wayland axis frames. Extended the existing real X11 renderer/input fixture to check all buttons, press/release edges, legacy side IDs, both wheel axes/directions and capture surviving an unsupported button. Registered the extended fixture under desktop input coverage. |
+| AV4 | Verify and push source | Source parser/format and whitespace checks passed across the UI, protocol, Wayland agent and evdev backend. Catalog validation, two offline registry fixtures and the full offline recipe/publisher safeguards passed (Cargo/network/signing mocked in those fixtures). Source is prepared for commit/push to main. No compilation, new native test execution or package build performed for this step. |
+| AV5 | Build and verify before auto-update | Remaining: user's build 7 and required native tests, followed by packaged mouse/scroll/EDA zoom checks in tab/fullscreen/all-monitor modes. Publish only the verified completed package; build 6 remains the current release. Reconnect with the new client/agent together to receive the complete fix. |

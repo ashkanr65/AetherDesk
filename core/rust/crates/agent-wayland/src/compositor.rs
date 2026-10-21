@@ -15,7 +15,7 @@ use ad_stream_protocol::{
     InputMessage, TouchPhase, MODIFIER_CAPS_LOCK, MODIFIER_LOCK_STATE_VALID, MODIFIER_NUM_LOCK,
 };
 use smithay::backend::allocator::dmabuf::Dmabuf;
-use smithay::backend::input::{Axis, ButtonState, KeyState, TouchSlot};
+use smithay::backend::input::{Axis, AxisSource, ButtonState, KeyState, TouchSlot};
 use smithay::backend::renderer::damage::OutputDamageTracker;
 use smithay::backend::renderer::element::surface::WaylandSurfaceRenderElement;
 use smithay::backend::renderer::pixman::PixmanRenderer;
@@ -781,14 +781,11 @@ impl AgentCompositorState {
                     ._seat
                     .get_pointer()
                     .ok_or(CompositorError::Input("Wayland pointer is unavailable"))?;
-                let code = match button {
-                    1 => 0x110,
-                    2 => 0x111,
-                    3 => 0x112,
-                    4 => 0x113,
-                    5 => 0x114,
-                    _ => return Err(CompositorError::Input("invalid pointer button")),
+                let Some(code) = ad_stream_protocol::pointer::evdev_button(button) else {
+                    // An unsupported mouse button must not stop the capture loop.
+                    return Ok(());
                 };
+                let code = u32::from(code);
                 if pressed && !pointer.is_grabbed() {
                     let current = pointer.current_location();
                     let target = self
@@ -839,18 +836,7 @@ impl AgentCompositorState {
                     ._seat
                     .get_pointer()
                     .ok_or(CompositorError::Input("Wayland pointer is unavailable"))?;
-                let mut frame = AxisFrame::new(time);
-                if horizontal != 0 {
-                    frame = frame
-                        .value(Axis::Horizontal, f64::from(horizontal) / 8.0)
-                        .v120(Axis::Horizontal, horizontal);
-                }
-                if vertical != 0 {
-                    frame = frame
-                        .value(Axis::Vertical, f64::from(vertical) / 8.0)
-                        .v120(Axis::Vertical, vertical);
-                }
-                pointer.axis(self, frame);
+                pointer.axis(self, wheel_frame(time, horizontal, vertical));
                 pointer.frame(self);
             }
             InputMessage::Touch {
@@ -1620,10 +1606,46 @@ pub enum CompositorError {
     XWayland(String),
 }
 
+fn wheel_frame(time: u32, horizontal: i32, vertical: i32) -> AxisFrame {
+    let (horizontal, vertical) = ad_stream_protocol::pointer::wayland_wheel(horizontal, vertical);
+    let mut frame = AxisFrame::new(time).source(AxisSource::Wheel);
+    if horizontal != 0 {
+        frame = frame
+            .value(Axis::Horizontal, f64::from(horizontal) / 8.0)
+            .v120(Axis::Horizontal, horizontal);
+    }
+    if vertical != 0 {
+        frame = frame
+            .value(Axis::Vertical, f64::from(vertical) / 8.0)
+            .v120(Axis::Vertical, vertical);
+    }
+    frame
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn wayland_wheel_frames_normalize_discrete_and_continuous_direction_together() {
+        for (horizontal, vertical, expected) in [
+            (0, 120, (0, -120)),
+            (0, -120, (0, 120)),
+            (120, 0, (120, 0)),
+            (-120, 0, (-120, 0)),
+            (30, -60, (30, 60)),
+        ] {
+            let frame = wheel_frame(42, horizontal, vertical);
+            assert!(matches!(frame.source, Some(AxisSource::Wheel)));
+            assert_eq!(frame.time, 42);
+            assert_eq!(
+                frame.axis,
+                (f64::from(expected.0) / 8.0, f64::from(expected.1) / 8.0)
+            );
+            assert_eq!(frame.v120, Some(expected));
+        }
+    }
 
     #[test]
     fn validates_output_limits_before_starting_native_services() {
@@ -1787,7 +1809,12 @@ mod tests {
                 screen.root_visual,
                 &CreateWindowAux::new()
                     .background_pixel(0x00ff0000)
-                    .event_mask(EventMask::KEY_PRESS | EventMask::KEY_RELEASE),
+                    .event_mask(
+                        EventMask::KEY_PRESS
+                            | EventMask::KEY_RELEASE
+                            | EventMask::BUTTON_PRESS
+                            | EventMask::BUTTON_RELEASE,
+                    ),
             )
             .unwrap()
             .check()
@@ -1908,6 +1935,53 @@ mod tests {
         assert!(key_state(79, locks | MODIFIER_NUM_LOCK).contains(KeyButMask::MOD2));
         assert!(key_state(30, locks | MODIFIER_CAPS_LOCK).contains(KeyButMask::LOCK));
         assert!(!key_state(30, locks).contains(KeyButMask::LOCK));
+        // Verify the complete Wayland -> XWayland -> X11 button/axis bridge.
+        // Unsupported buttons must not terminate capture before valid input.
+        compositor
+            .inject_input(InputMessage::PointerButton {
+                button: 255,
+                pressed: true,
+                x: 10,
+                y: 10,
+            })
+            .unwrap();
+        let mut expected_buttons = Vec::new();
+        for (button, x11_button) in [(1, 1), (2, 3), (3, 2), (4, 8), (5, 9), (8, 8), (9, 9)] {
+            for pressed in [true, false] {
+                compositor
+                    .inject_input(InputMessage::PointerButton {
+                        button,
+                        pressed,
+                        x: 10,
+                        y: 10,
+                    })
+                    .unwrap();
+                expected_buttons.push((pressed, x11_button));
+            }
+        }
+        for (horizontal, vertical, x11_button) in
+            [(0, 120, 4), (0, -120, 5), (-120, 0, 6), (120, 0, 7)]
+        {
+            compositor
+                .inject_input(InputMessage::PointerWheel {
+                    horizontal,
+                    vertical,
+                })
+                .unwrap();
+            expected_buttons.extend([(true, x11_button), (false, x11_button)]);
+        }
+        let mut actual_buttons = Vec::new();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while actual_buttons.len() < expected_buttons.len() && Instant::now() < deadline {
+            use smithay::reexports::x11rb::protocol::Event;
+            match connection.poll_for_event().unwrap() {
+                Some(Event::ButtonPress(event)) => actual_buttons.push((true, event.detail)),
+                Some(Event::ButtonRelease(event)) => actual_buttons.push((false, event.detail)),
+                _ => thread::sleep(Duration::from_millis(5)),
+            }
+        }
+        assert_eq!(actual_buttons, expected_buttons,
+            "left/right/middle/side buttons and all wheel directions must reach the X11 application unchanged");
         compositor.shutdown();
         assert_eq!(
             received,

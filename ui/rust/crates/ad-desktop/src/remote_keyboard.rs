@@ -580,48 +580,20 @@ mod windows {
         }
         let (x, y) = current.surface.point(x, y);
         current.point = (x, y);
-        let message = match wp as u32 {
-            WM_MOUSEMOVE => InputMessage::PointerMove { x, y, monitor: 0 },
-            WM_LBUTTONDOWN | WM_LBUTTONUP | WM_RBUTTONDOWN | WM_RBUTTONUP | WM_MBUTTONDOWN
-            | WM_MBUTTONUP | WM_XBUTTONDOWN | WM_XBUTTONUP => {
-                let button = match wp as u32 {
-                    WM_LBUTTONDOWN | WM_LBUTTONUP => 1,
-                    WM_RBUTTONDOWN | WM_RBUTTONUP => 3,
-                    WM_MBUTTONDOWN | WM_MBUTTONUP => 2,
-                    _ => {
-                        if event.mouseData >> 16 == 1 {
-                            8
-                        } else {
-                            9
-                        }
-                    }
-                };
-                let pressed = matches!(
-                    wp as u32,
-                    WM_LBUTTONDOWN | WM_RBUTTONDOWN | WM_MBUTTONDOWN | WM_XBUTTONDOWN
-                );
-                if pressed {
-                    current.buttons.insert(button);
-                } else {
-                    current.buttons.remove(&button);
-                }
-                InputMessage::PointerButton {
-                    button,
-                    pressed,
-                    x,
-                    y,
-                }
-            }
-            WM_MOUSEWHEEL => InputMessage::PointerWheel {
-                horizontal: 0,
-                vertical: (event.mouseData >> 16) as i16 as i32,
-            },
-            WM_MOUSEHWHEEL => InputMessage::PointerWheel {
-                horizontal: (event.mouseData >> 16) as i16 as i32,
-                vertical: 0,
-            },
-            _ => return next(),
+        let Some(message) = crate::remote_mouse::windows_message(wp as u32, event.mouseData, x, y)
+        else {
+            return next();
         };
+        if let InputMessage::PointerButton {
+            button, pressed, ..
+        } = &message
+        {
+            if *pressed {
+                current.buttons.insert(*button);
+            } else {
+                current.buttons.remove(button);
+            }
+        }
         if !send(current, vec![message]) {
             clear(&mut active);
         }

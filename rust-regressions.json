@@ -3363,9 +3363,33 @@
           "package": "ad-desktop",
           "source": "ui/rust/crates/ad-desktop/src/remote_view.rs",
           "test": "gui_keys_bypass_stale_native_capture_without_replaying_text_events"
+        },
+        {
+          "phase": "windows",
+          "package": "ad-desktop",
+          "source": "ui/rust/crates/ad-desktop/src/remote_mouse.rs",
+          "test": "native_and_gui_mouse_routes_agree_on_buttons_releases_and_wheel_directions"
+        },
+        {
+          "phase": "windows",
+          "package": "ad-stream-protocol",
+          "source": "core/rust/crates/ad-stream-protocol/src/pointer.rs",
+          "test": "pointer_contract_preserves_all_buttons_and_wheel_signs_on_the_wire"
+        },
+        {
+          "phase": "linux",
+          "package": "agent-wayland",
+          "source": "core/rust/crates/agent-wayland/src/compositor.rs",
+          "test": "wayland_wheel_frames_normalize_discrete_and_continuous_direction_together"
+        },
+        {
+          "phase": "linux",
+          "package": "agent-wayland",
+          "source": "core/rust/crates/agent-wayland/src/compositor.rs",
+          "test": "captures_pixels_from_a_real_x11_window"
         }
       ],
-      "liveAcceptance": "R6 source preserves physical Windows keypad/sided modifiers/AltGr/Win/menu/Print/Pause, lock flags, repeat, native mouse order and focus/lease release; exact foreground routing excludes injected events and toolbar/other windows. Existing IME path retains agent capability limits. Compile source regressions and verify live keyboard/drag/system shortcuts under R12."
+      "liveAcceptance": "R6 source preserves physical Windows keypad/sided modifiers/AltGr/Win/menu/Print/Pause, lock flags, repeat, native mouse order and focus/lease release; exact foreground routing excludes injected events and toolbar/other windows. Existing IME path retains agent capability limits. Compile source regressions and verify live keyboard/drag/system shortcuts under R12. Mouse contract repairs add required client-route parity, wire/evdev mappings, Wayland axis frames and a real X11 application button/wheel bridge check. Run native checks during the next build, then manually compare mouse clicks, scrolling and EDA zoom in tab/fullscreen/all-monitor modes."
     },
     {
       "id": "desktop.windows",
