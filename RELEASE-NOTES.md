@@ -6,6 +6,9 @@
 - Correct Back/Forward mouse button IDs, retain compatibility with earlier side-button IDs and ignore unsupported buttons without stopping desktop capture.
 - Add required regression checks for client-route parity, wire mappings, Wayland axis frames and actual X11 button/wheel delivery.
 
-Source changes are prepared for the next build. Compilation, native regressions,
-packaged mouse/EDA zoom acceptance and update publication have not yet run for
-this candidate. The published stable release remains build 6.
+Validation: the completed build passed all seven stages. Required Windows and
+Linux regression checks passed, including client input-route parity, protocol
+mappings, Wayland axis direction and real X11 button/wheel delivery. Packaged
+mouse/EDA zoom acceptance across tab, fullscreen and all-monitor modes remains a
+separate manual check. Reconnect with the updated client and agent to receive
+the complete fix.
