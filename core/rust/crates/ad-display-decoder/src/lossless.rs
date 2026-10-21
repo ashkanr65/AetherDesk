@@ -139,12 +139,14 @@ mod tests {
     use crate::Framebuffer;
     use ad_stream_protocol::lossless::LosslessTile;
 
+    const DESKTOP_HEIGHT: u32 = 64;
+
     fn begin(frame_id: u64, base_frame_id: u64, width: u32, count: u32) -> DisplayMessage {
         DisplayMessage::LosslessBegin {
             frame_id,
             base_frame_id,
             width,
-            height: 2,
+            height: DESKTOP_HEIGHT,
             tile_count: count,
         }
     }
@@ -156,9 +158,9 @@ mod tests {
                     x,
                     y: 0,
                     width: 256,
-                    height: 2,
+                    height: DESKTOP_HEIGHT,
                 },
-                colour.repeat(512),
+                colour.repeat(256 * DESKTOP_HEIGHT as usize),
             )
             .unwrap(),
         }
@@ -167,7 +169,7 @@ mod tests {
     #[test]
     fn lossless_transactions_are_atomic_exact_and_preserve_unchanged_monitors() {
         let mut assembler = LosslessAssembler::default();
-        let mut buffer = Framebuffer::new(512, 2).unwrap();
+        let mut buffer = Framebuffer::new(512, DESKTOP_HEIGHT).unwrap();
         let original = buffer.snapshot().2;
         assert!(assembler.push(begin(1, 0, 512, 2)).unwrap().is_none());
         assert!(assembler
@@ -222,11 +224,64 @@ mod tests {
             )
             .unwrap();
         assert_eq!(buffer.snapshot().0, 256);
+        // A two-pixel edge tile is legal; a two-pixel desktop is not.
+        assembler.push(begin(4, 0, 258, 2)).unwrap();
+        assembler.push(tile(4, 0, [10, 20, 30, 255])).unwrap();
+        assembler
+            .push(DisplayMessage::LosslessTile {
+                frame_id: 4,
+                tile: LosslessTile::encode(
+                    Rectangle {
+                        x: 256,
+                        y: 0,
+                        width: 2,
+                        height: DESKTOP_HEIGHT,
+                    },
+                    [40, 50, 60, 255].repeat(2 * DESKTOP_HEIGHT as usize),
+                )
+                .unwrap(),
+            })
+            .unwrap();
+        buffer
+            .apply_lossless(
+                assembler
+                    .push(DisplayMessage::LosslessCommit { frame_id: 4 })
+                    .unwrap()
+                    .unwrap(),
+            )
+            .unwrap();
+        let (width, height, pixels) = buffer.snapshot();
+        assert_eq!((width, height), (258, DESKTOP_HEIGHT));
+        assert_eq!(&pixels[..4], &[10, 20, 30, 255]);
+        assert_eq!(&pixels[256 * 4..256 * 4 + 4], &[40, 50, 60, 255]);
     }
 
     #[test]
     fn incomplete_duplicate_and_unbounded_lossless_frames_are_rejected() {
         let mut assembler = LosslessAssembler::default();
+        // Desktop dimensions obey the host's limits; tiny *edge tiles* can
+        // still be valid within an otherwise supported desktop.
+        for (width, height) in [
+            (512, 2),
+            (512, 63),
+            (63, 64),
+            (513, 64),
+            (512, 65),
+            (0, 64),
+            (16_384, 16_384),
+        ] {
+            assert!(assembler
+                .push(DisplayMessage::LosslessBegin {
+                    frame_id: 1,
+                    base_frame_id: 0,
+                    width,
+                    height,
+                    tile_count: 1,
+                })
+                .is_err());
+            assert!(assembler.pending.is_none());
+            assert_eq!(assembler.committed, 0);
+        }
         assert!(assembler.push(begin(1, 0, 512, u32::MAX)).is_err());
         assembler.push(begin(1, 0, 512, 2)).unwrap();
         assembler.push(tile(1, 0, [1; 4])).unwrap();

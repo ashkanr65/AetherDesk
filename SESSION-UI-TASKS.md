@@ -702,3 +702,13 @@ claim those checks passed. Local release and old-recovery evidence are retained.
 | BA3 | Remove updater test-only warnings | Implemented: apply cfg(not(test)) consistently to startup timer/maintenance fields, their initializers and clean_completed, matching the existing exclusions on automatic startup polling. Production cleanup and update timing are unchanged. |
 | BA4 | Verify and deliver | Passed: Rust parser/format and whitespace checks, regression catalog validation, two offline registry tests, and the full offline recipe/publisher safeguards. New production-orchestration fixture exercises stale backend graph repair, cache reuse over an older source seed, strict validation order and failure propagation while preserving source/cache; Cargo/network/signing are mocked. No compilation, native test execution or package build performed. Release remains 0.1.2 build 8; source delivered directly to main. |
 | BA5 | Retry user build | Remaining: rerun Build-Everything.cmd from the beginner kit so a fresh frozen snapshot uses the corrected preparation. No manual lock deletion or removal of --locked is needed. Full compiler/native/performance acceptance remains pending. |
+
+
+## Correct lossless regression dimensions - build 8 (2026-10-21)
+
+| Item | Work | Status |
+| --- | --- | --- |
+| BB1 | Diagnose the two reported decoder failures | Complete: both decoder fixtures declared a desktop height of 2 pixels, below the existing 64-pixel production minimum. The validator correctly rejected their first Begin message, before testing transactions. The user's decoder run reports 15 passing tests and these two failures. |
+| BB2 | Correct fixtures without weakening production validation | Implemented: use 64-pixel-high desktops, matching tile data lengths and framebuffer sizes. Fix the equivalent Linux overlapping-monitor/padded-row fixture and generate padding for every row. Extend coverage to reject too-small/odd/oversized desktop dimensions while accepting a legal two-pixel edge tile inside a 258x64 desktop. Existing atomicity, colours, unchanged-monitor, stale-base, duplicate and incomplete-commit checks remain. |
+| BB3 | Verify and deliver | Source parser/format, whitespace and catalog checks passed; two offline registry fixtures pass. Confirmed both modules' entire production portions are byte-equivalent after newline normalization; only test code changed. Delivered directly to main, retaining 0.1.2 build 8. No compilation or native test execution performed. |
+| BB4 | User build acceptance | Remaining: retry Build-Everything.cmd and execute the corrected native tests, then complete Linux/package/live display acceptance. No test has been disabled or ignored. |

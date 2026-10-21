@@ -335,26 +335,24 @@ mod tests {
             .iter()
             .all(|t| t.region.x >= 1792 || (t.region.y >= 512 && t.region.y < 1536)));
         assert!(batch.tiles.iter().all(|t| t.data.len() <= 256 * 256 * 4));
-        let small = frame(256, 2);
+        let small = frame(256, 64);
         let overlapping = vec![
             Rectangle {
                 x: 0,
                 y: 0,
                 width: 256,
-                height: 2
+                height: 64
             };
             16
         ];
         assert_eq!(build(&small, None, &overlapping).unwrap().tiles.len(), 1);
         let mut padded = small.clone();
         padded.stride += 16;
-        padded.pixels_bgra = small.pixels_bgra[..1024]
-            .iter()
-            .copied()
-            .chain([19; 16])
-            .chain(small.pixels_bgra[1024..].iter().copied())
-            .chain([19; 16])
-            .collect();
+        padded.pixels_bgra = Vec::with_capacity(padded.stride * padded.height as usize);
+        for row in small.pixels_bgra.chunks_exact(small.stride) {
+            padded.pixels_bgra.extend_from_slice(row);
+            padded.pixels_bgra.extend_from_slice(&[19; 16]);
+        }
         assert_eq!(
             build(&padded, None, &overlapping).unwrap().tiles[0]
                 .clone()
