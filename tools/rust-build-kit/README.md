@@ -15,6 +15,13 @@ the stages. After success they also remove staging files and caches to save disk
 space, keeping completed packages, logs and reports. These commands compile and test the
 source when **you** run them. Source changes do not compile until you run the kit.
 
+
+Dependency locks are prepared separately for the UI and backend in the isolated
+source snapshot. Preparation resolves the complete dependency graph, updates
+stale seed locks when required, and validates them with `--locked` before caching.
+Compiler/test/package stages remain locked. Do not delete lock files or remove
+`--locked` to work around a preparation failure; retry the current build kit.
+
 ## Build computer
 
 - Windows 10/11 x64, Rust 1.88+ through rustup, Visual Studio 2022 C++ tools and Windows SDK.

@@ -43,6 +43,7 @@ enum Event {
 pub struct Updates {
     prefs: Preferences,
     valid: bool,
+    #[cfg(not(test))]
     started: Instant,
     status: String,
     error: Option<String>,
@@ -53,6 +54,7 @@ pub struct Updates {
     pub open: bool,
     confirm: bool,
     restored: bool,
+    #[cfg(not(test))]
     maintenance_done: bool,
 }
 impl Default for Updates {
@@ -67,6 +69,7 @@ impl Default for Updates {
         Self {
             prefs: loaded.ok().flatten().unwrap_or_default(),
             valid,
+            #[cfg(not(test))]
             started: Instant::now(),
             status: String::new(),
             error,
@@ -77,6 +80,7 @@ impl Default for Updates {
             open: false,
             confirm: false,
             restored: false,
+            #[cfg(not(test))]
             maintenance_done: false,
         }
     }
@@ -268,6 +272,7 @@ fn discard_stage(stage: &std::path::Path) -> Result<(), String> {
     std::fs::remove_dir_all(stage)
         .map_err(|_| "The update cache is still in use. Try again after restarting.".into())
 }
+#[cfg(not(test))]
 fn clean_completed() {
     if let Ok(root) = cache() {
         if let Ok(entries) = std::fs::read_dir(root) {

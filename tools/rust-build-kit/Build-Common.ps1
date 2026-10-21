@@ -178,13 +178,27 @@ function Initialize-WorkspaceLocks([string]$Snapshot) {
         $manifest = Join-Path $Snapshot ($workspace.path + '\Cargo.toml')
         $lock = Join-Path $Snapshot ($workspace.path + '\Cargo.lock')
         $cachedLock = Join-Path $outputRoot ('cache\locks\' + $dependencyFingerprint + '.' + $workspace.name + '.lock')
-        if (!(Test-Path -LiteralPath $lock -PathType Leaf) -and (Test-Path -LiteralPath $cachedLock -PathType Leaf)) {
+        # A validated derived lock for this exact dependency fingerprint wins
+        # over the source seed, which can predate a newly added path/dev dependency.
+        if (Test-Path -LiteralPath $cachedLock -PathType Leaf) {
             Copy-Item -LiteralPath $cachedLock -Destination $lock
         }
         if (!(Test-Path -LiteralPath $lock -PathType Leaf)) {
             Invoke-StepTool 'cargo.exe' @('generate-lockfile','--manifest-path',$manifest)
         }
-        Invoke-StepTool 'cargo.exe' @('metadata','--locked','--no-deps','--format-version','1','--manifest-path',$manifest)
+        # --no-deps only reads manifests: it does NOT resolve/validate Cargo.lock.
+        # This is the preparation stage, so allow Cargo to reconcile missing or
+        # changed dependencies while retaining compatible locked versions. Then
+        # validate the complete graph strictly. All compilation stays --locked.
+        # Do not print megabytes of metadata JSON into the build transcript.
+        foreach ($strict in @($false,$true)) {
+            $arguments = @('metadata','--format-version','1','--manifest-path',$manifest)
+            if ($strict) { $arguments += '--locked' }
+            $operation = if ($strict) { 'Validating' } else { 'Preparing' }
+            Write-Host ($operation + ' complete dependency lock: ' + $workspace.name)
+            & cargo.exe @arguments | Out-Null
+            if ($LASTEXITCODE -ne 0) { throw "Dependency lock preparation failed for $($workspace.name) (exit $LASTEXITCODE)." }
+        }
         New-Item -ItemType Directory -Force -Path (Split-Path $cachedLock -Parent) | Out-Null
         Copy-Item -LiteralPath $lock -Destination $cachedLock -Force
     }
@@ -446,7 +460,7 @@ function Verify-RustPackage([string]$Package,[switch]$BeforeX11) {
 }
 
 function Get-DependencyFingerprint {
-    $lines = @('lock-cache-v2','version=' + $release.normalized)
+    $lines = @('lock-cache-v3-full-resolution','version=' + $release.normalized)
     foreach ($relative in Get-RustSourceFiles | Where-Object { $_ -like '*Cargo.toml' -or $_ -like '*Cargo.lock' }) {
         $lines += $relative + '=' + (Get-FileHash -LiteralPath (Join-Path $sourceRoot $relative) -Algorithm SHA256).Hash
     }

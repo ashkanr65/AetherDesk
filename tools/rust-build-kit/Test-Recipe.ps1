@@ -368,6 +368,7 @@ try {
     $emptyRegistry=$false
     $emptyResults=$false
     $tooFewResults=$false
+    $failLockResolution=$false
     $x11PackagesSeen = [Collections.Generic.List[string]]::new()
     function cargo.exe {
         $cargoCalls.Add(@($args))
@@ -376,6 +377,14 @@ try {
             [IO.File]::WriteAllText((Join-Path (Split-Path $manifestArgument -Parent) 'Cargo.lock'),('generated for ' + $manifestArgument))
         }
         $global:LASTEXITCODE = 0
+        if ($args[0] -eq 'metadata' -and $args -notcontains '--no-deps') {
+            $lockFile = Join-Path (Split-Path $manifestArgument -Parent) 'Cargo.lock'
+            if ($failLockResolution) { $global:LASTEXITCODE = 101; return }
+            if ([IO.File]::ReadAllText($lockFile) -eq 'stale backend dependency graph') {
+                if ($args -contains '--locked') { $global:LASTEXITCODE = 101; return }
+                [IO.File]::WriteAllText($lockFile,'resolved backend dependency graph')
+            }
+        }
         if($args[0] -eq 'test' -and $args -contains '--list'){
             if(!$emptyRegistry){foreach($name in $fixtureNames){Write-Output ('fixture::'+$name+': test')}}
         } elseif($args[0] -eq 'test') {
@@ -399,6 +408,27 @@ try {
     if (@($cargoCalls | Where-Object { $_[0] -eq 'generate-lockfile' }).Count) { throw 'Cached workspace locks were not reused.' }
     if ([IO.File]::ReadAllText((Join-Path $snapshot 'ui\rust\Cargo.lock')) -ne $snapshotLock -or
         [IO.File]::ReadAllText((Join-Path $snapshot 'core\rust\Cargo.lock')) -ne 'backend source lock') { throw 'Workspace lock caches were mixed.' }
+    # A cached stale graph must be reconciled in the snapshot before strict
+    # validation. Manifest-only metadata would incorrectly accept this fixture.
+    $cachedCore = Join-Path $outputRoot ('cache\locks\' + (Get-DependencyFingerprint) + '.core.lock')
+    [IO.File]::WriteAllText($cachedCore,'stale backend dependency graph')
+    $cargoCalls.Clear()
+    Initialize-WorkspaceLocks $snapshot
+    if ([IO.File]::ReadAllText((Join-Path $snapshot 'core\rust\Cargo.lock')) -ne 'resolved backend dependency graph' -or
+        [IO.File]::ReadAllText($cachedCore) -ne 'resolved backend dependency graph') { throw 'Stale backend dependencies were not reconciled before tests.' }
+    if ([IO.File]::ReadAllText($coreLock) -ne 'backend source lock') { throw 'Lock preparation changed the checkout seed.' }
+    # The prepared cache is reused even when the snapshot has an older source seed.
+    [IO.File]::WriteAllText((Join-Path $snapshot 'core\rust\Cargo.lock'),'backend source lock')
+    Initialize-WorkspaceLocks $snapshot
+    if ([IO.File]::ReadAllText((Join-Path $snapshot 'core\rust\Cargo.lock')) -ne 'resolved backend dependency graph') { throw 'A stale source seed replaced the prepared cache.' }
+    $failLockResolution=$true
+    $lockFailure=$false
+    try { Initialize-WorkspaceLocks $snapshot } catch {
+        if ($_.Exception.Message -notlike 'Dependency lock preparation failed*') { throw }
+        $lockFailure=$true
+    } finally { $failLockResolution=$false }
+    if (!$lockFailure -or [IO.File]::ReadAllText($cachedCore) -ne 'resolved backend dependency graph') { throw 'Dependency resolution failure was ignored or replaced the validated cache.' }
+    Write-Host 'PASS: stale dependency graphs are repaired before locked tests; failures preserve cache/source and stop preparation (Cargo mocked).'
     # A new dependency fingerprint with no cached/source locks resolves both.
     [IO.File]::WriteAllText($coreManifest,'[workspace] # changed dependencies')
     Remove-Item -LiteralPath (Join-Path $snapshot 'ui\rust\Cargo.lock'),(Join-Path $snapshot 'core\rust\Cargo.lock')
@@ -406,7 +436,14 @@ try {
     Initialize-WorkspaceLocks $snapshot
     if (@($cargoCalls | Where-Object { $_[0] -eq 'generate-lockfile' }).Count -ne 2) { throw 'Missing locks were not generated for both workspaces.' }
     $metadataCalls = @($cargoCalls | Where-Object { $_[0] -eq 'metadata' })
-    if ($metadataCalls.Count -ne 2 -or @($metadataCalls | Where-Object { $_ -notcontains '--locked' }).Count) { throw 'Workspace lock validation was skipped.' }
+    if ($metadataCalls.Count -ne 4 -or
+        @($metadataCalls | Where-Object { $_ -contains '--locked' }).Count -ne 2 -or
+        @($metadataCalls | Where-Object { $_ -contains '--no-deps' }).Count) { throw 'Full dependency resolution and strict lock validation were skipped.' }
+    foreach ($workspace in Get-RustTestWorkspaces) {
+        $manifest = Join-Path $snapshot ($workspace.path + '\Cargo.toml')
+        $calls = @($metadataCalls | Where-Object { $_ -contains $manifest })
+        if ($calls.Count -ne 2 -or $calls[0] -contains '--locked' -or $calls[1] -notcontains '--locked') { throw 'Strict validation ran before lock preparation.' }
+    }
     $cargoCalls.Clear()
     Invoke-RustWorkspaceTests $realSourceRoot
     $testCalls = @($cargoCalls | Where-Object { $_[0] -eq 'test' })
