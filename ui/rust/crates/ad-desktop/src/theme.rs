@@ -308,11 +308,7 @@ impl Theme {
                 rect.right() - 52.0,
                 rect.top() + padding + title_galley.size().y * 0.5,
             );
-            ui.painter().circle_filled(
-                dot,
-                3.0,
-                c.information,
-            );
+            ui.painter().circle_filled(dot, 3.0, c.information);
             ui.painter().text(
                 dot + egui::vec2(7.0, 0.0),
                 egui::Align2::LEFT_CENTER,
