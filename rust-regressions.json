@@ -2253,6 +2253,18 @@
           "package": "ad-desktop-model",
           "source": "ui/rust/crates/ad-desktop-model/src/files.rs",
           "test": "filenames_and_terminal_paths_cannot_escape_their_intended_role"
+        },
+        {
+          "phase": "windows",
+          "package": "ad-ssh",
+          "source": "core/rust/crates/ad-ssh/src/client.rs",
+          "test": "non_utf8_names_do_not_break_listing_or_become_lossy_paths"
+        },
+        {
+          "phase": "linux",
+          "package": "ad-ssh",
+          "source": "core/rust/crates/ad-ssh/src/client.rs",
+          "test": "non_utf8_names_do_not_break_listing_or_become_lossy_paths"
         }
       ],
       "liveAcceptance": "Native editor consumes UTF-8/UTF-16/BOM model and preserves bytes/line endings; run round-trip fixtures."
@@ -3453,6 +3465,30 @@
           "package": "agent-wayland",
           "source": "core/rust/crates/agent-wayland/src/compositor.rs",
           "test": "captures_pixels_from_a_real_x11_window"
+        },
+        {
+          "phase": "windows",
+          "package": "ad-desktop",
+          "source": "ui/rust/crates/ad-desktop/src/remote_keypad.rs",
+          "test": "keypad_operators_keep_physical_identity_and_gui_aliases_are_consumed_once"
+        },
+        {
+          "phase": "windows",
+          "package": "ad-stream-protocol",
+          "source": "core/rust/crates/ad-stream-protocol/src/lib.rs",
+          "test": "modifier_snapshots_do_not_double_inject_physical_edges_or_swallow_right_shift"
+        },
+        {
+          "phase": "linux",
+          "package": "ad-stream-protocol",
+          "source": "core/rust/crates/ad-stream-protocol/src/lib.rs",
+          "test": "modifier_snapshots_do_not_double_inject_physical_edges_or_swallow_right_shift"
+        },
+        {
+          "phase": "windows",
+          "package": "ad-desktop",
+          "source": "ui/rust/crates/ad-desktop/src/remote_keyboard.rs",
+          "test": "repeated_hook_failures_use_gui_forwarding_with_bounded_retry_frequency"
         }
       ],
       "liveAcceptance": "R6 source preserves physical Windows keypad/sided modifiers/AltGr/Win/menu/Print/Pause, lock flags, repeat, native mouse order and focus/lease release; exact foreground routing excludes injected events and toolbar/other windows. Existing IME path retains agent capability limits. Compile source regressions and verify live keyboard/drag/system shortcuts under R12. Mouse contract repairs add required client-route parity, wire/evdev mappings, Wayland axis frames and a real X11 application button/wheel bridge check. Run native checks during the next build, then manually compare mouse clicks, scrolling and EDA zoom in tab/fullscreen/all-monitor modes."
@@ -3525,9 +3561,99 @@
           "package": "ad-desktop",
           "source": "ui/rust/crates/ad-desktop/src/remote_presentation.rs",
           "test": "external_desktops_remain_registered_when_another_connection_is_selected"
+        },
+        {
+          "phase": "windows",
+          "package": "ad-desktop",
+          "source": "ui/rust/crates/ad-desktop/src/remote_view.rs",
+          "test": "presentation_resizes_use_new_textures_and_reject_unsupported_frames"
+        },
+        {
+          "phase": "windows",
+          "package": "ad-desktop",
+          "source": "ui/rust/crates/ad-desktop/src/crash_diagnostics.rs",
+          "test": "graphics_crash_details_are_bounded_and_redacted"
+        },
+        {
+          "phase": "windows",
+          "package": "ad-stream-protocol",
+          "source": "core/rust/crates/ad-stream-protocol/src/window_stream.rs",
+          "test": "window_stream_preserves_exact_pixels_and_rejects_partial_or_stale_images"
+        },
+        {
+          "phase": "linux",
+          "package": "ad-stream-protocol",
+          "source": "core/rust/crates/ad-stream-protocol/src/window_stream.rs",
+          "test": "window_stream_preserves_exact_pixels_and_rejects_partial_or_stale_images"
+        },
+        {
+          "phase": "linux",
+          "package": "agent-wayland",
+          "source": "core/rust/crates/agent-wayland/src/window_mirror.rs",
+          "test": "window_capture_converts_padded_truecolour_without_channel_loss"
+        },
+        {
+          "phase": "linux",
+          "package": "agent-wayland",
+          "source": "core/rust/crates/agent-wayland/src/window_mirror.rs",
+          "test": "window_mirror_pipe_read_can_expire_without_closing_stdin"
+        },
+        {
+          "phase": "linux",
+          "package": "agent-wayland",
+          "source": "core/rust/crates/agent-wayland/src/host_desktop.rs",
+          "test": "host_xfwm_draws_decorations_and_handles_input_and_resize"
+        },
+        {
+          "phase": "windows",
+          "package": "ad-desktop",
+          "source": "ui/rust/crates/ad-desktop/src/remote_application_worker.rs",
+          "test": "application_helper_command_is_session_bound_and_rejects_shell_fragments"
+        },
+        {
+          "phase": "windows",
+          "package": "ad-desktop",
+          "source": "ui/rust/crates/ad-desktop/src/remote_application_worker.rs",
+          "test": "application_transport_rejects_oversized_or_wrong_identity_packets"
+        },
+        {
+          "phase": "windows",
+          "package": "ad-desktop",
+          "source": "ui/rust/crates/ad-desktop/src/remote_applications.rs",
+          "test": "application_view_stays_registered_and_close_only_stops_viewing"
+        },
+        {
+          "phase": "windows",
+          "package": "ad-desktop",
+          "source": "ui/rust/crates/ad-desktop/src/remote_application_view.rs",
+          "test": "application_pixels_are_not_magnified_by_container_or_ui_scale"
+        },
+        {
+          "phase": "windows",
+          "package": "ad-stream-protocol",
+          "source": "core/rust/crates/ad-stream-protocol/src/window_stream.rs",
+          "test": "menu_packets_preserve_signed_offsets_and_reject_unbounded_or_duplicate_layers"
+        },
+        {
+          "phase": "linux",
+          "package": "ad-stream-protocol",
+          "source": "core/rust/crates/ad-stream-protocol/src/window_stream.rs",
+          "test": "menu_packets_preserve_signed_offsets_and_reject_unbounded_or_duplicate_layers"
+        },
+        {
+          "phase": "linux",
+          "package": "agent-wayland",
+          "source": "core/rust/crates/agent-wayland/src/window_popups.rs",
+          "test": "menus_require_an_application_owner_and_do_not_include_other_desktop_windows"
+        },
+        {
+          "phase": "windows",
+          "package": "ad-desktop",
+          "source": "ui/rust/crates/ad-desktop/src/remote_application_view.rs",
+          "test": "menu_origin_adds_client_and_signed_popup_offsets_without_scaling_the_app"
         }
       ],
-      "liveAcceptance": "R6 source uses native physical monitor geometry and window placement, mixed DPI/negative origins, full host layouts on every tab/current/all transition, even/protocol-bounded sizes and unplugged-device fallback. Compile and verify host window repositioning, pointer alignment and hotplug under R12."
+      "liveAcceptance": "R6 source uses native physical monitor geometry and window placement, mixed DPI/negative origins, full host layouts on every tab/current/all transition, even/protocol-bounded sizes and unplugged-device fallback. Compile and verify host window repositioning, pointer alignment and hotplug under R12. Selected-window mirror remains a local prototype: verify exact colours under occlusion, focus/keyboard/mouse and resize, disposal without app termination, tab switching and connection-specific VPN. Window-family dialogs, native keyboard capture, hidden-original behavior and measured latency remain incomplete."
     },
     {
       "id": "desktop.toolbar",
@@ -3693,6 +3819,12 @@
           "package": "ad-desktop",
           "source": "ui/rust/crates/ad-desktop/src/remote_frames.rs",
           "test": "partial_uploads_preserve_colours_and_fall_back_after_skips_or_resize"
+        },
+        {
+          "phase": "windows",
+          "package": "ad-desktop",
+          "source": "ui/rust/crates/ad-desktop/src/remote_clipboard.rs",
+          "test": "stalled_native_clipboard_cannot_block_submission_or_accumulate_unbounded_jobs"
         }
       ],
       "liveAcceptance": "Production clipboard bridge, focus-scoped local polling and actual frame capture wired; live loop/encoding/clipboard checks remain."
@@ -3825,6 +3957,24 @@
           "package": "ad-desktop",
           "source": "ui/rust/crates/ad-desktop/src/desktop_recovery.rs",
           "test": "recovery_respects_username_consent_and_binds_the_account"
+        },
+        {
+          "phase": "windows",
+          "package": "ad-desktop",
+          "source": "ui/rust/crates/ad-desktop/src/remote.rs",
+          "test": "channel_close_races_preserve_the_recorded_transport_failure"
+        },
+        {
+          "phase": "windows",
+          "package": "ad-desktop",
+          "source": "ui/rust/crates/ad-desktop/src/remote.rs",
+          "test": "failure_diagnostics_read_only_the_current_agents_bounded_log"
+        },
+        {
+          "phase": "windows",
+          "package": "ad-desktop",
+          "source": "ui/rust/crates/ad-desktop/src/remote.rs",
+          "test": "waking_after_idle_does_not_burst_missed_heartbeats"
         }
       ],
       "liveAcceptance": "R1: cancellation owns bounded launch/partial handshake, rolls back positively identified fresh agents and preserves existing desktops; unclaimed launches expire. Duplicate IDs persist before launch and reopen through Saved desktop tabs; confirmed End removes records. Compile and validate live cancellation/restart/termination."
@@ -5388,6 +5538,24 @@
         }
       ],
       "liveAcceptance": "Compile and run the registered fixtures with the build kit. Verify log scrolling, cancel/apply, both theme palettes, import/export, application scaling, startup and preserved credentials in the packaged application."
+    },
+    {
+      "id": "sessions.server-clock",
+      "checks": [
+        {
+          "phase": "windows",
+          "package": "ad-desktop",
+          "source": "ui/rust/crates/ad-desktop/src/server_clock.rs",
+          "test": "clock_displays_only_fresh_server_values_and_clears_on_disconnect"
+        },
+        {
+          "phase": "windows",
+          "package": "ad-desktop",
+          "source": "ui/rust/crates/ad-desktop/src/server_clock.rs",
+          "test": "clock_uses_server_response_and_closes_its_non_terminal_channel"
+        }
+      ],
+      "liveAcceptance": "Verify the selected SSH, SSH+X11, SFTP and desktop connection shows server-local time and clears on disconnect, server silence and tab changes. Clock probes show SSH liveness, not health of every remote application."
     }
   ],
   "originalSuites": [

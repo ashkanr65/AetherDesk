@@ -31,13 +31,17 @@ mod profile_store;
 mod r12_acceptance;
 mod r12_ui;
 mod remote;
+mod remote_applications;
+mod remote_clipboard;
 mod remote_frames;
 mod remote_geometry;
 mod remote_input;
 mod remote_keyboard;
+mod remote_keypad;
 mod remote_mouse;
 mod remote_toolbar;
 mod remote_view;
+mod server_clock;
 mod session;
 mod session_form;
 mod storage;
@@ -1096,7 +1100,10 @@ impl eframe::App for RustDesktop {
                         },
                     );
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.label(chrono::Local::now().format("%H:%M:%S").to_string());
+                        let time=self.workspace.selected.and_then(|index|self.workspace.tabs.get(index))
+                            .map(|tab|tab.server_time()).unwrap_or_else(||"--:--:--".into());
+                        ui.label(time).on_hover_text("Server time from the active connection. Clears after 3 seconds without a reply.");
+                        ui.ctx().request_repaint_after(std::time::Duration::from_millis(250));
                     });
                 });
             });
@@ -1445,6 +1452,7 @@ fn main() -> eframe::Result {
         options,
         Box::new(|creation| {
             graphics::log_adapter(creation);
+            remote_keypad::install();
             let app = RustDesktop::default();
             creation.egui_ctx.set_fonts(theme::font_definitions());
             creation

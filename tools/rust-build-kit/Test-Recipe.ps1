@@ -36,6 +36,7 @@ foreach($feature in $catalog.features){foreach($check in $feature.checks){
 }}
 $linuxRecipe=[IO.File]::ReadAllText((Join-Path $sourceRoot 'agent/linux/Dockerfile.bundle'))
 if([regex]::Matches($linuxRecipe,'-p ad-display-decoder -- --(?:list|test-threads=1)').Count -ne 2){throw 'Linux decoder regressions must be registered and executed by the container recipe.'}
+if([regex]::Matches($linuxRecipe,'-p ad-stream-protocol -p ad-display-decoder -- --(?:list|test-threads=1)').Count -ne 2){throw 'Selected-window protocol regressions must be listed and executed on Linux.'}
 if (!$linuxRecipe.Contains('COPY tools/rust-build-kit/test_xwayland_download.py /tmp/test_xwayland_download.py') -or
     !$linuxRecipe.Contains('AETHERDESK_XWAYLAND_SCRIPT=/tmp/build-xwayland.sh python3.9 /tmp/test_xwayland_download.py')) {
     throw 'Linux source-download regressions must run before downloading/building Xwayland.'
@@ -81,6 +82,9 @@ try { Assert-SshClientModulePaths $badModuleLayout } catch {
 }
 if (!$badLayoutRejected) { throw 'The previously broken transfer-module declaration was accepted.' }
 Write-Host 'PASS: SSH client module paths resolve in snapshots; missing sibling-path regression rejected.'
+foreach($required in @('core/rust/crates/ad-stream-protocol/src/window_stream.rs','core/rust/crates/agent-wayland/src/window_mirror.rs','core/rust/crates/agent-wayland/src/window_popups.rs','ui/rust/crates/ad-desktop/src/remote_keypad.rs','ui/rust/crates/ad-desktop/src/server_clock.rs','ui/rust/crates/ad-desktop/src/remote_clipboard.rs','ui/rust/crates/ad-desktop/src/remote_applications.rs','ui/rust/crates/ad-desktop/src/remote_application_worker.rs','ui/rust/crates/ad-desktop/src/remote_application_view.rs')) {
+    if($realFiles -notcontains $required){throw "Snapshot omitted a remote application module: $required"}
+}
 foreach ($required in @('core/rust/crates/ad-ssh/src/resumable_file.rs','ui/rust/crates/ad-desktop/src/terminal_settings.rs','ui/rust/crates/ad-desktop/src/terminal_presets.json','ui/rust/crates/ad-desktop/src/terminal_rules.json','ui/rust/crates/ad-desktop/src/file_workspace.rs','ui/rust/crates/ad-desktop/src/working_copies.rs','ui/rust/crates/ad-desktop/src/comparison.rs','ui/rust/crates/ad-desktop/src/transfers.rs','ui/rust/crates/ad-desktop/src/theme.rs','ui/rust/crates/ad-desktop/src/migration.rs','ui/rust/crates/ad-desktop/src/assistant_history.rs','ui/rust/crates/ad-desktop/src/ai_models.rs')) {
     if ($realFiles -notcontains $required) {throw "Snapshot omitted a requested feature or theme asset: $required"}
 }

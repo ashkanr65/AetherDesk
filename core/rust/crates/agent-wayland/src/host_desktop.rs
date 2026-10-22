@@ -346,6 +346,19 @@ mod tests {
             .reply()
             .unwrap()
             .parent;
+        // The independent view keeps this same client, display and WM frame.
+        // Exercise real Composite capture while another window covers it.
+        crate::window_mirror::verify_existing_window(
+            RustConnection::connect_to_stream_with_auth_info(
+                connect(),
+                0,
+                b"MIT-MAGIC-COOKIE-1".to_vec(),
+                cookie.clone(),
+            )
+            .unwrap(),
+            &connection,
+            window,
+        );
         assert_ne!(
             parent, screen.root,
             "application must be reparented inside the host's decoration frame"

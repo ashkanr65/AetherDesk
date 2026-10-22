@@ -45,12 +45,30 @@ fn configure_selected(options: &mut eframe::NativeOptions, renderer: Renderer) {
             .backend_options
             .dx12
             .shader_compiler = eframe::wgpu::Dx12Compiler::Fxc;
+        // egui defaults to 8192 even when DX12 supports wider desktops.
+        // Match the protocol's per-side ceiling, within the real adapter limit.
+        let default_descriptor = setup.device_descriptor.clone();
+        setup.device_descriptor = std::sync::Arc::new(move |adapter| {
+            let mut descriptor = default_descriptor(adapter);
+            descriptor.required_limits.max_texture_dimension_2d =
+                adapter.limits().max_texture_dimension_2d.min(16384);
+            descriptor
+        });
         options.wgpu_options.wgpu_setup = setup.into();
     }
     tracing::info!(target: "window.graphics", requested=?renderer, selected=?options.renderer, "Client renderer selected");
 }
 pub fn log_adapter(creation: &eframe::CreationContext<'_>) {
     if let Some(state) = &creation.wgpu_render_state {
+        // Preserve the actual validation diagnostic before the fatal panic.
+        // The default handler only logs "fatal"; the panic hook intentionally
+        // omits arbitrary payloads, which previously hid this crash's cause.
+        state.device.on_uncaptured_error(std::sync::Arc::new(|error: eframe::wgpu::Error| {
+            let detail = crate::logging::redact("graphics_error", &error.to_string());
+            crate::crash_diagnostics::graphics_failure(&detail);
+            tracing::error!(target: "window.graphics", error=%detail, "Fatal client graphics error");
+            panic!("Fatal client graphics error; see the crash log");
+        }));
         let info = state.adapter.get_info();
         tracing::info!(target:"window.graphics", backend=?info.backend, adapter=%info.name, driver=%info.driver, driver_info=%info.driver_info, "Client graphics adapter");
     }

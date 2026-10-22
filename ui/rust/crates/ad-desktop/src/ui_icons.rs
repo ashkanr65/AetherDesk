@@ -3,6 +3,7 @@ use eframe::egui::{self, Color32, Rect, Stroke};
 
 #[derive(Clone, Copy)]
 pub enum Icon {
+    Applications,
     Tab,
     Monitor,
     Monitors,
@@ -222,6 +223,11 @@ pub fn draw(p: &egui::Painter, rect: Rect, icon: Icon, color: Color32) {
         );
     };
     match icon {
+        Icon::Applications => {
+            border((0.03, 0.27), (0.72, 0.94));
+            border((0.29, 0.03), (0.97, 0.68));
+            line((0.37, 0.22), (0.88, 0.22));
+        }
         Icon::Resolution => {
             border((0.06, 0.13), (0.94, 0.78));
             line((0.35, 0.94), (0.65, 0.94));

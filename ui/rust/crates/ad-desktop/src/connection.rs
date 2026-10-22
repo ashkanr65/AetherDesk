@@ -80,12 +80,17 @@ pub enum Command {
 }
 
 pub struct Connection {
+    clock: crate::server_clock::Clock,
     commands: mpsc::Sender<Command>,
     pub events: mpsc::Receiver<Event>,
     cancel: CancellationToken,
     finished: Arc<std::sync::atomic::AtomicBool>,
 }
 impl Connection {
+    pub fn server_time(&self) -> String {
+        self.clock
+            .text(!self.cancel.is_cancelled() && !self.is_finished())
+    }
     pub fn send(&self, command: Command) -> Result<(), String> {
         self.commands
             .try_send(command)
@@ -151,6 +156,8 @@ impl Connections {
         let (events, output) = mpsc::channel(128);
         let cancel = self.cancel.child_token();
         let worker_cancel = cancel.clone();
+        let clock = crate::server_clock::Clock::default();
+        let worker_clock = clock.clone();
         let x11 = self.x11.clone();
         let finished = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let finish_guard = Finished(finished.clone(), ctx.clone());
@@ -172,6 +179,7 @@ impl Connections {
                     },
                     worker_cancel,
                     x11,
+                    worker_clock,
                 )
                 .await;
             });
@@ -179,6 +187,7 @@ impl Connections {
         tasks.retain(|task| !task.is_finished());
         tasks.push(task);
         Ok(Connection {
+            clock,
             commands: send,
             events: output,
             cancel,
@@ -301,6 +310,7 @@ async fn run(
     events: EventSink,
     cancel: CancellationToken,
     x11_runtime: Arc<crate::x11::X11Runtime>,
+    clock: crate::server_clock::Clock,
 ) {
     let shell = matches!(kind, ConnectionType::SshTerminal | ConnectionType::SshX11);
     let mut x11 = if kind == ConnectionType::SshX11 {
@@ -407,6 +417,8 @@ async fn run(
         return;
     }
     events.send(Event::Authenticated(Arc::new(session.clone())));
+    let _clock =
+        crate::server_clock::Lease::start(session.clone(), clock, events.ctx.clone(), &cancel);
     let mut navigation = crate::terminal_navigation::Navigation::default();
     let mut jobs = JoinSet::new();
     let mut progress = Vec::<Arc<FileProgress>>::new();
@@ -834,6 +846,7 @@ mod tests {
         let (_send, events) = mpsc::channel(1);
         let cancel = CancellationToken::new();
         let connection = Connection {
+            clock: crate::server_clock::Clock::default(),
             commands,
             events,
             cancel: cancel.clone(),

@@ -1201,22 +1201,44 @@ where
                 ));
             }
             for _ in 0..count {
-                let name = String::from_utf8(cursor.read_string()?.to_vec())
-                    .map_err(|_| sftp_error("server filename is not valid UTF-8"))?;
-                if name.contains('/') || name.contains('\0') {
+                let raw_name = cursor.read_string()?;
+                if raw_name.is_empty() || raw_name.contains(&b'/') || raw_name.contains(&0) {
                     return Err(sftp_error("invalid directory entry name"));
                 }
                 let long_name = String::from_utf8_lossy(cursor.read_string()?).into_owned();
                 let attrs = cursor.read_attrs()?;
-                if name == "." || name == ".." {
+                let name = std::str::from_utf8(raw_name).ok();
+                if matches!(name, Some("." | "..")) {
                     continue;
                 }
                 if entries.len() >= 100_000 {
                     return Err(sftp_error("directory entry limit exceeded"));
                 }
+                let (name, entry_path, kind) = match name {
+                    Some(name) => (
+                        name.to_owned(),
+                        join_remote_path(path, name),
+                        attrs.kind(&long_name),
+                    ),
+                    None => {
+                        warn!("Directory contains a non-UTF-8 filename; listing it as unavailable without changing its bytes");
+                        (
+                            format!(
+                                "[Non-UTF-8 filename: {}]",
+                                raw_name
+                                    .iter()
+                                    .take(48)
+                                    .map(|b| format!("{b:02X}"))
+                                    .collect::<String>()
+                            ),
+                            String::new(),
+                            "unsupported-name".to_owned(),
+                        )
+                    }
+                };
                 entries.push(SftpEntry {
-                    path: join_remote_path(path, &name),
-                    kind: attrs.kind(&long_name),
+                    path: entry_path,
+                    kind,
                     name,
                     size: attrs.size,
                     permissions: attrs.permissions,
@@ -1661,6 +1683,80 @@ fn sftp_error(message: impl Into<String>) -> CoreError {
 #[cfg(test)]
 mod sftp_tests {
     use super::*;
+
+    #[tokio::test]
+    async fn non_utf8_names_do_not_break_listing_or_become_lossy_paths() {
+        async fn packet(s: &mut tokio::io::DuplexStream) -> (u8, Vec<u8>) {
+            let n = s.read_u32().await.unwrap();
+            assert!((1..=4096).contains(&n));
+            let kind = s.read_u8().await.unwrap();
+            let mut data = vec![0; n as usize - 1];
+            s.read_exact(&mut data).await.unwrap();
+            (kind, data)
+        }
+        async fn reply(s: &mut tokio::io::DuplexStream, kind: u8, data: Vec<u8>) {
+            s.write_u32(data.len() as u32 + 1).await.unwrap();
+            s.write_u8(kind).await.unwrap();
+            s.write_all(&data).await.unwrap();
+        }
+        let (client, mut peer) = tokio::io::duplex(4096);
+        let task = tokio::spawn(async move {
+            assert_eq!(packet(&mut peer).await.0, SSH_FXP_INIT);
+            reply(&mut peer, SSH_FXP_VERSION, 3u32.to_be_bytes().to_vec()).await;
+            for step in 0..4 {
+                let (kind, data) = packet(&mut peer).await;
+                let id = &data[..4];
+                let mut result = id.to_vec();
+                match step {
+                    0 => {
+                        assert_eq!(kind, SSH_FXP_OPENDIR);
+                        put_string(&mut result, b"handle").unwrap();
+                        reply(&mut peer, SSH_FXP_HANDLE, result).await;
+                    }
+                    1 => {
+                        assert_eq!(kind, SSH_FXP_READDIR);
+                        put_u32(&mut result, 3);
+                        for name in [
+                            b"before.txt".as_slice(),
+                            b"old-\xff.txt",
+                            "after-ñ.txt".as_bytes(),
+                        ] {
+                            put_string(&mut result, name).unwrap();
+                            put_string(&mut result, b"").unwrap();
+                            put_u32(&mut result, 0);
+                        }
+                        reply(&mut peer, SSH_FXP_NAME, result).await;
+                    }
+                    _ => {
+                        assert_eq!(
+                            kind,
+                            if step == 2 {
+                                SSH_FXP_READDIR
+                            } else {
+                                SSH_FXP_CLOSE
+                            }
+                        );
+                        put_u32(&mut result, if step == 2 { SSH_FX_EOF } else { SSH_FX_OK });
+                        put_string(&mut result, b"").unwrap();
+                        put_string(&mut result, b"").unwrap();
+                        reply(&mut peer, SSH_FXP_STATUS, result).await;
+                    }
+                }
+            }
+        });
+        let mut protocol = SftpProtocol::connect(client).await.unwrap();
+        let entries = protocol.read_dir("/home/test").await.unwrap();
+        assert_eq!(entries.len(), 3);
+        let invalid = entries
+            .iter()
+            .find(|e| e.kind == "unsupported-name")
+            .unwrap();
+        assert!(invalid.path.is_empty());
+        assert!(!invalid.name.contains('\u{fffd}'));
+        assert!(entries.iter().any(|e| e.path == "/home/test/before.txt"));
+        assert!(entries.iter().any(|e| e.path == "/home/test/after-ñ.txt"));
+        task.await.unwrap();
+    }
 
     #[test]
     fn parses_sftp_v3_attributes() {

@@ -7,4 +7,5 @@ mod host_clipboard;
 mod host_desktop;
 mod host_windows;
 mod terminal_flow_control;
+pub mod window_mirror;
 pub mod xwayland;

@@ -902,6 +902,9 @@ async fn prepare(job: &Job, session: &SshSession, p: &Arc<FileProgress>) -> Resu
                 let result = request(session, "list", &remote, p).await?;
                 let entries = result.entries.ok_or("Server directory listing missing")?;
                 for entry in entries {
+                    if entry.path.is_empty() || entry.kind == "unsupported-name" {
+                        return Err("Folder contains a non-UTF-8 server filename; transfer refused to avoid an incomplete copy".into());
+                    }
                     let name = ad_desktop_model::files::safe_local_name(&entry.name);
                     if name != entry.name {
                         return Err(format!(

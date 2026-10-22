@@ -90,6 +90,7 @@ impl RemoteView {
     }
     pub fn controls(&mut self, ui: &mut egui::Ui) {
         use crate::ui_icons::{button, Icon};
+        self.applications.button(ui);
         if self.mode == Mode::Tab {
             if button(ui, Icon::Monitor, "Use this monitor", false).clicked() {
                 self.set_mode(Mode::Current);
@@ -175,6 +176,13 @@ impl RemoteView {
     /// Register presentation windows once per root pass, including connections
     /// whose tab is not selected. Egui closes an unregistered child viewport.
     pub fn external_window(&mut self, ctx: &egui::Context) {
+        self.external_window_with_placement(ctx, crate::remote_geometry::place);
+    }
+    fn external_window_with_placement(
+        &mut self,
+        ctx: &egui::Context,
+        mut place: impl FnMut(isize, crate::remote_geometry::PhysicalRect, &str) -> Result<(), String>,
+    ) {
         if self.mode == Mode::Tab {
             return;
         }
@@ -184,13 +192,26 @@ impl RemoteView {
             .with_title(&self.window_title)
             .with_decorations(false);
         if let Some(layout) = self.fullscreen_layout() {
+            let limit = ctx.input(|i| i.max_texture_side) as u64;
+            if u64::from(layout.bounds.width) > limit
+                || u64::from(layout.bounds.height) > limit
+                || u64::from(layout.width) > limit
+                || u64::from(layout.height) > limit
+            {
+                self.error = Some(format!(
+                    "This monitor arrangement exceeds the graphics limit of {limit} pixels per side. Use one monitor or reduce the remote resolution."
+                ));
+                self.set_mode(Mode::Tab);
+                return;
+            }
             if self.window.is_none() {
                 let dpi = crate::remote_geometry::select(
                     &self.monitor_snapshot,
                     self.selected_monitor.as_deref(),
                 )
                 .map_or(96, |m| m.dpi) as f32
-                    / 96.0;
+                    / 96.0
+                    * ctx.zoom_factor();
                 builder = builder
                     .with_position(egui::pos2(
                         layout.bounds.x as f32 / dpi,
@@ -208,6 +229,7 @@ impl RemoteView {
             self.set_mode(Mode::Tab);
             return;
         }
+        let placement = self.fullscreen_layout().map(|layout| layout.bounds);
         ctx.show_viewport_immediate(self.id, builder, |ctx, _| {
             if ctx.input(|i| i.viewport().close_requested()) {
                 self.set_mode(Mode::Tab);
@@ -215,14 +237,6 @@ impl RemoteView {
             }
             if self.window.is_none() {
                 self.window = crate::remote_geometry::window(&self.window_title);
-            }
-            if let (Some(hwnd), Some(layout)) = (self.window, self.fullscreen_layout()) {
-                if let Err(error) =
-                    crate::remote_geometry::place(hwnd, layout.bounds, &self.window_title)
-                {
-                    self.error = Some(error);
-                    self.window = None;
-                }
             }
             egui::CentralPanel::default()
                 .frame(egui::Frame::NONE)
@@ -236,6 +250,18 @@ impl RemoteView {
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             }
         });
+        // The immediate renderer has submitted/presented this frame now.
+        // Never resize its HWND inside the UI callback: that changes the DX12
+        // backbuffer before eframe has handled the window's resize event.
+        // Only place the bounds rendered above, not a mode selected mid-frame.
+        if self.mode != Mode::Tab {
+            if let (Some(hwnd), Some(bounds)) = (self.window, placement) {
+                if let Err(error) = place(hwnd, bounds, &self.window_title) {
+                    self.error = Some(error);
+                    self.window = None;
+                }
+            }
+        }
     }
     pub(super) fn secure_keys(&mut self) {
         self.release();
@@ -497,10 +523,14 @@ mod tests {
         let recorded = registered.clone();
         let close_next = Rc::new(Cell::new(None));
         let close_request = close_next.clone();
+        let rendering = Rc::new(Cell::new(false));
+        let inside_renderer = rendering.clone();
         egui::Context::set_immediate_viewport_renderer(move |ctx, mut viewport| {
+            inside_renderer.set(true);
             recorded.borrow_mut().push(viewport.ids.this);
             let mut input = egui::RawInput {
                 viewport_id: viewport.ids.this,
+                max_texture_side: Some(16384),
                 focused: false,
                 screen_rect: Some(egui::Rect::from_min_size(
                     egui::Pos2::ZERO,
@@ -523,6 +553,7 @@ mod tests {
                 },
             );
             let _ = ctx.run(input, |ctx| (viewport.viewport_ui_cb)(ctx));
+            inside_renderer.set(false);
         });
         let mut views = [Mode::Current, Mode::Tab, Mode::All].map(|mode| {
             let mut view =
@@ -573,6 +604,78 @@ mod tests {
             }
             assert!(views.iter().all(|view| !view.captures_keyboard()));
         }
+        // Exercise tab -> fullscreen -> all monitors and the reverse using
+        // mixed-DPI/negative-origin fixtures. Native geometry must run only
+        // after the immediate renderer (including its GPU work) has returned.
+        views[0]
+            .monitor_snapshot
+            .push(crate::remote_geometry::Monitor {
+                device: "high-dpi-fixture".into(),
+                rect: crate::remote_geometry::PhysicalRect {
+                    x: 0,
+                    y: -200,
+                    width: 2880,
+                    height: 1800,
+                },
+                dpi: 144,
+                primary: false,
+            });
+        for mode in [
+            Mode::Current,
+            Mode::All,
+            Mode::Current,
+            Mode::Tab,
+            Mode::All,
+            Mode::Tab,
+        ] {
+            views[0].set_mode(mode);
+            views[0].selected_monitor = Some("fullscreen-fixture".into());
+            let expected = views[0].fullscreen_layout().map(|layout| layout.bounds);
+            if mode != Mode::Tab {
+                views[0].window = Some(1); // fake HWND: never passed to native placement
+            }
+            let mut placed = Vec::new();
+            let _ = ctx.run(
+                egui::RawInput {
+                    max_texture_side: Some(16384),
+                    focused: false,
+                    ..Default::default()
+                },
+                |ctx| {
+                    views[0].external_window_with_placement(ctx, |_, bounds, _| {
+                        assert!(!rendering.get(), "Native resize ran inside the renderer");
+                        placed.push(bounds);
+                        Ok(())
+                    });
+                },
+            );
+            assert_eq!(placed, expected.into_iter().collect::<Vec<_>>());
+            assert_eq!(
+                views[0].take_action(),
+                None,
+                "Mode switch ended the session"
+            );
+        }
+        // Reject an unsupported swapchain extent before native creation/resize.
+        views[0].set_mode(Mode::All);
+        let _ = ctx.run(
+            egui::RawInput {
+                max_texture_side: Some(2048),
+                focused: false,
+                ..Default::default()
+            },
+            |ctx| {
+                views[0].external_window_with_placement(ctx, |_, _, _| {
+                    panic!("Oversized presentation reached native placement")
+                })
+            },
+        );
+        assert!(!views[0].is_external());
+        assert!(views[0].error.as_ref().unwrap().contains("graphics limit"));
+        // Restore the original fixture for the native-close checks below.
+        views[0].mode = Mode::Current;
+        views[0].selected_monitor = Some("fullscreen-fixture".into());
+        views[0].window = None;
         // A native child close also returns to its own tab, without ending the
         // desktop session. The caller can select that tab after its render loop.
         close_next.set(Some(views[0].id));

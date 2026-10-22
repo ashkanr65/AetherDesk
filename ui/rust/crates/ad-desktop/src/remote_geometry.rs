@@ -402,6 +402,29 @@ mod windows {
         }
         Ok(())
     }
+    /// Native menu windows are owned by their application view, never globally topmost.
+    pub fn set_owner(child: isize, owner: isize) -> Result<(), String> {
+        for hwnd in [child, owner] {
+            let mut process = 0;
+            unsafe {
+                GetWindowThreadProcessId(hwnd as HWND, &mut process);
+            }
+            if process != std::process::id() {
+                return Err("Application menu window disappeared".into());
+            }
+        }
+        unsafe {
+            if GetWindowLongPtrW(child as HWND, GWLP_HWNDPARENT) == owner {
+                return Ok(());
+            }
+            SetLastError(0);
+            let previous = SetWindowLongPtrW(child as HWND, GWLP_HWNDPARENT, owner);
+            if previous == 0 && GetLastError() != 0 {
+                return Err("Cannot attach application menu window".into());
+            }
+        }
+        Ok(())
+    }
     pub fn client_size(hwnd: isize) -> Option<(u32, u32)> {
         let _dpi = DpiScope::physical();
         let mut rect: RECT = unsafe { std::mem::zeroed() };
@@ -448,6 +471,10 @@ pub fn window(_: &str) -> Option<isize> {
 }
 #[cfg(not(windows))]
 pub fn place(_: isize, _: PhysicalRect, _: &str) -> Result<(), String> {
+    Ok(())
+}
+#[cfg(not(windows))]
+pub fn set_owner(_: isize, _: isize) -> Result<(), String> {
     Ok(())
 }
 #[cfg(not(windows))]

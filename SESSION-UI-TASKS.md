@@ -1,4 +1,4 @@
-# Rust session UI corrections — 2026-10-15
+# Rust session UI corrections â€” 2026-10-15
 
 These changes apply only to AetherDesk-Rust. Compilation and package builds remain with the user.
 
@@ -15,7 +15,7 @@ These changes apply only to AetherDesk-Rust. Compilation and package builds rema
 
 Validation: source regression registry checks passed (56 behavior groups, 37 original suite mappings); changed Rust files passed formatting/syntax checks. Four new native regressions are registered for build-kit step 2. No compilation, native test execution or packaging was performed. Visual verification remains for the next user build.
 
-## Follow-up fixes — 2026-10-15
+## Follow-up fixes â€” 2026-10-15
 
 | Item | Work | Status |
 | --- | --- | --- |
@@ -42,7 +42,7 @@ history configurations. Four native tests and one interpreted PTY check were
 added to the build-kit regression coverage. No compilation, native test execution,
 application build, installer build or packaging was run for these follow-up changes.
 
-## Desktop, Files and latency fixes — 2026-10-15
+## Desktop, Files and latency fixes â€” 2026-10-15
 
 | Item | Work | Status |
 | --- | --- | --- |
@@ -80,7 +80,7 @@ Build speed has not been timed because no compilation or packaging was run.
 Existing cleanup still clears generated outputs and preserves compiler/download
 caches. Keep the output cache and Podman's WSL cache to benefit on repeat builds.
 
-## Build-kit Enter regression correction — 2026-10-15
+## Build-kit Enter regression correction â€” 2026-10-15
 
 The user's native run reported 107 passing tests, one failing dialog test and
 five intentionally ignored tests. The dialog fixture sent repeated Enter
@@ -99,7 +99,7 @@ repeat/modifier/focus guards and the required build-kit test remain enabled.
 Formatting and offline recipe/source checks passed; native rerun remains for
 the user's next build. No compilation or package build was run for this fix.
 
-## SSH heartbeat cancellation correction — 2026-10-15
+## SSH heartbeat cancellation correction â€” 2026-10-15
 
 | Item | Work | Status |
 | --- | --- | --- |
@@ -120,7 +120,7 @@ disposable local jobs and the existing container image with networking disabled;
 no SSH host, real command history or user files are involved. Source/offline
 recipe checks also passed. Run the usual build kit again to embed the fix.
 
-## Compact controls and storage cleanup — 2026-10-15
+## Compact controls and storage cleanup â€” 2026-10-15
 
 | Item | Work | Status |
 | --- | --- | --- |
@@ -150,7 +150,7 @@ mocked label-filtered Linux cleanup command. Cargo and WSL cleanup are mocked
 in these checks; no real build cache was deleted or native test run.
 
 
-## AI, display and connection follow-up — 2026-10-15
+## AI, display and connection follow-up â€” 2026-10-15
 
 | Item | Work | Status |
 | --- | --- | --- |
@@ -180,7 +180,7 @@ reported X2Go colour problem has not been reproduced; current H264/NV12 is not
 a lossless EDA path. See REMOTE-PERFORMANCE.md for the remaining acceptance work.
 
 
-## Composer regression correction — 2026-10-15
+## Composer regression correction â€” 2026-10-15
 
 | Item | Work | Status |
 | --- | --- | --- |
@@ -193,7 +193,7 @@ specific component. The test no longer assumes a hard-coded panel margin or
 identifies components by their background colour/paint order.
 
 
-## Connection controls, keyboard and AI layout — 2026-10-15
+## Connection controls, keyboard and AI layout â€” 2026-10-15
 
 | Item | Work | Status |
 | --- | --- | --- |
@@ -232,7 +232,7 @@ references and the offline recipe fixtures passed (Cargo is mocked in the recipe
 The new Rust regressions and live keyboard/UI checks have not been executed.
 
 
-## Keyboard review and alignment corrections — 2026-10-16
+## Keyboard review and alignment corrections â€” 2026-10-16
 
 | Item | Work | Status |
 | --- | --- | --- |
@@ -256,7 +256,7 @@ alignment regression is registered for the user's next build. UI changes require
 a new build before they appear in the running portable package.
 
 
-## Session-only terminal output policy — 2026-10-16
+## Session-only terminal output policy â€” 2026-10-16
 
 | Item | Work | Status |
 | --- | --- | --- |
@@ -286,7 +286,7 @@ Cargo is mocked in those offline recipe checks. All three new native Linux
 regressions and live acceptance remain for the user's build.
 
 
-## All-application keyboard recurrence — 2026-10-16
+## All-application keyboard recurrence â€” 2026-10-16
 
 | Item | Work | Status |
 | --- | --- | --- |
@@ -310,7 +310,7 @@ build. Live recovery of the old package is evidence of the symptom's recovery,
 not live verification of these source repairs.
 
 
-## AI new-chat controls and model menu — 2026-10-16
+## AI new-chat controls and model menu â€” 2026-10-16
 
 | Item | Work | Status |
 | --- | --- | --- |
@@ -338,7 +338,7 @@ references and the offline build-kit recipe passed. Cargo was mocked in the
 recipe; neither new native regression was compiled or executed. The source
 changes require the user's next build for visual and interaction acceptance.
 
-## Compact AI service management, model filters and provider errors — 2026-10-16
+## Compact AI service management, model filters and provider errors â€” 2026-10-16
 
 | Item | Work | Status |
 | --- | --- | --- |
@@ -371,7 +371,7 @@ popup that would close its parent; search/filter clicks keep the picker open.
 The added regressions and visual/provider acceptance remain pending the user's
 next build. No application package was created or replaced.
 
-## Bound the chat model popup — 2026-10-16
+## Bound the chat model popup â€” 2026-10-16
 
 | Item | Work | Status |
 | --- | --- | --- |
@@ -386,7 +386,7 @@ AC1-AC2 offline recipe passed with Cargo mocked. The new rendered regression was
 registered and source-checked, but was not compiled or executed. Rebuild and open
 the model list in chat/settings for visual acceptance; no package was replaced.
 
-## Build duration reporting and optional cache reuse — 2026-10-16
+## Build duration reporting and optional cache reuse â€” 2026-10-16
 
 | Item | Work | Status |
 | --- | --- | --- |
@@ -400,7 +400,7 @@ stage timings include worker startup; worker transcript times cover work inside
 that worker, so small differences are expected. Timers print at stage boundaries
 and on completion/failure; they are elapsed measurements, not a live ETA.
 
-## AI model-filter click freeze — 2026-10-16
+## AI model-filter click freeze â€” 2026-10-16
 
 | Item | Work | Status |
 | --- | --- | --- |
@@ -425,12 +425,12 @@ passed with Cargo mocked. The physical-click regression is registered for the
 user's native test stage; it has not been compiled or executed here. Rebuild and
 restart the client before checking the repaired provider/chat filter buttons.
 
-## Screenshot context, AI waiting indicator and remote resolution — 2026-10-16
+## Screenshot context, AI waiting indicator and remote resolution â€” 2026-10-16
 
 | Item | Work | Status |
 | --- | --- | --- |
 | AF1 | Stop treating screenshot base64 as prompt text | Source repaired. Context trimming discounts image URL payload bytes and reserves 4096 estimated vision tokens per image within the existing text heuristic. Whole user/tool turns stay together, and images still consume context. PNG pixels/data are unchanged; the separate request-size limit remains enforced. Actual provider vision tokenization remains authoritative. Native/provider acceptance pending. |
-| AF2 | Show progress in the assistant reply area | Source implemented. Animated inline spinner and Working… label appear below the latest message while waiting. They disappear on the first nonempty reply delta and stay gone across checkpoints/tool rounds after visible output. Errors, cancellation, completion and pending user approvals do not show a misleading waiting indicator. New chats/sends reset the state. Native/visual acceptance pending. |
+| AF2 | Show progress in the assistant reply area | Source implemented. Animated inline spinner and Workingâ€¦ label appear below the latest message while waiting. They disappear on the first nonempty reply delta and stay gone across checkpoints/tool rounds after visible output. Errors, cancellation, completion and pending user approvals do not show a misleading waiting indicator. New chats/sends reset the state. Native/visual acceptance pending. |
 | AF3 | Add icon-only remote resolution access in every presentation mode | Source implemented. A vector resolution icon is available in tab controls and the floating fullscreen/all-monitor dock. Its compact window lists actual virtual pixel sizes at 50/75/100/125/150/200%; unsupported choices are disabled. Tab/current/all use the same validated layout path; physical monitor placement/topology stays unchanged. Dialogs appear in the active viewport and release remote keyboard capture while open. Dock dimensions and its rendered regression include the extra control. Native/host acceptance pending. |
 | AF4 | Regression and build-kit coverage | Registered tests for large screenshot payloads without losing complete tool turns; rendered waiting text/first reply/approval/error/cancel transitions; and tab/current/all scaled layouts with unchanged physical bounds. Existing dock rotation/DPI regression exercises the new icon. User build must compile and run these tests; no application/compiler execution occurred here. |
 
@@ -456,7 +456,7 @@ debounced resolution updates continue while keyboard capture is released.
 Live screenshot/provider, animation and remote resize/input checks remain after
 the user's next build and client restart.
 
-## Connection row alignment and updater discussion — 2026-10-19
+## Connection row alignment and updater discussion â€” 2026-10-19
 
 | Item | Work | Status |
 | --- | --- | --- |
@@ -470,15 +470,15 @@ AG1 verification: Rust formatting/parser, migration inventory, regression source
 reference and whitespace checks passed. No compiler/native tests or application
 build were run. Visual acceptance remains after rebuilding/restarting the client.
 
-## Public automatic updates and frozen build recipes — 2026-10-19
+## Public automatic updates and frozen build recipes â€” 2026-10-19
 
 | Item | Work | Status |
 | --- | --- | --- |
-| AH1 | Settings → Updates and automatic checks | Source implemented: checks on, downloads off, explicit install confirmation, notes/progress, notification, persisted and reverified downloads. Public downloads require no GitHub account or shared credential. Native/visual acceptance pending. |
+| AH1 | Settings â†’ Updates and automatic checks | Source implemented: checks on, downloads off, explicit install confirmation, notes/progress, notification, persisted and reverified downloads. Public downloads require no GitHub account or shared credential. Native/visual acceptance pending. |
 | AH2 | Signed installer and portable updating | Source implemented: embedded Ed25519 key, expiry/version/target/path/size/hash checks; isolated helper DLLs; active-work gating; existing Inno installer identity; portable backup/journal and first-launch recovery. Installer failure logs retained. Full installer/portable and interrupted-upgrade acceptance pending; not claimed power-loss-proof. |
 | AH3 | Publisher identity and public distribution | Configured: local signing key protected in Windows Credential Manager and encrypted Actions secret in private AetherDesk-Rust. Public ashkanr65/AetherDesk created with download-only README. Former project retained as private archived AetherDesk-Legacy-Private-20261019. No source or binary published publicly. |
 | AH4 | Release tooling and private source push | Manual Rust release workflow and publisher-only signing/verification/draft-upload tools implemented. Both application workspace locks retained for reproducible builds. Source pushed to private main; no release build/workflow triggered. Authenticode certificate and live acceptance remain outstanding. |
-| AH5 | Repair source-change failure during packaging | Stages 2–6 now run their recipe from the verified stage-1 snapshot; checkout edits enter the next build. Snapshot tampering and mixed initial snapshots still fail. Offline fixture passed for live edits versus snapshot changes. The old step-4 log was a concurrent-edit guard, not failed X11; its X11 regression passed. |
+| AH5 | Repair source-change failure during packaging | Stages 2â€“6 now run their recipe from the verified stage-1 snapshot; checkout edits enter the next build. Snapshot tampering and mixed initial snapshots still fail. Offline fixture passed for live edits versus snapshot changes. The old step-4 log was a concurrent-edit guard, not failed X11; its X11 regression passed. |
 
 The user authorized GitHub setup/public downloads and source push. They retained
 all application compilation/building. No native compiler or application build
@@ -508,7 +508,7 @@ acknowledgement; cleanup does not retire a stage merely because the new version
 has already started. A dedicated filesystem regression is registered for this
 case and remains awaiting the user's compiler/native test stage.
 
-## Initial release preparation — 2026-10-19
+## Initial release preparation â€” 2026-10-19
 
 | Item | Work | Status |
 | --- | --- | --- |
@@ -523,13 +523,13 @@ covering a 1970 file and unchanged file hashes. This publisher-only adjustment d
 not alter the built runtime. The verified application remains the e9596cf source
 snapshot identified in AI1; no application rebuild is needed for this metadata fix.
 
-## Update acceptance candidate — 2026-10-19
+## Update acceptance candidate â€” 2026-10-19
 
 | Item | Work | Status |
 | --- | --- | --- |
 | AJ1 | Prepare a newer release for the user's upgrade test | Complete: release.json is 0.1.2 build 2; release notes distinguish prior build 1 evidence from pending build 2 validation. No application code changed. |
 | AJ2 | Build and verify build 2 | Passed: all seven user-run stages in 1:08:28; built source fingerprint 47984201d8a52be22bc85f1dc16b555b60fd07f29b415c7a4ea928172d055972 matched commit 4b9c3a4. Windows/Linux regression reports and bundled X11 passed. Existing executable passed isolated dark/light/editor checks. Signed installer/flat portable ZIP/metadata prepared and verified; all 7,158 ZIP entries match the signed inventory. All three uploaded GitHub asset SHA-256 digests and lengths match local files. Draft release 417338992 ready for review; source private. No compilation performed by the assistant. |
-| AJ3 | Publish build 2 and test real update detection | Passed: user approved normal publication; v0.1.2-build2 published publicly on 2026-10-19. Anonymous latest-release feed returns build 2. Reopened the user's existing build 1 (it had been closed), clicked Settings → Updates → Check now and observed the available update, build 2 notes and Download update button. Source remains private. |
+| AJ3 | Publish build 2 and test real update detection | Passed: user approved normal publication; v0.1.2-build2 published publicly on 2026-10-19. Anonymous latest-release feed returns build 2. Reopened the user's existing build 1 (it had been closed), clicked Settings â†’ Updates â†’ Check now and observed the available update, build 2 notes and Download update button. Source remains private. |
 | AJ4 | Test download, replacement, restart and preservation | Remaining: no download, installation or restart performed. Updates panel left open in build 1. Real portable/installer upgrades, recovery and preservation of settings/credentials/chats still need acceptance. |
 
 Build 2 release: https://github.com/ashkanr65/AetherDesk/releases/tag/v0.1.2-build2
@@ -540,14 +540,14 @@ Build 1 is running from the user's Documents folder. Build 2 is now public and
 available to eligible stable-channel users; nothing was installed during this
 detection test, and no connection was interrupted.
 
-## Independent release documentation — 2026-10-19
+## Independent release documentation â€” 2026-10-19
 
 | Item | Work | Status |
 | --- | --- | --- |
 | AK1 | Document the complete build/sign/publish/test process | Complete: RELEASE-GUIDE.html in the beginner kit, with a versioned source copy at the repository root. Twelve sections cover publisher setup, versions, cache choices, build/package provenance, signing, ZIP inventory, draft/upload verification, preview/normal publication, actual upgrade tests and recovery. Eleven PowerShell examples parsed without execution; internal links and matching copies checked. No key material included. |
 | AK2 | Make the guide discoverable | Complete: beginner-kit START-HERE.md and source build-kit README link the offline guide. It includes copy buttons and print/save-as-PDF support. Built-in browser local-file preview was blocked by its URL policy; no rendered-layout check is claimed. |
 
-## Preferences and public product presentation — 2026-10-20
+## Preferences and public product presentation â€” 2026-10-20
 
 | Item | Work | Status |
 | --- | --- | --- |
@@ -559,7 +559,7 @@ detection test, and no connection was interrupted.
 | AL6 | Publish source, licences and combined release repository | Complete: full source history merged into public ashkanr65/AetherDesk main (4a7b7dc); anonymous source/licence access verified. Existing build 1/2 tags unchanged; latest build 2 and all three asset digests unchanged. Existing signing key configured as the canonical repository's encrypted Actions secret. Old private source renamed AetherDesk-Source-Archive-20261020 and archived. Publisher/workflow/release guide now use the single public repository and exact main commit. |
 | AL7 | Complete new-package and real upgrade acceptance | User build 3, all seven new native tests and isolated packaged dark/light/editor checks passed. Remaining: manual Preferences interactions, broader connection checks and real update download/replacement/restart/settings and credential preservation. Build 3 stable publication is recorded under AN3. |
 
-## Build 3 compiler compatibility repair — 2026-10-20
+## Build 3 compiler compatibility repair â€” 2026-10-20
 
 | Item | Work | Status |
 | --- | --- | --- |
@@ -567,7 +567,7 @@ detection test, and no connection was interrupted.
 | AM2 | Remove reported stroke-width inference warnings | Fixed: explicit f32 widths at all ten reported calls in navigation, Preferences and theme styling. Values and appearance are unchanged. |
 | AM3 | Verify and rebuild | Rust parser/format check and source diff checks passed. The user's subsequent build passed compilation and native regressions; see AN1 for evidence and AN3 for publication. |
 
-## Build 3 stable update publication — 2026-10-20
+## Build 3 stable update publication â€” 2026-10-20
 
 | Item | Work | Status |
 | --- | --- | --- |
@@ -575,15 +575,15 @@ detection test, and no connection was interrupted.
 | AN2 | Sign and verify update assets | Passed: existing protected key signs 0.1.2 build 3. All 7,158 ZIP entries match the signed inventory; installer matches build output. All three uploaded asset lengths and SHA-256 digests match local verified files. Release tag targets e17683b6a4952dc4cc09f76c38f653f69ff95899; application/build inputs match d24793c and the recorded source fingerprint. Evidence: output/acceptance/update-build3-20261020; LATEST-SIGNED-RELEASE.txt and LATEST-RELEASE-CHECK.txt updated. |
 | AN3 | Make build 3 available to auto-update | Complete: user-authorized normal/latest v0.1.2-build3 published on 2026-10-20, release 418243553. Anonymous latest feed and the exact runtime metadata API route return build 3; signature verifies with the existing pinned key and all asset hashes match. https://github.com/ashkanr65/AetherDesk/releases/tag/v0.1.2-build3 . Real installation/restart/data-preservation acceptance remains separate; no user installation was changed. |
 
-## Preferences layout repair — 2026-10-20
+## Preferences layout repair â€” 2026-10-20
 
 | Item | Work | Status |
 | --- | --- | --- |
 | AO1 | Stack category content vertically | Implemented: explicit top-down content layout isolates the form from the horizontal navigation/container. All eight category titles start their own column; options follow below. Existing window sizing and left navigation are preserved. |
 | AO2 | Align controls and use consistent text | Implemented: body-sized labels, descriptions, values and buttons; shared field grids; aligned palette picker/hex rows; wrapped descriptions and vertical scrolling bounded to the content column. Preview drawing clips to its sample area. |
-| AO3 | Verify and prepare the next build | Build 0.1.2 build 4 reserved because build 3 is already published. Two rendered category/font/row geometry regressions registered for Windows. Rust parser/format, catalog mapping and offline recipe checks passed (Cargo/network/signing mocked in recipe fixtures); The user's subsequent build 4 passed compilation and both layout regressions; isolated packaged rendering/editor checks and stable publication are recorded under AP1–AP3. |
+| AO3 | Verify and prepare the next build | Build 0.1.2 build 4 reserved because build 3 is already published. Two rendered category/font/row geometry regressions registered for Windows. Rust parser/format, catalog mapping and offline recipe checks passed (Cargo/network/signing mocked in recipe fixtures); The user's subsequent build 4 passed compilation and both layout regressions; isolated packaged rendering/editor checks and stable publication are recorded under AP1â€“AP3. |
 
-## Build 4 stable update preparation — 2026-10-20
+## Build 4 stable update preparation â€” 2026-10-20
 
 | Item | Work | Status |
 | --- | --- | --- |
@@ -591,7 +591,7 @@ detection test, and no connection was interrupted.
 | AP2 | Sign, upload and enable stable update | Passed: existing protected key signs build 4. All 7,158 ZIP entries match the signed inventory; installer matches build output and version 0.1.2.4. All three uploaded asset SHA-256 digests and lengths match local verified files. Tag targets d76955bc94c5bca25e20693d6421f8250a1002b0; application inputs match 2c95b0f and the recorded fingerprint. Evidence: output/acceptance/update-build4-20261020; latest signed-release and check pointers updated. |
 | AP3 | Enable and verify stable auto-update | Complete: user-authorized v0.1.2-build4 published as normal/latest on 2026-10-20, release 418307323. Anonymous latest feed and the exact runtime metadata route return build 4; downloaded signature verifies with the established pinned key. https://github.com/ashkanr65/AetherDesk/releases/tag/v0.1.2-build4 . Real upgrade/restart/data-preservation acceptance remains separate; no user installation was changed. |
 
-## Portable update failure and Preferences sliders — 2026-10-20
+## Portable update failure and Preferences sliders â€” 2026-10-20
 
 | Item | Work | Status |
 | --- | --- | --- |
@@ -601,7 +601,7 @@ detection test, and no connection was interrupted.
 | AQ4 | Show slider axes in Preferences | Implemented: Application scale and Application font size have a six-point horizontal rail, visible track colour and filled section in both themes, with aligned numeric values. |
 | AQ5 | Validate and publish build 5 | Rust parser/format and diff checks pass. Offline recipe, publisher/extractor fixtures and catalog safeguards pass with Cargo/network/signing mocked as appropriate. No compilation performed. Remaining: user's build 5, the three native regressions, real automatic replacement/restart/settings and credential preservation, installer upgrade and clean-machine checks. Build 5 is reserved and is not published. |
 
-## Window snapping, monitor changes and narrow layouts — 2026-10-20
+## Window snapping, monitor changes and narrow layouts â€” 2026-10-20
 
 | Item | Work | Status |
 | --- | --- | --- |
@@ -610,14 +610,14 @@ detection test, and no connection was interrupted.
 | AR3 | Reflow the application instead of overlapping text | Implemented: welcome text/card heights are measured and cards switch between one/two columns; header controls reserve their own space, status text truncates with full details on hover, and the navigation rail scrolls when short. Sidebar width preference survives shrinking and is restored when space returns; a drawer handles very narrow windows. Preferences switches to compact category navigation, while Preferences/connection/terminal forms retain bounded scrollable controls and wrapping actions. |
 | AR4 | Verify the responsive layout changes | Five new required Windows regressions registered: two viewport/DPI policies, welcome text geometry across both themes/large fonts, sidebar preference restoration, and compact Preferences across all eight categories. Rust parser/format, registry and offline recipe/publisher safeguards pass (Cargo/network/signing mocked in recipe fixtures). No compilation performed. Remaining: user build 5, native tests, moving/snapping the built application across real monitors and checking both themes at narrow widths. Build 5 also contains the earlier updater fix; it is not published yet. |
 
-## Welcome shortcut row regression repair — 2026-10-20
+## Welcome shortcut row regression repair â€” 2026-10-20
 
 | Item | Work | Status |
 | --- | --- | --- |
 | AS1 | Fix the reported narrow welcome action overlap | Implemented: measure both the New Connection button and shortcut hint before choosing a horizontal row or a vertical stack. Removes the wrapping-horizontal-row interaction that painted shortcut text over the button at width 280/font 13. Keeps the existing geometry regression unchanged. |
 | AS2 | Start the requested full build | Source parser/format and patch checks pass. The user explicitly authorized starting Build-Everything this time and requested not to wait for results. Build launch and completion status are recorded separately below; no successful result is assumed. |
 
-## Build 5 update preparation — 2026-10-20
+## Build 5 update preparation â€” 2026-10-20
 
 | Item | Work | Status |
 | --- | --- | --- |
@@ -721,3 +721,85 @@ claim those checks passed. Local release and old-recovery evidence are retained.
 | BC1 | Verify completed user build | Passed: all seven stages in 00:46:26. Application fingerprint 47e1d9835a31f3b5faba0fe5ee12f2d78838a20e3f819ae5ffa0257bef2080a4 matches source 02d32a83a0d44f033b8fdc19aacf0829567a05f6. Windows 297 registered / 269 required; desktop 171 passed, 5 intentionally ignored; Linux 101 / 86 and bundled X11 pass. Both previously failing decoder fixtures and the Linux padded-row fixture pass. Completed executable passed isolated rendering and real Files/Editor resize, minimize, restore and close in 7.623 seconds; saved editor fixture unchanged. Installer version 0.1.2.8. Evidence: output/acceptance/update-build8-20261021. |
 | BC2 | Sign and publish stable update | Complete: v0.1.2-build8 published as normal/latest on 2026-10-21T13:32:19Z (release 419595558), https://github.com/ashkanr65/AetherDesk/releases/tag/v0.1.2-build8 . Existing protected Ed25519 key retained. All 7,181 portable archive entries match signed inventory; installer matches build output and version 0.1.2.8. All three uploaded asset lengths and GitHub SHA-256 digests match verified local files. Anonymous latest feed and the exact runtime metadata API return build 8; downloaded signature verifies with the pinned key. Tag targets e6f4988b6d3e53013c3686c58e1c573cfef79d4c (release documentation only after the tested application source). Latest signed-release and check pointers updated. Evidence: output/acceptance/update-build8-20261021. No normal user installation, saved profiles, credentials, chats or remote work modified. |
 | BC3 | Remaining live acceptance | Pending: original Intel graphics-driver crash reproduction, real mixed-DPI dragging, EDA colours/thin lines/dialogs and measured tab/fullscreen/all-monitor performance, physical input/focus while switching SSH+X11, real automatic replacement/restart and preserved user data, installer upgrade and clean-machine acceptance. Retained remote sessions keep their old agent; save work before ending a session to test a newly created lossless desktop. Publication does not modify the user's installation or remote work. |
+
+
+## Individual application windows - local prototype (2026-10-21)
+
+Publication hold: the user explicitly instructed no pushes until the complete feature is finished. All work stays local on main; no branch, push, release or update-feed change is authorized during this work. Build 8 remains the published stable release; the next local build is reserved as 0.1.3 build 1.
+
+| Item | Work | Status |
+| --- | --- | --- |
+| BD1 | Verify feasibility on the connected host | Complete read-only investigation: both connections open; current server agent matches installed build 8. Rootful Xwayland exposes Composite 0.4, DAMAGE 1.1, RGB TrueColor and input/WM metadata. Xfwm4 compositing is disabled, so unredirected existing windows have no independent pixmap. No application or Cadence window was open for compatibility tests. Evidence: local Codex outputs/remote-window-investigation-20261021/findings.txt. |
+| BD2 | Implement selective server capture | Source implemented: opt-in agent helper resolves only the private saved desktop identity, lists its visible application windows, redirects only the selected window in automatic mode, tracks damage/resize/remap and sends bounded exact BGRA/LZ4 tiles. Original WM, process and desktop representation stay in place. Fixed RGB visuals required; unsupported layouts fail explicitly. Lease/EOF/write timeout cleanup releases helper-owned input/redirection without closing applications. No extra TCP listener. |
+| BD3 | Implement independent Windows view | Source implemented: searchable application chooser on the remote desktop toolbar; one independent view per connection, registered for every root pass so switching to SSH+X11 does not close it. Uses the same SSH/VPN session, bounded background I/O/conversion, complete-image validation, ordinary physical keys/modifiers, pointer/buttons/wheel and explicit application resize. Native close stops viewing and preserves the remote application. |
+| BD4 | Add regression coverage | Source added: exact-pixel/atomic/stale-base validation, endian/padded-row conversion, bounded packet identity/lengths, session-bound shell command, cancellable pipe lease and actual egui viewport persistence/close. Extended the real isolated host-Xfwm fixture with exact-colour capture under occlusion, DAMAGE refresh, actual WM resizing, owned-key release, original-parent/map preservation and cleanup. Tests registered with Windows/Linux build checks. Native execution remains pending. |
+| BD5 | Static verification and user build | Static verification passed: Rust parser/format and whitespace checks; 57-group/37-suite catalog/reference validation; two offline registry tests; full offline recipe/publisher safeguards (Cargo, network and signing mocked). Verified every new module enters the source snapshot. Added ad-stream-protocol to all three Linux test commands so its required native check is compiled, listed and run. Updated the existing core lock entry for the direct X11 extension dependency. No compilation or native tests executed under the user's retained build preference. The user's first 0.1.3 build 1 attempt stopped at UI module-order formatting; see BF1 for the correction. Native and packaged acceptance remain pending. No live applications/Cadence state changed, no commit, push or publication; HEAD remains 4c9aea21dd8bdc9f8809b683aaeead2afb2534a2. |
+| BD6 | Complete the feature after prototype validation | Remaining: controlled compiled prototype acceptance; then application-family menus/dialogs/popups, multiple independent views, native keyboard/IME/clipboard, resize/DPI behavior, reconnect restoration, true detach/return without stopping rendering, native Wayland support where applicable, EDA colour/line/dialog/input acceptance and measured CPU/memory/bandwidth/latency. Do not call this complete or publish before these are resolved with the user. |
+
+## Release version change (2026-10-21)
+
+| Item | Work | Status |
+| --- | --- | --- |
+| BE1 | Set the next version to 0.1.3 build 1 | Complete: release manifest, both Rust workspace versions, inherited core lock entries and current development notes updated. Third-party dependencies and historical release records preserved. Static consistency and release-manifest validation passed; no compilation. |
+| BE2 | Build and publish | Pending: user build and remaining application-window acceptance. Publication hold remains active; nothing committed, pushed or published. The public release remains 0.1.2 build 8. |
+
+## Prototype build formatting correction (2026-10-21)
+
+| Item | Work | Status |
+| --- | --- | --- |
+| BF1 | Correct module ordering in the first 0.1.3 build 1 attempt | Complete: moved remote_applications and window_mirror into rustfmt module order. The exact build-kit UI formatting check and focused formatting checks for the active core/agent packages pass. A broader all-workspace check also found existing formatting differences in unrelated legacy packages; these were left unchanged. No compilation or native tests run. |
+| BF2 | Retry the user build | Pending: run Build-Everything.cmd again to create a fresh source snapshot and continue build validation. Version remains 0.1.3 build 1. No commit, push or publication; the publication hold remains active. |
+
+## Fullscreen/all-monitor crash (2026-10-21)
+
+| Item | Work | Status |
+| --- | --- | --- |
+| BG1 | Inspect latest crash evidence | Complete: processes 2908 and 29744 both recorded wgpu fatal-handler panics at 17:10:03 and 17:10:41 local time. Logs identify the DX12 client renderer; the original validation description was omitted. No live session or remote design was changed. |
+| BG2 | Correct presentation and texture lifetime hazards | Source implemented: native physical placement after immediate rendering, validated bounds across mode changes, fresh texture identity after dimension changes, matching extents before partial writes, adapter-supported DX12 limits and guards before oversized native/GPU operations. No quality reduction or session restart. |
+| BG3 | Add diagnostics and regression coverage | Source added/registered: mixed-DPI negative-origin tab/current/all transitions with a post-render placement assertion; oversized presentation rejection; repeated texture resizing and rejection without losing the valid base; bounded/redacted fatal graphics diagnostics. Formatting, whitespace and regression-reference checks passed. Native tests and live crash reproduction are pending; no compilation run. |
+| BG4 | User build and live verification | Pending: rerun Build-Everything.cmd and verify tab -> fullscreen -> all monitors -> fullscreen -> tab with the rebuilt client. Version stays 0.1.3 build 1. Build was not started; nothing committed, pushed or published. Publication hold remains active. |
+
+## Linux independent-window input cleanup (2026-10-21)
+
+| Item | Work | Status |
+| --- | --- | --- |
+| BH1 | Diagnose the Linux build failure | Complete: the user's step-02-20261021_172311_736 run compiled the agent and reached its real Xfwm/Xwayland test (15 passed, 1 failed). The immediate query on another X11 connection observed key 38 still down. Mirror cleanup only flushed unchecked release requests and forgot their ownership before processing was confirmed. |
+| BH2 | Correct release acknowledgement and ownership | Source implemented: checked key/button release requests, a same-connection server round trip before Release/Stop success, errors propagated on acknowledged cleanup, every owned release attempted, and failed entries kept for cleanup retry. Ordinary key/button release removes ownership only after checked success. Drop remains best effort with a diagnostic on failure. |
+| BH3 | Strengthen the real regression | Source updated: eight immediate press/release cycles through another connection, repeated release, ordinary matching releases, Stop and Drop, mouse-button state, and preservation of an unrelated key held by another X11 client. No sleeps, skipped assertions or test suppression added to the input checks. Formatting, whitespace and catalog/reference checks passed; native execution remains pending. |
+| BH4 | Retry user build | Pending: rerun Build-Everything.cmd with the corrected source. Version remains 0.1.3 build 1. No compilation, build launch, live-session change, commit, push or publication by the agent. Publication hold remains active. |
+
+
+## Detached-window improvements, keypad operators and server clock (2026-10-22)
+
+| Item | Work | Status |
+| --- | --- | --- |
+| BI1 | Initial application size and manual resizing | Source implemented: one remote pixel per physical client pixel, no container magnification; initial native content size follows the selected application and current monitor work area. Later manual native resizing requests a debounced application resize. Pixel-size regression added; native execution pending. |
+| BI2 | Show application dropdowns and submenus | Source implemented: bounded lossless layers for owned override-redirect menus, separate owned native menu windows that can extend beyond the application, signed input coordinates and automatic menu cleanup. Explicit transient/leader/PID ownership is supported; XRes client ranges also identify adjacent untyped legacy Xt/Motif shells while their application is active. No root screenshot, application reparenting or close. Main pixels/texture are reused on menu-only changes. Real isolated fixture extended for beyond-edge menus, nested submenus, exact colours, untyped menus, foreign-client exclusion and Stop cleanup. Native and actual Cadence acceptance remain pending; ordinary managed dialogs are not yet an automatic family. |
+| BI3 | Correct non-digit numpad input | Source implemented: dedicated keypad operator/decimal/separator/Enter codes on the native and GUI fallback paths. A foreground-viewport-only message hook preserves keypad identity before egui flattens operators, with bounded metadata and held-input cleanup. Regression source covers operator mapping and event consumption; real Wayland-to-Xwayland fixture checks dedicated operator symbols. Native execution and physical keyboard acceptance pending. |
+| BI4 | Replace the local status clock with server time | Source implemented: the selected connected tab displays actual server HH:MM:SS from one non-PTY channel on its existing SSH/VPN connection. One pulse per second, no locally advanced clock; disconnected, failed, uninitialized or stale (3 seconds) shows --:--:--. No shell history or additional SSH connections. Channel EOF/cancellation stops the server read loop. This indicates SSH responsiveness, not proof that every remote application is healthy. Two regression sources added for parsing/freshness/disconnect and channel response/lifetime. Native execution and live disconnect/reconnect acceptance pending. |
+| BI5 | Verify source and update build inventory | Static verification passed: focused Rust formatting/parser checks, whitespace checks, 58-group/37-suite catalog/reference validation, two offline registry tests, and full offline build-kit/publisher safeguards with Cargo, network and signing mocked. Snapshot checks include all new modules. These are not native compilation or product-test results. |
+| BI6 | User rebuild and remaining feature acceptance | Pending: rebuild 0.1.3 build 1, test original-size opening, user resizing/mixed DPI, dropdowns/submenus including Cadence, keypad */+-./Enter, selected-host clock, disconnect/stale/reconnect, and earlier fullscreen/all-monitor transitions. The user reported the earlier prototype works; these new changes are not yet live-verified. Broader BD6 work remains open. No compilation/build launch, live-session/library edits, commit, push or publication by the agent. Public release and local HEAD unchanged. |
+
+
+## Shift, SFTP, transport review and idle hang (2026-10-22)
+
+| Item | Work | Status |
+| --- | --- | --- |
+| BJ1 | Inspect attached core-16396.log | Complete review: repeated successful SSH authentication followed by desktop-stream EOF after about 11-13 seconds on several attempts. Two successful attachments then report SFTP server filename is not valid UTF-8; a later control-channel closure loses its underlying cause. The log alone does not identify the server-side cause of EOF. |
+| BJ2 | Prevent Shift duplication and stale GUI modifiers | Source corrected: skip an explicit left-modifier edge when the same group snapshot already injected it on Wayland/uinput. Preserve physical right-side modifiers and native events with zero group flags. Windows GUI fallback reconciles physical modifiers at batch boundaries; detached views also release modifier-only/button-only ownership. Protocol and real Xwayland regression sources extended; physical-key verification pending. |
+| BJ3 | Restore listings containing legacy filename bytes | Source corrected: a non-UTF-8 entry remains visible as a disabled, byte-identified entry with no actionable path, while surrounding exact UTF-8 entries remain usable. Never use a lossy replacement path or rename the server file. Recursive transfer/removal refuses unsupported names instead of operating on an empty/guessed path or claiming an incomplete copy. Mock SFTP peer regression covers mixed names, continuation and handle close. Actual operations on non-UTF-8 files remain unsupported. |
+| BJ4 | Correct reported E0308 menu offset | Source corrected: convert the application client position to a vector before adding it to the native window position. Signed/mixed-scale geometry regression added. User build/native execution pending. |
+| BJ5 | Inspect attached core-21092.log | Complete review: 1,908 records from 06:43:30 to 07:33:04 UTC, including 947 native keyboard capture-loss messages and 947 recovery messages, with bursts every few dozen milliseconds. No error, panic or native crash record. User confirms no crash companion; the app stopped responding after idle and Windows closed it. This supports investigating an application hang; the exact blocking stack/Windows termination cause is not established. |
+| BJ6 | Bound recovery and remove idle/wake hazards | Source corrected: native capture recovery waits 1 second initially and 30 seconds after repeated failures within a 30-second window; GUI forwarding stays active while cooling down. Desktop heartbeat skips missed ticks and bounds writes to 5 seconds. Clipboard get/set moves off the GUI thread into one process-wide worker with bounded queues, nonblocking GUI polling, 1 MiB content limits, latest-write coalescing, retry preservation and retired-view cancellation. A permanently stalled OS clipboard call can stop clipboard synchronization but cannot block the GUI or spawn unlimited replacement workers. Regression sources added; idle/lock/wake acceptance remains pending. |
+| BJ7 | Preserve connection failure evidence | Source corrected: retain the recorded transport failure rather than racing generic channel-close errors; wait for demuxer shutdown before lifecycle cleanup. SSH I/O errors identify their channel. Startup/stream failures try a 2-second, 8 KiB, redacted read of this session's own agent.log. Detach cleanup after a closed command channel avoids a misleading extra failure; End still requires confirmation. No remote logs or live sessions were accessed in this work. The original EOF cause remains unresolved pending server evidence/reproduction. |
+| BJ8 | Verify and rebuild | Static formatting/parser, whitespace and 58-group/37-suite catalog/reference checks plus two offline registry tests passed. Full offline build-kit/publisher safeguards passed with Cargo, network and signing mocked; snapshot checks include the new clipboard module. Native compilation and tests have not run; user rebuild and Shift, SFTP, idle/lock/wake and disconnect/reconnect verification remain required. Version stays 0.1.3 build 1; no commit, push or publication. |
+
+
+## 0.1.3 build 1 release preparation (2026-10-22)
+
+| Item | Work | Status |
+| --- | --- | --- |
+| BK1 | Verify the user's completed build | Complete: all seven stages passed in 51m25s. Package fingerprint 851876908a16037cfd0bf102228af9c407139f16dd620b49a3671a8f237b2d51 matches current build inputs; Windows and Linux regression catalog hashes match source; bundled X11 passed. Live/clean-machine/real upgrade evidence remains false. No compilation was run by the agent. |
+| BK2 | Publish the incomplete independent-window feature transparently | User explicitly lifted the publication hold for this release, accepting known detached-window bugs for a later build. Public notes label the feature experimental and disclose remaining features, non-UTF-8 file limitations, unconfirmed idle/EOF root causes and pending live acceptance. Source and release stay on main in the existing public repository. |
+| BK3 | Sign, verify, upload and publish | Prepared and verified: 0.1.3 build 1 signed with the existing pinned key; all 7,181 ZIP files and installer match. Explicitly approved isolated packaged UI smoke check passed with temporary settings and no compilation/remote connections. Upload/publication in progress; final evidence belongs under output/acceptance/update-0.1.3-build1-20261022. |
+| BK4 | Finish remaining live acceptance and application remoting | Remaining: BI6/BJ live checks and broader BD6 feature work, including known detached-window bugs. Publication does not mark this work complete or establish replacement readiness. |

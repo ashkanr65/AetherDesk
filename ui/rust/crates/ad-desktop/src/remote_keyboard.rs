@@ -32,6 +32,9 @@ impl Surface {
     }
 }
 pub fn evdev(scan: u32, extended: bool, vk: u32) -> Option<u32> {
+    if let Some(key) = crate::remote_keypad::evdev(vk, scan, extended) {
+        return Some(key);
+    }
     if vk == 0x90 {
         return Some(69);
     }
@@ -117,6 +120,46 @@ pub fn keyboard_layout(id: u32) -> Option<(&'static str, &'static str)> {
             }
         }
     })
+}
+pub(crate) fn current_modifiers(_fallback: eframe::egui::Modifiers) -> eframe::egui::Modifiers {
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::UI::Input::KeyboardAndMouse::*;
+        let down = |key| unsafe { GetAsyncKeyState(key as i32) } < 0;
+        let altgr = down(VK_RMENU);
+        eframe::egui::Modifiers {
+            shift: down(VK_LSHIFT) || down(VK_RSHIFT),
+            ctrl: down(VK_RCONTROL) || (down(VK_LCONTROL) && !altgr),
+            alt: down(VK_LMENU) || altgr,
+            mac_cmd: down(VK_LWIN) || down(VK_RWIN),
+            command: down(VK_RCONTROL) || (down(VK_LCONTROL) && !altgr),
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        _fallback
+    }
+}
+/// Keep GUI forwarding active while a repeatedly failing native hook cools
+/// down. Reinstalling at display-frame rate churns modifier ownership.
+#[derive(Default)]
+struct RecoveryPolicy {
+    window: Option<std::time::Instant>,
+    failures: u8,
+}
+impl RecoveryPolicy {
+    fn delay(&mut self, now: std::time::Instant) -> std::time::Duration {
+        use std::time::Duration;
+        if self
+            .window
+            .is_none_or(|start| now.saturating_duration_since(start) >= Duration::from_secs(30))
+        {
+            self.window = Some(now);
+            self.failures = 0;
+        }
+        self.failures = self.failures.saturating_add(1);
+        Duration::from_secs(if self.failures >= 3 { 30 } else { 1 })
+    }
 }
 #[derive(Default)]
 struct Held {
@@ -439,6 +482,8 @@ mod windows {
                 STATUS.store(2, Ordering::Release);
                 let mut message: MSG = std::mem::zeroed();
                 let mut recovery_failed = false;
+                let mut recovery_policy = RecoveryPolicy::default();
+                let mut recovery_due = None;
                 while GetMessageW(&mut message, std::ptr::null_mut(), 0, 0) > 0 {
                     if message.message == WM_TIMER {
                         if SUBSCRIBERS.load(Ordering::Acquire) == 0 {
@@ -446,6 +491,13 @@ mod windows {
                         }
                         if REINSTALL.swap(false, Ordering::AcqRel) {
                             clear(&mut route().lock());
+                            let delay = recovery_policy.delay(Instant::now());
+                            recovery_due = Some(Instant::now() + delay);
+                            tracing::warn!(retry_ms = delay.as_millis() as u64,
+                                "remote native capture cooling down; GUI keyboard input remains active");
+                        }
+                        if recovery_due.is_some_and(|due| Instant::now() >= due) {
+                            recovery_due = None;
                             UnhookWindowsHookEx(hook);
                             hook = SetWindowsHookExW(
                                 WH_KEYBOARD_LL,
@@ -700,6 +752,29 @@ mod windows {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn repeated_hook_failures_use_gui_forwarding_with_bounded_retry_frequency() {
+        use std::time::{Duration, Instant};
+        let start = Instant::now();
+        let mut policy = RecoveryPolicy::default();
+        assert_eq!(policy.delay(start), Duration::from_secs(1));
+        assert_eq!(
+            policy.delay(start + Duration::from_secs(1)),
+            Duration::from_secs(1)
+        );
+        assert_eq!(
+            policy.delay(start + Duration::from_secs(2)),
+            Duration::from_secs(30)
+        );
+        assert_eq!(
+            policy.delay(start + Duration::from_secs(3)),
+            Duration::from_secs(30)
+        );
+        assert_eq!(
+            policy.delay(start + Duration::from_secs(34)),
+            Duration::from_secs(1)
+        );
+    }
     #[test]
     fn virtual_only_keys_and_readline_chords_keep_scans_and_modifier_edges() {
         use ad_stream_protocol::{InputMessage, MODIFIER_LOCK_STATE_VALID};

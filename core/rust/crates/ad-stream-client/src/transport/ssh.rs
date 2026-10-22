@@ -188,6 +188,13 @@ fn spawn_reader(
             if should_stop && expected != SshChannelId::Control && ending.load(Ordering::Acquire) {
                 break;
             }
+            let result = result.map_err(|error| match error {
+                TransportError::Io(error) => TransportError::Io(std::io::Error::new(
+                    error.kind(),
+                    format!("SSH {expected:?} channel: {error}"),
+                )),
+                other => other,
+            });
             inbox.senders.send(result).await;
             if should_stop {
                 break;

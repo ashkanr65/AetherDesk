@@ -9,6 +9,7 @@ pub mod lossless;
 pub mod messages;
 pub mod pointer;
 pub mod transport;
+pub mod window_stream;
 
 use bincode::Options;
 use bytes::{Buf, BufMut, Bytes, BytesMut};
@@ -412,6 +413,24 @@ pub const MODIFIER_CAPS_LOCK: u16 = 1 << 5;
 /// Lock-state bits are authoritative only when this bit is set. Older clients
 /// continue to toggle locks by sending physical key presses.
 pub const MODIFIER_LOCK_STATE_VALID: u16 = 1 << 15;
+
+/// A group snapshot can already emit the same left-modifier edge. Sending it
+/// again as a physical edge double-updates XKB (notably Shift).
+pub fn modifier_snapshot_already_applied(
+    scan: u32,
+    pressed: bool,
+    previous: u16,
+    requested: u16,
+) -> bool {
+    let bit = match scan {
+        42 => 1,
+        29 => 2,
+        56 => 4,
+        125 => 8,
+        _ => return false,
+    };
+    previous & bit != requested & bit && (requested & bit != 0) == pressed
+}
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum InputMessage {
@@ -1046,5 +1065,22 @@ mod tests {
         .unwrap();
         assert!(bootstrap.one_time_token.iter().any(|byte| *byte != 0));
         assert_eq!(bootstrap.expires_unix_ms, 31_000);
+    }
+}
+
+#[cfg(test)]
+mod modifier_edge_tests {
+    use super::*;
+    #[test]
+    fn modifier_snapshots_do_not_double_inject_physical_edges_or_swallow_right_shift() {
+        for (scan, bit) in [(42, 1), (29, 2), (56, 4), (125, 8)] {
+            assert!(modifier_snapshot_already_applied(scan, true, 0, bit));
+            assert!(modifier_snapshot_already_applied(scan, false, bit, 0));
+            assert!(!modifier_snapshot_already_applied(scan, true, bit, bit));
+            assert!(!modifier_snapshot_already_applied(scan, false, 0, 0));
+            assert!(!modifier_snapshot_already_applied(scan, true, bit, 0));
+        }
+        assert!(!modifier_snapshot_already_applied(54, true, 0, 1));
+        assert!(!modifier_snapshot_already_applied(30, true, 0, 1));
     }
 }

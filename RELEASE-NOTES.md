@@ -1,32 +1,29 @@
-# AetherDesk 0.1.2 build 8
+# AetherDesk 0.1.3
 
-This update improves native window sizing and remote display delivery, with particular attention to large and multi-monitor desktops.
+AetherDesk 0.1.3 adds experimental independent application windows and improves remote input, file browsing and idle handling.
 
-## Window and workspace improvements
+## New and improved
 
-- Main, Files, Editor and review windows share monitor-aware sizing. Size corrections wait for dragging and display-scale changes to settle, while preserving normal window size and Windows snapping/maximizing.
-- Narrow Files windows switch between local and server views, keeping navigation controls and file contents within their panes. Editor and review controls remain reachable in smaller windows.
-- Automatic rendering on Windows now uses Direct3D 12 to avoid the Intel OpenGL driver path involved in a reported crash. An OpenGL compatibility option remains under Preferences > Display and requires a restart.
-- All four home-page Ready indicators use the same information colour.
+- **Independent remote application windows (experimental):** choose an already-open X11 application from a remote desktop and view it in its own Windows window. The application stays in its original server session. Closing the independent view keeps the application running.
+- Independent views open at the original application's physical pixel size. Manual resizing requests an application resize, and owned dropdown menus and submenus can extend beyond the main application edge.
+- Lossless application and menu capture preserves RGB values. The feature uses the existing authenticated, per-session SSH/VPN connection and adds no public network listener.
+- **Keyboard improvements:** dedicated numpad operator routing, corrected duplicate modifier injection, and reconciliation of stale Shift state in GUI fallback. Native capture recovery now backs off instead of rapidly restarting.
+- **Host status clock:** shows the selected server's time and changes to `--:--:--` after disconnection or three seconds without a fresh response.
+- **SFTP resilience:** a non-UTF-8 filename no longer breaks the entire directory listing. Unsupported names remain visible but disabled; other files remain accessible. File operations never guess a replacement path.
+- **Idle/wake handling:** native clipboard access runs outside the GUI thread, heartbeat backlog is skipped after sleep, and heartbeat writes have a timeout.
+- Fullscreen/all-monitor transitions have safer native placement, texture-resize handling and graphics-limit checks.
+- Desktop failures retain more useful channel and bounded server-agent diagnostic evidence.
 
-## Remote desktop improvements
+## Known limitations
 
-- New sessions with the updated agent negotiate lossless changed-region delivery. Exact BGRA pixels preserve colours and fine graphical details; unchanged areas and tiles entirely in gaps between monitors are not transmitted.
-- Bounded updates publish complete image transactions, with full visible refreshes after resize, reconnect or recovery. Older agents continue using compatible video delivery.
-- Host capture follows delivery capacity. Compatible video delivery avoids an extra full-image copy and uses bounded parallel colour conversion.
-- Fullscreen and all-monitor desktop windows remain open when switching to another connection tab. Returning to a tab selects the correct connection, and foreground checks protect keyboard routing.
-- Bounded graphics, window-sizing and display timing diagnostics support troubleshooting without logging screen pixels, keystrokes, chat or terminal contents.
+Independent application windows are experimental and have known bugs. Automatic managed-dialog families, multiple independent views per connection, complete IME/clipboard integration, true removal of the original desktop window, and reconnect restoration remain incomplete. Actual EDA application menus, colours and mixed-DPI behavior still require wider validation. Remote desktop and SSH+X11 remain available alongside this feature.
 
-## Build reliability and verification
+Files with non-UTF-8 names cannot yet be opened or transferred through AetherDesk. Recursive operations involving them are refused rather than silently omitting files or changing their names.
 
-Workspace lock preparation now validates the complete dependency graph before locked builds. Corrected lossless test fixtures exercise valid desktop sizes without weakening production validation.
+The reported idle hang and intermittent server-stream disconnections have not been reproduced to a confirmed root cause. This release includes targeted fixes and improved diagnostics; complete resolution is not claimed. During native-capture recovery, Windows may handle some system shortcuts locally.
 
-The completed build passed every build stage, Windows and Linux regressions, and bundled X11 runtime verification. The packaged application also passed an isolated rendering and Files/Editor resize, minimize, restore and close check.
+## Downloads and updates
 
-## Updating and remaining verification
+Use the Windows x64 installer or extract the complete portable ZIP. Existing users can open the gear menu, choose **Updates**, and select **Check now**. Save work and disconnect sessions before installing an update. AetherDesk does not close your remote applications as part of updating the Windows client.
 
-Install with the Windows x64 installer, extract the complete portable ZIP, or check for updates inside AetherDesk. Update metadata is signed with the established release key; the installer is not Windows Authenticode-signed.
-
-Existing remote desktops retain their running agent. To use the new lossless path, save your remote work before ending the old remote session and creating a new one with the updated agent; reconnecting to an existing desktop alone does not replace its agent.
-
-Live EDA colour/dialog checks, mixed-DPI monitor dragging, measured tab/fullscreen/all-monitor performance, real automatic replacement/restart with preserved user data, installer upgrade and clean-machine acceptance remain pending. The checks above do not establish a measured speedup or prove the original graphics-driver crash cannot recur.
+Windows and Linux compiler regressions and the bundled-X11 package test passed for this build. Clean-machine, real upgrade/restart and comprehensive live detached-window acceptance remain pending.

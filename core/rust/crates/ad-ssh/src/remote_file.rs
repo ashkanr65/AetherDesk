@@ -339,7 +339,14 @@ impl<S: AsyncRead + AsyncWrite + Unpin> SftpProtocol<S> {
             }
             if recursive && !children_done {
                 stack.push((current.clone(), true, depth));
-                for entry in self.read_dir(&current).await? {
+                let entries = self.read_dir(&current).await?;
+                if entries
+                    .iter()
+                    .any(|e| e.path.is_empty() || e.kind == "unsupported-name")
+                {
+                    return Err(sftp_error("Directory contains a non-UTF-8 filename; recursive removal refused without changing that filename"));
+                }
+                for entry in entries {
                     stack.push((entry.path, false, depth + 1));
                 }
             } else {

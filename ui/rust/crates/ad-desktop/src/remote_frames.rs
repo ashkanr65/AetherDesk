@@ -24,6 +24,21 @@ pub(crate) struct PreparedFrame {
     source: Image,
 }
 impl PreparedFrame {
+    #[cfg(test)]
+    pub(crate) fn test_pattern(sequence: u64, width: u32, height: u32) -> Self {
+        convert(
+            Image {
+                width,
+                height,
+                sequence,
+                pixels: Arc::new([7, 21, 240, 255].repeat(width as usize * height as usize)),
+                damage: None,
+            },
+            None,
+        )
+        .unwrap()
+        .unwrap()
+    }
     /// A skipped preparation invalidates the incremental base, never the image.
     /// Use the complete image after skipped frames, resize, or texture recreation.
     pub(crate) fn upload_after(

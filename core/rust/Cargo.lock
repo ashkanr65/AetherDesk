@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "ad-app"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "ad-config",
  "ad-core",
@@ -49,7 +49,7 @@ dependencies = [
 
 [[package]]
 name = "ad-config"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "ad-core",
  "chrono",
@@ -62,7 +62,7 @@ dependencies = [
 
 [[package]]
 name = "ad-core"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "anyhow",
  "chrono",
@@ -77,7 +77,7 @@ dependencies = [
 
 [[package]]
 name = "ad-credential"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "chrono",
  "parking_lot",
@@ -91,7 +91,7 @@ dependencies = [
 
 [[package]]
 name = "ad-display"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "serde",
  "thiserror 1.0.69",
@@ -101,7 +101,7 @@ dependencies = [
 
 [[package]]
 name = "ad-display-decoder"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "ad-qos-controller",
  "ad-stream-protocol",
@@ -117,7 +117,7 @@ dependencies = [
 
 [[package]]
 name = "ad-display-renderer"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "ad-display-decoder",
  "ad-stream-protocol",
@@ -128,7 +128,7 @@ dependencies = [
 
 [[package]]
 name = "ad-events"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "ad-core",
  "futures",
@@ -141,7 +141,7 @@ dependencies = [
 
 [[package]]
 name = "ad-ffi"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "ad-display-decoder",
  "ad-rdp-bridge",
@@ -169,7 +169,7 @@ dependencies = [
 
 [[package]]
 name = "ad-plugin-host"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "serde",
  "thiserror 1.0.69",
@@ -179,14 +179,14 @@ dependencies = [
 
 [[package]]
 name = "ad-qos-controller"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "thiserror 1.0.69",
 ]
 
 [[package]]
 name = "ad-rdp-bridge"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "ad-display",
  "async-trait",
@@ -198,7 +198,7 @@ dependencies = [
 
 [[package]]
 name = "ad-remote-session"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "ad-core",
  "ad-display-decoder",
@@ -221,7 +221,7 @@ dependencies = [
 
 [[package]]
 name = "ad-session"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "ad-config",
  "ad-core",
@@ -236,7 +236,7 @@ dependencies = [
 
 [[package]]
 name = "ad-sftp"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "serde",
  "thiserror 1.0.69",
@@ -246,7 +246,7 @@ dependencies = [
 
 [[package]]
 name = "ad-ssh"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "ad-config",
  "ad-core",
@@ -269,7 +269,7 @@ dependencies = [
 
 [[package]]
 name = "ad-stream-client"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "ad-display-decoder",
  "ad-qos-controller",
@@ -286,7 +286,7 @@ dependencies = [
 
 [[package]]
 name = "ad-stream-protocol"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "async-trait",
  "bincode",
@@ -299,7 +299,7 @@ dependencies = [
 
 [[package]]
 name = "ad-telemetry"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "chrono",
  "serde",
@@ -311,7 +311,7 @@ dependencies = [
 
 [[package]]
 name = "ad-terminal"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "serde",
  "thiserror 1.0.69",
@@ -321,7 +321,7 @@ dependencies = [
 
 [[package]]
 name = "ad-terminal-render"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "serde",
  "thiserror 1.0.69",
@@ -331,7 +331,7 @@ dependencies = [
 
 [[package]]
 name = "ad-tunnel"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "serde",
  "thiserror 1.0.69",
@@ -341,7 +341,7 @@ dependencies = [
 
 [[package]]
 name = "ad-vnc"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "serde",
  "thiserror 1.0.69",
@@ -351,7 +351,7 @@ dependencies = [
 
 [[package]]
 name = "ad-vpn"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "base64",
  "boringtun",
@@ -366,7 +366,7 @@ dependencies = [
 
 [[package]]
 name = "ad-x11-bridge"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "serde",
  "thiserror 1.0.69",
@@ -429,7 +429,7 @@ dependencies = [
 
 [[package]]
 name = "agent-encoder"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "ad-stream-protocol",
  "gstreamer",
@@ -442,7 +442,7 @@ dependencies = [
 
 [[package]]
 name = "agent-input"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "ad-stream-protocol",
  "evdev",
@@ -453,7 +453,7 @@ dependencies = [
 
 [[package]]
 name = "agent-supervisor"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "ad-stream-client",
  "ad-stream-protocol",
@@ -473,7 +473,7 @@ dependencies = [
 
 [[package]]
 name = "agent-wayland"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "ad-stream-protocol",
  "libc",
@@ -482,6 +482,7 @@ dependencies = [
  "thiserror 1.0.69",
  "tokio",
  "tracing",
+ "x11rb",
 ]
 
 [[package]]

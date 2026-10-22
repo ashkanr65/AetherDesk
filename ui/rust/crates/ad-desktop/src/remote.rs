@@ -91,6 +91,7 @@ impl ClipboardBackend for ClipboardSink {
     }
 }
 pub struct RemoteClient {
+    window_target: Option<crate::remote_applications::Target>,
     commands: mpsc::Sender<Command>,
     input: Arc<InputQueue>,
     status: Arc<Mutex<Status>>,
@@ -144,12 +145,24 @@ impl RemoteClient {
             target_bitrate_kbps: 8000,
         };
         let mut lifecycle =
-            RemoteSessionLifecycle::new(Arc::new(SshAgentHost::new(ssh)), session_id);
+            RemoteSessionLifecycle::new(Arc::new(SshAgentHost::new(ssh.clone())), session_id);
         lifecycle.enable_lossless_tiles(std::env::var_os("AETHERDESK_DESKTOP_VIDEO").is_none());
-        let session = lifecycle
+        let host = ssh.clone();
+        let started = std::time::Instant::now();
+        let session = match lifecycle
             .connect_saved_desktop_cancellable(&artifact, Some(&runtime), &parameters, cancel)
             .await
-            .map_err(|e| e.to_string())?;
+        {
+            Ok(session) => session,
+            Err(error) => {
+                tracing::warn!(%session_id, elapsed_ms = started.elapsed().as_millis() as u64,
+                    error = %error, "remote desktop startup failed");
+                if !cancel.is_cancelled() {
+                    log_agent_failure(&host, session_id, "startup").await;
+                }
+                return Err(error.to_string());
+            }
+        };
         let status = Arc::new(Mutex::new(Status {
             state: "connected",
             error: None,
@@ -166,6 +179,12 @@ impl RemoteClient {
         let input = Arc::new(InputQueue::default());
         let (commands, receive) = mpsc::channel(256);
         let handle = Arc::new(Self {
+            window_target: Some(crate::remote_applications::Target {
+                ssh,
+                session: session_id,
+                version: agent_version.trim().to_owned(),
+                runtime: tokio::runtime::Handle::current(),
+            }),
             commands,
             input: input.clone(),
             status: status.clone(),
@@ -187,6 +206,8 @@ impl RemoteClient {
             )
             .await;
             if let Err(error) = result {
+                tracing::warn!(%session_id, error = %error, "remote desktop stream failed; retaining server desktop");
+                log_agent_failure(&host, session_id, "stream").await;
                 let _ = tokio::time::timeout(
                     Duration::from_secs(3),
                     lifecycle.disconnect(DisconnectMode::Detach),
@@ -208,6 +229,7 @@ impl RemoteClient {
         let (commands, receiver) = mpsc::channel(1);
         drop(receiver);
         Arc::new(Self {
+            window_target: None,
             commands,
             input: Arc::new(InputQueue::default()),
             status: Arc::new(Mutex::new(Status {
@@ -233,6 +255,9 @@ impl RemoteClient {
     }
     pub fn newly_created(&self) -> bool {
         self.newly_created
+    }
+    pub(crate) fn window_target(&self) -> Option<crate::remote_applications::Target> {
+        self.window_target.clone()
     }
     pub fn status(&self) -> Status {
         let mut status = self.status.lock();
@@ -292,10 +317,21 @@ impl RemoteClient {
             DisconnectMode::Detach
         };
         let result = tokio::time::timeout(Duration::from_secs(12), async {
-            self.commands
+            if self
+                .commands
                 .send(Command::Stop(mode, reply))
                 .await
-                .map_err(|_| "Remote desktop already closed".to_owned())?;
+                .is_err()
+            {
+                return if end {
+                    Err(
+                        "Remote desktop already closed; its termination was not confirmed"
+                            .to_owned(),
+                    )
+                } else {
+                    Ok(())
+                };
+            }
             receive
                 .await
                 .map_err(|_| "Remote shutdown was not confirmed".to_owned())?
@@ -385,7 +421,7 @@ async fn run_session(
         preparation_task.abort_handle(),
         clipboard_task.abort_handle(),
     ]);
-    let mut heartbeat = tokio::time::interval(Duration::from_secs(2));
+    let mut heartbeat = desktop_heartbeat();
     let mut nonce = 0_u64;
     let result = async {
         loop {
@@ -430,15 +466,100 @@ async fn run_session(
                 }
                 _ = heartbeat.tick() => {
                     nonce += 1;
-                    session.send(ArppMessage::Metrics(MetricsMessage::Ping { nonce, sent_at_us: nonce * 2_000_000 })).await.map_err(|e| e.to_string())?;
+                    tokio::time::timeout(Duration::from_secs(5), session.send(ArppMessage::Metrics(MetricsMessage::Ping { nonce, sent_at_us: nonce * 2_000_000 })))
+                        .await.map_err(|_| "Remote heartbeat transport stalled after idle or network interruption".to_owned())?
+                        .map_err(|e| e.to_string())?;
                 }
             };
         }
     }.await;
-    demuxer.shutdown();
+    // The receiver records the transport error before dropping its senders.
+    // Prefer that evidence over a racing generic 'control channel closed'.
+    let result = result.map_err(|error| recorded_transport_error(&channels.errors, error));
+    demuxer.shutdown_and_wait().await;
     result
 }
 
+fn desktop_heartbeat() -> tokio::time::Interval {
+    desktop_heartbeat_at(tokio::time::Instant::now())
+}
+fn desktop_heartbeat_at(start: tokio::time::Instant) -> tokio::time::Interval {
+    let mut interval = tokio::time::interval_at(start, Duration::from_secs(2));
+    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    interval
+}
+fn agent_diagnostic_command(session: Uuid) -> String {
+    // Fixed command and parsed UUID only; never read another account's home,
+    // application files, endpoint credentials or full unbounded logs.
+    format!("tail -c 8192 -- \"$HOME/.aetherdesk/sessions/{session}/agent.log\" 2>/dev/null")
+}
+async fn log_agent_failure(ssh: &ad_ssh::SshSession, session: Uuid, phase: &str) {
+    if ssh.is_closed() {
+        return;
+    }
+    match ssh
+        .execute_command_output(&agent_diagnostic_command(session), Duration::from_secs(2))
+        .await
+    {
+        Ok(output) if output.exit_status == 0 => {
+            let text = String::from_utf8_lossy(&output.stdout);
+            let text = text
+                .chars()
+                .filter(|c| !c.is_control() || matches!(c, '\n' | '\t'))
+                .take(8192)
+                .collect::<String>();
+            let diagnostic = crate::logging::redact("agent_diagnostic", &text);
+            tracing::warn!(%session, %phase, %diagnostic, "remote agent failure evidence");
+        }
+        _ => {
+            tracing::warn!(%session, %phase, "remote agent log unavailable; retain the server session agent.log for diagnosis")
+        }
+    }
+}
+fn recorded_transport_error(errors: &watch::Receiver<Option<String>>, fallback: String) -> String {
+    errors.borrow().clone().unwrap_or(fallback)
+}
+#[cfg(test)]
+mod transport_error_tests {
+    use super::*;
+    #[tokio::test]
+    async fn waking_after_idle_does_not_burst_missed_heartbeats() {
+        let mut interval =
+            desktop_heartbeat_at(tokio::time::Instant::now() - Duration::from_secs(60));
+        interval.tick().await;
+        assert!(
+            tokio::time::timeout(Duration::from_millis(20), interval.tick())
+                .await
+                .is_err(),
+            "wake-up replayed a queued heartbeat immediately"
+        );
+    }
+    #[test]
+    fn failure_diagnostics_read_only_the_current_agents_bounded_log() {
+        let command = agent_diagnostic_command(Uuid::nil());
+        assert!(command.starts_with("tail -c 8192 -- \"$HOME/.aetherdesk/sessions/"));
+        assert!(command.contains("00000000-0000-0000-0000-000000000000/agent.log"));
+        assert!(!command.contains("endpoint"));
+        assert!(!command.contains("kill"));
+        assert_eq!(
+            crate::logging::redact("agent_diagnostic", "token=private"),
+            "<redacted sensitive detail>"
+        );
+    }
+    #[test]
+    fn channel_close_races_preserve_the_recorded_transport_failure() {
+        let (send, errors) = watch::channel(None);
+        assert_eq!(
+            recorded_transport_error(&errors, "control channel closed".into()),
+            "control channel closed"
+        );
+        send.send_replace(Some("ARPP media channel: unexpected end of file".into()));
+        assert_eq!(
+            recorded_transport_error(&errors, "control channel closed".into()),
+            "ARPP media channel: unexpected end of file"
+        );
+    }
+}
 async fn run_display(
     mut display: mpsc::Receiver<ad_stream_protocol::DisplayMessage>,
     receipts: watch::Sender<u64>,

@@ -752,7 +752,16 @@ impl AgentCompositorState {
                 modifiers,
                 repeat: _,
             } => {
+                let snapshot_edge = ad_stream_protocol::modifier_snapshot_already_applied(
+                    scan_code,
+                    pressed,
+                    self.remote_modifiers,
+                    modifiers,
+                );
                 self.sync_wayland_modifiers(modifiers, time)?;
+                if snapshot_edge {
+                    return Ok(());
+                }
                 // Lock synchronization already performed the requested toggle.
                 if modifiers & MODIFIER_LOCK_STATE_VALID != 0 && matches!(scan_code, 58 | 69) {
                     return Ok(());
@@ -1929,6 +1938,27 @@ mod tests {
             }
         };
         let locks = MODIFIER_LOCK_STATE_VALID;
+        for scan in [42, 54] {
+            let snapshots = if scan == 42 { 1 } else { 0 };
+            compositor
+                .inject_input(InputMessage::Keyboard {
+                    scan_code: scan,
+                    pressed: true,
+                    modifiers: locks | snapshots,
+                    repeat: false,
+                })
+                .unwrap();
+            assert!(key_state(30, locks | snapshots).contains(KeyButMask::SHIFT));
+            compositor
+                .inject_input(InputMessage::Keyboard {
+                    scan_code: scan,
+                    pressed: false,
+                    modifiers: locks,
+                    repeat: false,
+                })
+                .unwrap();
+            assert!(!key_state(30, locks).contains(KeyButMask::SHIFT));
+        }
         assert!(key_state(79, locks | MODIFIER_NUM_LOCK).contains(KeyButMask::MOD2));
         assert!(!key_state(79, locks).contains(KeyButMask::MOD2));
         // A physical Num Lock event must not double-toggle the synchronized state.
@@ -1945,6 +1975,25 @@ mod tests {
         assert!(key_state(79, locks | MODIFIER_NUM_LOCK).contains(KeyButMask::MOD2));
         assert!(key_state(30, locks | MODIFIER_CAPS_LOCK).contains(KeyButMask::LOCK));
         assert!(!key_state(30, locks).contains(KeyButMask::LOCK));
+        // Keypad operators retain dedicated keycodes; they must not become
+        // main-row punctuation that needs different Shift/layout modifiers.
+        for (code, symbol) in [
+            (55_u32, 0xffaa_u32),
+            (74, 0xffad),
+            (78, 0xffab),
+            (98, 0xffaf),
+        ] {
+            let _ = key_state(code, locks | MODIFIER_NUM_LOCK);
+            let mapping = connection
+                .get_keyboard_mapping((code + 8) as u8, 1)
+                .unwrap()
+                .reply()
+                .unwrap();
+            assert!(
+                mapping.keysyms.contains(&symbol),
+                "keypad {code} lost its operator keysym"
+            );
+        }
         // Verify the complete Wayland -> XWayland -> X11 button/axis bridge.
         // Unsupported buttons must not terminate capture before valid input.
         compositor

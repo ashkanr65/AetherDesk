@@ -21,6 +21,7 @@ pub(crate) enum SessionAction {
     End,
 }
 pub struct RemoteView {
+    applications: crate::remote_applications::Applications,
     action: Option<SessionAction>,
     input_focus: bool,
     pub client: Arc<RemoteClient>,
@@ -58,7 +59,7 @@ pub struct RemoteView {
     id: egui::ViewportId,
     last_pointer: (i32, i32),
     error: Option<String>,
-    clipboard: Option<arboard::Clipboard>,
+    clipboard: crate::remote_clipboard::Clipboard,
     last_clipboard: String,
     clipboard_tick: Instant,
     toolbar_until: Instant,
@@ -101,6 +102,7 @@ impl RemoteView {
             .map(crate::remote_geometry::monitor_properties)
             .collect();
         Self {
+            applications: crate::remote_applications::Applications::new(client.window_target(), id),
             action: None,
             input_focus: false,
             client,
@@ -138,7 +140,7 @@ impl RemoteView {
             id: egui::ViewportId::from_hash_of(id),
             last_pointer: (0, 0),
             error,
-            clipboard: arboard::Clipboard::new().ok(),
+            clipboard: crate::remote_clipboard::Clipboard::default(),
             last_clipboard: String::new(),
             clipboard_tick: Instant::now(),
             toolbar_until: Instant::now() + Duration::from_secs(2),
@@ -150,7 +152,13 @@ impl RemoteView {
     pub fn is_external(&self) -> bool {
         self.mode != Mode::Tab
     }
+    pub(crate) fn application_windows(&mut self, ctx: &egui::Context) {
+        self.applications.ui(ctx);
+    }
     pub fn captures_keyboard(&self) -> bool {
+        if self.applications.captures_keyboard() {
+            return true;
+        }
         #[cfg(windows)]
         if self.mode != Mode::Tab
             && self
@@ -181,6 +189,7 @@ impl RemoteView {
         self.send(Request::Input { event });
     }
     pub fn release(&mut self) {
+        crate::remote_keypad::release(self.id);
         self.input_focus = false;
         self.native_keyboard.release();
         self.raw_active = false;
@@ -221,25 +230,53 @@ impl RemoteView {
         }
         self.modifiers = new;
     }
+    fn upload_frame(&mut self, ctx: &egui::Context, image: &crate::remote_frames::PreparedFrame) {
+        let limit = ctx.input(|i| i.max_texture_side);
+        if image.width as usize > limit || image.height as usize > limit {
+            self.error = Some(format!("Remote frame exceeds the graphics limit of {limit} pixels per side. Select a lower remote resolution."));
+            return;
+        }
+        // A resize gets a fresh resource identity. Partial writes are only
+        // allowed against a texture with the exact same dimensions.
+        let same_size = self
+            .texture
+            .as_ref()
+            .is_some_and(|texture| texture.size() == [image.width as usize, image.height as usize]);
+        let (position, pixels) = image.upload_after(self.sequence, same_size);
+        let color = egui::ImageData::Color(pixels);
+        if let Some(texture) = self.texture.as_mut().filter(|_| same_size) {
+            if let Some(position) = position {
+                texture.set_partial(position, color, egui::TextureOptions::LINEAR);
+            } else {
+                texture.set(color, egui::TextureOptions::LINEAR);
+            }
+        } else {
+            self.texture = Some(ctx.load_texture(
+                format!("remote-{:?}", self.id),
+                color,
+                egui::TextureOptions::LINEAR,
+            ));
+        }
+        self.sequence = image.sequence;
+        self.size = (image.width, image.height);
+    }
+    fn keypad_event(&mut self, key: &crate::remote_keypad::KeypadEvent) {
+        if key.pressed {
+            self.keys.insert(key.scan_code);
+        } else {
+            self.keys.remove(&key.scan_code);
+        }
+        self.modifiers = key.modifiers;
+        self.input(InputMessage::Keyboard {
+            scan_code: key.scan_code,
+            pressed: key.pressed,
+            repeat: key.repeat,
+            modifiers: key.modifiers,
+        });
+    }
     fn surface(&mut self, ui: &mut egui::Ui) {
         if let Some(image) = self.client.prepared_after(self.sequence) {
-            let (position, pixels) = image.upload_after(self.sequence, self.texture.is_some());
-            let color = egui::ImageData::Color(pixels);
-            if let Some(texture) = &mut self.texture {
-                if let Some(position) = position {
-                    texture.set_partial(position, color, egui::TextureOptions::LINEAR);
-                } else {
-                    texture.set(color, egui::TextureOptions::LINEAR);
-                }
-            } else {
-                self.texture = Some(ui.ctx().load_texture(
-                    format!("remote-{:?}", self.id),
-                    color,
-                    egui::TextureOptions::LINEAR,
-                ));
-            }
-            self.sequence = image.sequence;
-            self.size = (image.width, image.height);
+            self.upload_frame(ui.ctx(), &image);
         }
         let available = ui.available_size().max(egui::vec2(1.0, 1.0));
         let response = surface_response(ui, self.id, available);
@@ -379,7 +416,18 @@ impl RemoteView {
         if self.raw_active && !self.native_keyboard.active() {
             self.release();
         }
-        if self.raw_active && ui.input(|i| i.events.iter().any(gui_key_reached_window)) {
+        let mut keypad = if ui.input(|i| i.focused) && !self.keyboard_paused {
+            native_window
+                .map(|window| crate::remote_keypad::take(self.id, window))
+                .unwrap_or_default()
+        } else {
+            crate::remote_keypad::Batch::default()
+        };
+        if self.raw_active
+            && (!keypad.events.is_empty()
+                || keypad.overflowed
+                || ui.input(|i| i.events.iter().any(gui_key_reached_window)))
+        {
             // An exclusive hook would have swallowed these keys. Do not throw
             // away the only copy when a hook expires, is removed by Windows,
             // or passes an event through during a focus/route transition.
@@ -423,7 +471,18 @@ impl RemoteView {
                     },
                 )
             });
+            if keypad.overflowed {
+                self.release();
+            }
+            // Renew fallback ownership if hook recovery released the route.
+            if let Some(window) = native_window {
+                let _ = crate::remote_keypad::take(self.id, window);
+            }
             for event in ui.input(|i| i.events.clone()) {
+                if let Some(key) = crate::remote_keypad::take_gui(&mut keypad.events, &event) {
+                    self.keypad_event(&key);
+                    continue;
+                }
                 match event {
                     egui::Event::Key {
                         key,
@@ -505,8 +564,15 @@ impl RemoteView {
                     _ => {}
                 }
             }
+            if !self.keyboard_paused {
+                for key in &keypad.events {
+                    self.keypad_event(key);
+                }
+            }
             if !self.raw_active && !self.keyboard_paused {
-                self.sync_modifiers(ui.input(|i| i.modifiers));
+                self.sync_modifiers(crate::remote_keyboard::current_modifiers(
+                    ui.input(|i| i.modifiers),
+                ));
             }
             // Finish the current GUI event batch before acquiring native capture,
             // so the click that focuses the surface cannot be lost or doubled.
@@ -531,25 +597,25 @@ impl RemoteView {
                 }
             }
         }
+        if focused && !self.keyboard_paused {
+            if let Some(window) = native_window {
+                let _ = crate::remote_keypad::take(self.id, window);
+            }
+        }
         self.input_focus = focused && !self.keyboard_paused;
         if self.clipboard_tick.elapsed() > Duration::from_millis(300) {
             self.clipboard_tick = Instant::now();
             let state = self.client.status();
-            if let Some(text) = state.clipboard {
+            if let Some(text) = &state.clipboard {
                 self.last_clipboard = text.clone();
-                if let Some(clipboard) = &mut self.clipboard {
-                    let _ = clipboard.set_text(text);
-                }
-            } else if focused {
-                if let Some(text) = self
-                    .clipboard
-                    .as_mut()
-                    .and_then(|c| c.get_text().ok())
-                    .filter(|t| t.len() <= 1024 * 1024 && t != &self.last_clipboard)
-                {
-                    self.last_clipboard = text.clone();
-                    self.send(Request::Clipboard { text });
-                }
+            }
+            if let Some(text) = self
+                .clipboard
+                .poll(state.clipboard, focused)
+                .filter(|text| text != &self.last_clipboard)
+            {
+                self.last_clipboard = text.clone();
+                self.send(Request::Clipboard { text });
             }
         }
         if self.native_keyboard.unavailable() {
@@ -615,7 +681,7 @@ fn point(pos: egui::Pos2, rect: egui::Rect, size: (u32, u32)) -> (i32, i32) {
             as i32,
     )
 }
-fn scan_code(key: egui::Key) -> Option<u32> {
+pub(crate) fn scan_code(key: egui::Key) -> Option<u32> {
     use egui::Key::*;
     Some(match key {
         Escape => 1,
@@ -737,6 +803,63 @@ fn lock_state() -> u16 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn presentation_resizes_use_new_textures_and_reject_unsupported_frames() {
+        let ctx = egui::Context::default();
+        let mut view = RemoteView::new(RemoteClient::test_stub(ctx.clone()), uuid::Uuid::new_v4());
+        let mut previous = None;
+        for (sequence, width, height) in [(1, 8, 4), (2, 16, 6), (3, 8, 4), (4, 16, 6)] {
+            let frame = crate::remote_frames::PreparedFrame::test_pattern(sequence, width, height);
+            let output = ctx.run(
+                egui::RawInput {
+                    max_texture_side: Some(2048),
+                    ..Default::default()
+                },
+                |ctx| {
+                    view.upload_frame(ctx, &frame);
+                },
+            );
+            let texture = view.texture.as_ref().unwrap();
+            assert_ne!(
+                Some(texture.id()),
+                previous,
+                "Resize reused a GPU texture identity"
+            );
+            assert_eq!(texture.size(), [width as usize, height as usize]);
+            let updates = output
+                .textures_delta
+                .set
+                .iter()
+                .filter(|(id, _)| *id == texture.id())
+                .collect::<Vec<_>>();
+            assert_eq!(updates.len(), 1);
+            assert_eq!(updates[0].1.pos, None, "Resize issued a partial GPU write");
+            assert_eq!(updates[0].1.image.size(), texture.size());
+            previous = Some(texture.id());
+        }
+        let frame = crate::remote_frames::PreparedFrame::test_pattern(5, 2049, 1);
+        let output = ctx.run(
+            egui::RawInput {
+                max_texture_side: Some(2048),
+                ..Default::default()
+            },
+            |ctx| {
+                view.upload_frame(ctx, &frame);
+            },
+        );
+        assert_eq!(
+            view.sequence, 4,
+            "Rejected frame advanced the incremental base"
+        );
+        assert_eq!(view.texture.as_ref().unwrap().id(), previous.unwrap());
+        assert!(output
+            .textures_delta
+            .set
+            .iter()
+            .all(|(id, _)| Some(*id) != previous));
+        assert!(view.error.as_ref().unwrap().contains("graphics limit"));
+    }
+
     #[test]
     fn desktop_surface_focus_survives_changing_controls_and_locks_navigation_keys() {
         let ctx = egui::Context::default();

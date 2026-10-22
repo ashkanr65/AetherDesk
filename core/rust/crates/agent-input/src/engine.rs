@@ -159,7 +159,16 @@ impl InputEngine {
         if code == 0 || code > KEY_MAX {
             return Err(InputError::InvalidKey(scan_code));
         }
+        let snapshot_edge = ad_stream_protocol::modifier_snapshot_already_applied(
+            scan_code,
+            pressed,
+            self.modifiers,
+            modifiers,
+        );
         self.synchronize_modifiers(modifiers)?;
+        if snapshot_edge {
+            return Ok(());
+        }
         let value = if repeat {
             2
         } else if pressed {

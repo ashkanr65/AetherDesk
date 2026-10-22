@@ -38,6 +38,22 @@ pub fn init(directory: &Path) {
         }
     });
 }
+/// Graphics errors describe renderer resources, not remote frame contents.
+/// Redact and cap the diagnostic before synchronously preserving it.
+pub fn graphics_failure(detail: &str) {
+    if let Some(mut file) = REPORT.get() {
+        graphics_record(&mut file, detail);
+        let _ = file.sync_data();
+    }
+}
+fn graphics_record(mut output: impl Write, detail: &str) {
+    let detail = crate::logging::redact("graphics_error", detail);
+    let _ = writeln!(
+        output,
+        "Client graphics error: {}",
+        detail.chars().take(8192).collect::<String>()
+    );
+}
 #[cfg(any(windows, test))]
 fn native_record(mut output: impl Write, code: u32, address: usize, thread: u32) {
     let _ = writeln!(
@@ -71,6 +87,20 @@ unsafe extern "system" fn native_exception(
 }
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn graphics_crash_details_are_bounded_and_redacted() {
+        let mut bytes = Vec::new();
+        super::graphics_record(&mut bytes, "Validation Error: write exceeds texture extent");
+        assert!(String::from_utf8(bytes).unwrap().contains("texture extent"));
+        let mut bytes = Vec::new();
+        super::graphics_record(&mut bytes, "token=private-value");
+        let text = String::from_utf8(bytes).unwrap();
+        assert!(text.contains("<redacted sensitive detail>"));
+        assert!(!text.contains("private-value"));
+        let mut bytes = Vec::new();
+        super::graphics_record(&mut bytes, &"x".repeat(20000));
+        assert!(bytes.len() < 8300);
+    }
     #[test]
     fn native_crash_record_contains_only_exception_metadata() {
         let mut bytes = Vec::new();

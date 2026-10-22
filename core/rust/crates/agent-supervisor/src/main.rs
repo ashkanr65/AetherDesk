@@ -36,6 +36,17 @@ enum Mode {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    if std::env::args().nth(1).as_deref() == Some("--window-mirror") {
+        let args: Vec<_> = std::env::args().skip(2).collect();
+        if args.len() != 2 || args[0] != "--session-id" {
+            return Err("usage: ad-agent --window-mirror --session-id UUID".into());
+        }
+        let session = Uuid::parse_str(&args[1])?.to_string();
+        agent_wayland::window_mirror::serve(&session)
+            .await
+            .map_err(|e| e.to_string())?;
+        return Ok(());
+    }
     if std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new("--version")) {
         println!("ad-agent {}", env!("CARGO_PKG_VERSION"));
         return Ok(());

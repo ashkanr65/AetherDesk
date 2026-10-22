@@ -425,6 +425,13 @@ impl SessionTab {
                                 Err(error) => self.status = error.into(),
                             }
                             self.remote_entries = result.entries.unwrap_or_default();
+                            if self
+                                .remote_entries
+                                .iter()
+                                .any(|e| e.kind == "unsupported-name")
+                            {
+                                self.status = "Some server filenames use a legacy encoding. They are shown disabled; other files remain available.".into();
+                            }
                             self.remote_entries
                                 .retain(|entry| !matches!(entry.name.as_str(), "." | ".."));
                             self.remote_entries
@@ -654,6 +661,21 @@ impl SessionTab {
     fn error(&mut self, error: String) {
         self.status = error.clone();
         self.notify(crate::notifications::Kind::Error, error);
+    }
+    pub fn server_time(&self) -> String {
+        let live = self.connected
+            && self
+                .remote
+                .as_ref()
+                .is_none_or(|remote| remote.client.peek_status().state == "connected");
+        if live {
+            self.connection
+                .as_ref()
+                .map(|connection| connection.server_time())
+                .unwrap_or_else(|| "--:--:--".into())
+        } else {
+            "--:--:--".into()
+        }
     }
     pub fn disconnect(&mut self) {
         self.deactivate();
@@ -1006,6 +1028,7 @@ impl SessionTab {
         let action = self.remote.as_mut().and_then(|remote| {
             let was_external = remote.is_external();
             remote.external_window(ctx);
+            remote.application_windows(ctx);
             let action = remote.take_action();
             return_to_tab = was_external && !remote.is_external() && action.is_none();
             action
@@ -1443,6 +1466,12 @@ impl SessionTab {
                         |ui, range| {
                             ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
                             for entry in &self.remote_entries[range] {
+                                if entry.kind == "unsupported-name" || entry.path.is_empty() {
+                                    ui.add_enabled_ui(false, |ui| {
+                                        crate::ui_icons::file_entry(ui, false, &entry.name, false);
+                                    }).response.on_hover_text("This filename is not UTF-8. AetherDesk will not guess its path or rename it. Other files remain available.");
+                                    continue;
+                                }
                                 let directory = entry.kind == "directory";
                                 let response = crate::ui_icons::file_entry(
                                     ui,
