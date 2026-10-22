@@ -196,3 +196,28 @@ installation, saved profile or live remote application was changed. Real upgrade
 restart/recovery, idle/wake and comprehensive detached-window acceptance remain
 pending; publication does not establish complete feature parity or resolution of
 the reported EOF/idle-hang root causes.
+
+## 0.1.3 build 2 publication — 22 October 2026
+
+[AetherDesk 0.1.3 build 2](https://github.com/ashkanr65/AetherDesk/releases/tag/v0.1.3-build2)
+is published as the normal latest automatic update in the public source repository.
+The maintainer reports the completed build works and authorized update preparation.
+All seven actual build stages passed in 01:24:04, including Windows/Linux native
+regressions and bundled X11. Package fingerprint
+`24b729d37290a9becdc129d3faf037cf96c50619915e76aa1b83e5e21b4e3f5c`
+matched the current build inputs before signing and after the source commit.
+The release tag targets `0b4c7c0f09c11255ec2e04d0e1735586c4e28014`, pushed directly to main.
+
+The existing pinned Ed25519 key signed the update. All 7,181 portable files and
+the installer copy verified. GitHub reported matching SHA-256 digests and lengths
+for all three uploaded assets. Anonymous latest-release and runtime asset API
+downloads returned build 2; complete installer, ZIP and metadata downloads matched
+their signed local hashes, and the downloaded metadata verified with the pinned key.
+
+Evidence: `AetherDesk-Rust-output/acceptance/update-0.1.3-build2-20261022`.
+Latest signed-release and release-check pointers now refer to build 2. Existing
+users can choose gear menu → Updates → Check now. No application was compiled by
+the assistant, no installation was replaced, and no live remote work was changed.
+Actual two-version upgrades/restart, clean-machine and wider EDA acceptance remain
+separate. Release notes retain experimental independent-window limitations,
+including lack of live viewing after minimizing the original application.
