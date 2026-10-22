@@ -21,6 +21,8 @@ pub(crate) enum SessionAction {
     End,
 }
 pub struct RemoteView {
+    wheel: crate::remote_mouse::Wheel,
+    cursor: crate::remote_cursor::Cursor,
     applications: crate::remote_applications::Applications,
     action: Option<SessionAction>,
     input_focus: bool,
@@ -102,6 +104,8 @@ impl RemoteView {
             .map(crate::remote_geometry::monitor_properties)
             .collect();
         Self {
+            wheel: Default::default(),
+            cursor: Default::default(),
             applications: crate::remote_applications::Applications::new(client.window_target(), id),
             action: None,
             input_focus: false,
@@ -387,6 +391,13 @@ impl RemoteView {
             ui.ctx().request_repaint_after(Duration::from_millis(100));
             return;
         }
+        let pointer = ui.input(|i| i.pointer.hover_pos());
+        let toolbar_blocked = pointer.is_some_and(|p| self.pointer_is_toolbar(ui.ctx(), p));
+        let scrolling =
+            crate::remote_mouse::scroll_interaction(ui, &response, image_rect, toolbar_blocked);
+        let cursor_allowed = response.hovered() && !toolbar_blocked;
+        self.cursor
+            .paint(ui, image_rect, ratio, self.client.cursor(), cursor_allowed);
         if self.native_keyboard.take_exit() {
             self.release();
             self.keyboard_paused = true;
@@ -396,16 +407,15 @@ impl RemoteView {
             }
             return;
         }
-        let toolbar_blocked = ui
-            .input(|i| i.pointer.hover_pos())
-            .is_some_and(|p| self.pointer_is_toolbar(ui.ctx(), p));
         if ui.input(|i| i.pointer.any_pressed()) && (toolbar_blocked || !response.hovered()) {
             self.release();
             self.keyboard_paused = true;
             response.surrender_focus();
         }
         if !toolbar_blocked
-            && (response.clicked() || (response.hovered() && ui.input(|i| i.pointer.any_pressed())))
+            && (response.clicked()
+                || (response.hovered() && ui.input(|i| i.pointer.any_pressed()))
+                || scrolling)
         {
             self.keyboard_paused = false;
             response.request_focus();
@@ -413,7 +423,7 @@ impl RemoteView {
         restore_surface_focus(ui, &response, self.keyboard_paused);
         // A hook lease can expire while a modal or slow frame is active. Never
         // suppress GUI key events merely because the previous frame owned it.
-        if self.raw_active && !self.native_keyboard.active() {
+        if self.raw_active && self.native_keyboard.active() == Some(false) {
             self.release();
         }
         let mut keypad = if ui.input(|i| i.focused) && !self.keyboard_paused {
@@ -556,10 +566,15 @@ impl RemoteView {
                             y,
                         });
                     }
-                    egui::Event::MouseWheel { unit, delta, .. }
-                        if !self.raw_active && response.hovered() && !toolbar_blocked =>
-                    {
-                        self.input(crate::remote_mouse::gui_wheel(unit, delta));
+                    egui::Event::MouseWheel { unit, delta, .. } if scrolling => {
+                        if let Some(event) = self.wheel.convert(unit, delta) {
+                            if let Some(pos) = ui.input(|i| i.pointer.hover_pos()) {
+                                let (x, y) = point(pos, image_rect, self.size);
+                                self.last_pointer = (x, y);
+                                self.input(InputMessage::PointerMove { x, y, monitor: 0 });
+                            }
+                            self.input(event);
+                        }
                     }
                     _ => {}
                 }

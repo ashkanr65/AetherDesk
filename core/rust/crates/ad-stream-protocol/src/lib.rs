@@ -19,6 +19,14 @@ use thiserror::Error;
 use uuid::Uuid;
 
 pub const PROTOCOL_VERSION: u16 = 3;
+/// Optional shape-only cursor transport. Preserve the lossless prefix and the
+/// final 128 random nonce bits; channel authentication uses its separate token.
+pub fn advertise_cursor_shapes(nonce: &mut [u8; 32]) {
+    nonce[8..16].copy_from_slice(b"ADCS0001");
+}
+pub fn cursor_shapes_supported(nonce: &[u8; 32]) -> bool {
+    &nonce[8..16] == b"ADCS0001"
+}
 pub const FRAME_MAGIC: [u8; 4] = *b"ARPP";
 pub const MAX_PAYLOAD_LEN: usize = 32 * 1024 * 1024;
 const FIXED_HEADER_LEN: usize = 4 + 2 + 1 + 1 + 2 + 8 + 4;
@@ -812,6 +820,20 @@ pub enum ProtocolError {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn cursor_shape_opt_in_preserves_lossless_negotiation_and_random_tail() {
+        let mut nonce = [73; 32];
+        assert!(!super::cursor_shapes_supported(&nonce));
+        super::lossless::advertise(&mut nonce);
+        super::advertise_cursor_shapes(&mut nonce);
+        assert!(super::lossless::supported(&nonce));
+        assert!(super::cursor_shapes_supported(&nonce));
+        assert_eq!(&nonce[16..], &[73; 16]);
+        let mut video_nonce = [39; 32];
+        super::advertise_cursor_shapes(&mut video_nonce);
+        assert!(!super::lossless::supported(&video_nonce));
+        assert!(super::cursor_shapes_supported(&video_nonce));
+    }
     #[test]
     fn desktop_layout_limits_support_wide_monitors_without_unbounded_allocations() {
         use super::*;

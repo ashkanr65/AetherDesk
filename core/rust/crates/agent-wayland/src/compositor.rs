@@ -222,6 +222,7 @@ pub enum CompositorEvent {
 }
 
 pub struct HeadlessCompositor {
+    cursors: watch::Receiver<Option<Arc<crate::host_cursor::CursorImage>>>,
     socket_name: OsString,
     commands: std_mpsc::Sender<CompositorCommand>,
     frames: watch::Receiver<Option<Arc<CapturedFrame>>>,
@@ -236,6 +237,7 @@ impl HeadlessCompositor {
         let (commands, command_rx) = std_mpsc::channel();
         let (frame_tx, frames) = watch::channel(None);
         let (clipboard_tx, clipboards) = mpsc::channel(8);
+        let (cursor_tx, cursors) = watch::channel(None);
         let surfaces = Arc::new(RwLock::new(Vec::new()));
         let surface_output = surfaces.clone();
         let (ready_tx, ready_rx) = std_mpsc::sync_channel(1);
@@ -248,6 +250,7 @@ impl HeadlessCompositor {
                     command_rx,
                     frame_tx,
                     clipboard_tx,
+                    cursor_tx,
                     surface_output,
                     &ready_tx,
                 ) {
@@ -266,6 +269,7 @@ impl HeadlessCompositor {
             }
         };
         Ok(Self {
+            cursors,
             socket_name,
             commands,
             frames,
@@ -273,6 +277,12 @@ impl HeadlessCompositor {
             surfaces,
             thread: Some(thread),
         })
+    }
+
+    pub fn subscribe_cursors(
+        &self,
+    ) -> watch::Receiver<Option<Arc<crate::host_cursor::CursorImage>>> {
+        self.cursors.clone()
     }
 
     pub fn socket_name(&self) -> &OsStr {
@@ -434,6 +444,7 @@ pub(crate) struct AgentCompositorState {
     pub(crate) surface_output: Arc<RwLock<Vec<SurfaceSnapshot>>>,
     pub(crate) frame_tx: watch::Sender<Option<Arc<CapturedFrame>>>,
     pub(crate) clipboard_tx: mpsc::Sender<CapturedClipboard>,
+    pub(crate) cursor_tx: watch::Sender<Option<Arc<crate::host_cursor::CursorImage>>>,
     pub(crate) frame_id: u64,
     target_valid: bool,
     command_rx: std_mpsc::Receiver<CompositorCommand>,
@@ -455,6 +466,7 @@ fn run_compositor(
     command_rx: std_mpsc::Receiver<CompositorCommand>,
     frame_tx: watch::Sender<Option<Arc<CapturedFrame>>>,
     clipboard_tx: mpsc::Sender<CapturedClipboard>,
+    cursor_tx: watch::Sender<Option<Arc<crate::host_cursor::CursorImage>>>,
     surface_output: Arc<RwLock<Vec<SurfaceSnapshot>>>,
     ready_tx: &std_mpsc::SyncSender<Result<OsString, CompositorError>>,
 ) -> Result<(), CompositorError> {
@@ -469,6 +481,7 @@ fn run_compositor(
         command_rx,
         frame_tx,
         clipboard_tx,
+        cursor_tx,
         surface_output,
     )?;
     let socket_name = state.socket_name.clone();
@@ -509,6 +522,7 @@ impl AgentCompositorState {
         command_rx: std_mpsc::Receiver<CompositorCommand>,
         frame_tx: watch::Sender<Option<Arc<CapturedFrame>>>,
         clipboard_tx: mpsc::Sender<CapturedClipboard>,
+        cursor_tx: watch::Sender<Option<Arc<crate::host_cursor::CursorImage>>>,
         surface_output: Arc<RwLock<Vec<SurfaceSnapshot>>>,
     ) -> Result<Self, CompositorError> {
         let display_handle = display.handle();
@@ -595,6 +609,7 @@ impl AgentCompositorState {
             surface_output,
             frame_tx,
             clipboard_tx,
+            cursor_tx,
             frame_id: 0,
             target_valid: false,
             command_rx,
@@ -770,6 +785,17 @@ impl AgentCompositorState {
                     ._seat
                     .get_keyboard()
                     .ok_or(CompositorError::Input("Wayland keyboard is unavailable"))?;
+                let keycode = scan_code
+                    .checked_add(8)
+                    .ok_or(CompositorError::Input("keyboard scan code overflow"))?
+                    .into();
+                // Native and GUI routes can hand over while a modifier is held.
+                // Reapplying its press to XKB can leave it latched after release.
+                if matches!(scan_code, 42 | 54 | 29 | 97 | 56 | 100 | 125 | 126)
+                    && keyboard.pressed_keys().contains(&keycode) == pressed
+                {
+                    return Ok(());
+                }
                 let state = if pressed {
                     KeyState::Pressed
                 } else {
@@ -778,10 +804,7 @@ impl AgentCompositorState {
                 keyboard.input::<(), _>(
                     self,
                     // ARPP uses evdev codes; XKB reserves the first eight codes.
-                    scan_code
-                        .checked_add(8)
-                        .ok_or(CompositorError::Input("keyboard scan code overflow"))?
-                        .into(),
+                    keycode,
                     state,
                     smithay::utils::SERIAL_COUNTER.next_serial(),
                     time,
@@ -917,7 +940,7 @@ impl AgentCompositorState {
         for (mask, code) in [(1_u16, 42_u32), (2, 29), (4, 56), (8, 125)] {
             let previous = self.remote_modifiers & mask != 0;
             let next = requested & mask != 0;
-            if previous != next {
+            if previous != next && keyboard.pressed_keys().contains(&(code + 8).into()) != next {
                 keyboard.input::<(), _>(
                     self,
                     (code + 8).into(),
@@ -2041,6 +2064,75 @@ mod tests {
         }
         assert_eq!(actual_buttons, expected_buttons,
             "left/right/middle/side buttons and all wheel directions must reach the X11 application unchanged");
+        // Exercise native -> GUI handoff while a physical modifier is held,
+        // including duplicate edges and the independently held right-side key.
+        let modifier_edge = |scan_code, pressed, modifiers| {
+            compositor
+                .inject_input(InputMessage::Keyboard {
+                    scan_code,
+                    pressed,
+                    modifiers: locks | modifiers,
+                    repeat: false,
+                })
+                .unwrap();
+        };
+        let click_and_scroll_state = |expected: KeyButMask| {
+            for pressed in [true, false] {
+                compositor
+                    .inject_input(InputMessage::PointerButton {
+                        button: 1,
+                        pressed,
+                        x: 10,
+                        y: 10,
+                    })
+                    .unwrap();
+            }
+            compositor
+                .inject_input(InputMessage::PointerWheel {
+                    horizontal: 0,
+                    vertical: 120,
+                })
+                .unwrap();
+            let mut edges = Vec::new();
+            let deadline = Instant::now() + Duration::from_secs(3);
+            while edges.len() < 4 && Instant::now() < deadline {
+                use smithay::reexports::x11rb::protocol::Event;
+                let edge = match connection.poll_for_event().unwrap() {
+                    Some(Event::ButtonPress(event)) => Some((true, event.detail, event.state)),
+                    Some(Event::ButtonRelease(event)) => Some((false, event.detail, event.state)),
+                    _ => None,
+                };
+                if let Some((pressed, button, state)) = edge {
+                    assert_eq!(
+                        state & (KeyButMask::SHIFT | KeyButMask::CONTROL),
+                        expected,
+                        "modifier state leaked into or disappeared from click/wheel"
+                    );
+                    edges.push((pressed, button));
+                } else {
+                    thread::sleep(Duration::from_millis(5));
+                }
+            }
+            assert_eq!(edges, [(true, 1), (false, 1), (true, 4), (false, 4)]);
+        };
+        for (physical, left, bit, mask) in [
+            (42, 42, 1, KeyButMask::SHIFT),
+            (54, 42, 1, KeyButMask::SHIFT),
+            (29, 29, 2, KeyButMask::CONTROL),
+            (97, 29, 2, KeyButMask::CONTROL),
+        ] {
+            modifier_edge(physical, true, 0);
+            modifier_edge(physical, true, 0);
+            assert!(key_state(30, locks).contains(mask));
+            modifier_edge(left, true, bit);
+            modifier_edge(left, true, bit);
+            click_and_scroll_state(mask);
+            modifier_edge(physical, false, bit);
+            modifier_edge(left, false, 0);
+            modifier_edge(left, false, 0);
+            assert!(!key_state(30, locks).contains(mask));
+            click_and_scroll_state(KeyButMask::default());
+        }
         compositor.shutdown();
         assert_eq!(
             received,

@@ -1,6 +1,17 @@
-# AetherDesk 0.1.3
+# AetherDesk 0.1.3 — build 2
 
-AetherDesk 0.1.3 adds experimental independent application windows and improves remote input, file browsing and idle handling.
+AetherDesk 0.1.3 build 2 improves keyboard capture, mouse-wheel handling, independent application windows and saved appearance settings.
+
+## Changes in build 2
+
+- **Ctrl and Shift:** balance modifier releases on Windows, repair missed modifier edges before remote mouse selections, and avoid duplicate modifier injection during native/GUI capture changes. Brief capture-lock contention no longer falsely releases host input.
+- **Mouse wheel:** use one GUI wheel route, activate the remote image before scrolling, and preserve small high-resolution wheel movements without amplifying them. Independent views restore their target focus before sending scroll input.
+- **Remote cursor shapes:** forward host cursor images so resize and text pointers can appear over the remote desktop.
+- **Independent application windows:** improve owned-menu focus handling and mixed-DPI resize stability. Fix a nested GUI-context lock that could deadlock independent-view sizing.
+- **Appearance:** preserve saved light/dark palettes and reset defaults more reliably, including when another application instance saves unrelated preferences.
+- **Reliability and diagnostics:** avoid awaiting completed shutdown tasks twice and add bounded background evidence when the Windows GUI stops responding. Installation shortcuts use a consistent working directory.
+
+The maintainer reports that the completed build works in their testing. This does not replace clean-machine, real upgrade/restart or wider EDA acceptance.
 
 ## New and improved
 
@@ -16,7 +27,7 @@ AetherDesk 0.1.3 adds experimental independent application windows and improves 
 
 ## Known limitations
 
-Independent application windows are experimental and have known bugs. Automatic managed-dialog families, multiple independent views per connection, complete IME/clipboard integration, true removal of the original desktop window, and reconnect restoration remain incomplete. Actual EDA application menus, colours and mixed-DPI behavior still require wider validation. Remote desktop and SSH+X11 remain available alongside this feature.
+Independent application windows are experimental and have known bugs. Keeping an independent view live after minimizing the original application is not yet supported. Automatic managed-dialog families, multiple independent views per connection, complete IME/clipboard integration, true removal of the original desktop window, and reconnect restoration remain incomplete. Actual EDA application menus, colours and mixed-DPI behavior still require wider validation. Remote desktop and SSH+X11 remain available alongside this feature.
 
 Files with non-UTF-8 names cannot yet be opened or transferred through AetherDesk. Recursive operations involving them are refused rather than silently omitting files or changing their names.
 

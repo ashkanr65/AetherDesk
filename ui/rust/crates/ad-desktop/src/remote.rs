@@ -45,6 +45,7 @@ pub struct Image {
     pub damage: Option<ImageDamage>,
 }
 struct FrameSlot {
+    cursor: Mutex<Option<Arc<ad_display_decoder::CursorState>>>,
     image: Mutex<Option<Image>>,
     prepared: Arc<Mutex<Option<crate::remote_frames::PreparedFrame>>>,
     ctx: egui::Context,
@@ -147,6 +148,7 @@ impl RemoteClient {
         let mut lifecycle =
             RemoteSessionLifecycle::new(Arc::new(SshAgentHost::new(ssh.clone())), session_id);
         lifecycle.enable_lossless_tiles(std::env::var_os("AETHERDESK_DESKTOP_VIDEO").is_none());
+        lifecycle.enable_cursor_shapes(true);
         let host = ssh.clone();
         let started = std::time::Instant::now();
         let session = match lifecycle
@@ -172,6 +174,7 @@ impl RemoteClient {
             clipboard: None,
         }));
         let latest = Arc::new(FrameSlot {
+            cursor: Mutex::new(None),
             image: Mutex::new(None),
             prepared: Arc::new(Mutex::new(None)),
             ctx: ctx.clone(),
@@ -241,6 +244,7 @@ impl RemoteClient {
                 clipboard: None,
             })),
             latest: Arc::new(FrameSlot {
+                cursor: Mutex::new(None),
                 image: Mutex::new(None),
                 prepared: Arc::new(Mutex::new(None)),
                 ctx,
@@ -264,6 +268,9 @@ impl RemoteClient {
         let result = status.clone();
         status.clipboard = None;
         result
+    }
+    pub(crate) fn cursor(&self) -> Option<Arc<ad_display_decoder::CursorState>> {
+        self.latest.cursor.lock().clone()
     }
     pub fn frame(&self) -> Option<Image> {
         self.latest.image.lock().clone()
@@ -581,6 +588,16 @@ async fn run_display(
         let update = tokio::select! {
             message = display.recv() => {
                 let message = message.ok_or("display channel closed")?;
+                if let ad_stream_protocol::DisplayMessage::CursorUpdate { width, height, rgba, .. } = &message {
+                    if *width > 256 || *height > 256 || rgba.len() > 256 * 256 * 4 { return Err("Host cursor exceeds the shape limit".into()); }
+                    // Validate normally but keep cursor changes out of the framebuffer,
+                    // video decoder, desktop conversions and full texture uploads.
+                    if let PresentationUpdate::Cursor(cursor) = presentation.handle(message).map_err(|e| e.to_string())? {
+                        *latest.cursor.lock() = Some(Arc::new(cursor));
+                        latest.ctx.request_repaint();
+                    }
+                    continue;
+                }
                 if ad_display_decoder::LosslessAssembler::handles(&message) {
                     lossless.push(message).map_err(str::to_owned)?.map(Work::Lossless)
                 } else { match presentation.handle(message).map_err(|e| e.to_string())? {

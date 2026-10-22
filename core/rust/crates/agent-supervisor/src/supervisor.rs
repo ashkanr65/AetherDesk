@@ -62,6 +62,7 @@ enum CaptureCommand {
 }
 
 pub struct AgentSupervisor {
+    cursors: watch::Receiver<Option<Arc<agent_wayland::host_cursor::CursorImage>>>,
     session_id: Uuid,
     state: Arc<RwLock<SessionState>>,
     clients: Arc<Mutex<HashSet<Uuid>>>,
@@ -93,6 +94,7 @@ impl AgentSupervisor {
         .await
         .map_err(SupervisorError::TaskJoin)??;
         compositor.launch(config.application)?;
+        let cursors = compositor.subscribe_cursors();
 
         let mut rate = MediaRate::new(config.encoder.bitrate_kbps, config.encoder.framerate);
         let size = (config.encoder.width, config.encoder.height);
@@ -158,6 +160,7 @@ impl AgentSupervisor {
         set_state(&state, SessionState::Detached);
         info!(%session_id, "persistent AetherDesk session started");
         Ok(Self {
+            cursors,
             session_id,
             state,
             clients,
@@ -205,6 +208,12 @@ impl AgentSupervisor {
 
     pub fn subscribe_packets(&self) -> broadcast::Receiver<EncodedPacket> {
         self.packets.subscribe()
+    }
+
+    pub fn subscribe_cursors(
+        &self,
+    ) -> watch::Receiver<Option<Arc<agent_wayland::host_cursor::CursorImage>>> {
+        self.cursors.clone()
     }
 
     pub fn subscribe_clipboards(&self) -> broadcast::Receiver<CapturedClipboard> {

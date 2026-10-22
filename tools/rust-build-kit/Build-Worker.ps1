@@ -106,7 +106,7 @@ try {
                 'UsePreviousGroup=no',
                 'UsePreviousAppDir=yes',
                 'PrivilegesRequired=lowest',
-                'CloseApplications=no',
+                'CloseApplications=yes',
                 'RestartApplications=no',
                 'MinVersion=10.0',
                 'ArchitecturesAllowed=x64compatible',
@@ -130,9 +130,9 @@ try {
                 '[Files]',
                 ('Source: "' + $package + '\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs'),
                 '[Icons]',
-                'Name: "{group}\AetherDesk"; Filename: "{app}\AetherDesk.exe"',
+                'Name: "{group}\AetherDesk"; Filename: "{app}\AetherDesk.exe"; WorkingDir: "{app}"',
                 '[Run]',
-                'Filename: "{app}\AetherDesk.exe"; Description: "Open AetherDesk"; Flags: nowait postinstall skipifsilent'
+                'Filename: "{app}\AetherDesk.exe"; Description: "Open AetherDesk"; WorkingDir: "{app}"; Flags: nowait postinstall skipifsilent'
             ) | Set-Content -LiteralPath $script -Encoding UTF8
             Invoke-StepTool (Get-Iscc) @($script)
             $result = Join-Path $packagesRoot ($installerName + '.exe')

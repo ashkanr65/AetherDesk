@@ -317,7 +317,7 @@ impl Panel {
         self.open = true;
     }
     pub fn toggle_mode(&mut self, dark: bool) -> Result<(), String> {
-        let mut settings = self.settings.clone();
+        let mut settings = load()?.unwrap_or_else(|| self.settings.clone());
         settings.mode = if dark { Mode::Dark } else { Mode::Light };
         self.save(settings)
     }
@@ -377,7 +377,9 @@ impl Panel {
         if self.section == Section::Files {
             self.draft.follow_cwd = Some(self.follow_cwd);
         }
-        let mut settings = self.settings.clone();
+        // A second installed/portable instance may have saved a palette since
+        // this panel was opened. Merge only the section being applied.
+        let mut settings = load()?.unwrap_or_else(|| self.settings.clone());
         copy_section(&mut settings, &self.draft, self.section);
         self.save(settings)?;
         self.message = format!("{} preferences saved.", self.section.label());
@@ -1337,6 +1339,64 @@ mod tests {
                 std::fs::read(dir.path().join("updates.json")).unwrap(),
                 updates
             );
+        });
+    }
+    #[test]
+    fn reset_palettes_survive_restart_stale_instance_toggles_and_system_theme_changes() {
+        let _restore = RestoreSettings(current());
+        let dir = tempfile::tempdir().unwrap();
+        crate::storage::with_test_root(dir.path(), || {
+            let mut stale = Panel::load(true);
+            let mut editor = Panel::load(true);
+            editor.show();
+            editor.section = Section::Display;
+            editor.draft.themes.dark.panel = [7, 8, 9];
+            editor.draft.themes.light.panel = [213, 214, 215];
+            editor.apply_section().unwrap();
+            stale.toggle_mode(false).unwrap();
+            assert_eq!(load().unwrap().unwrap().themes.dark.panel, [7, 8, 9]);
+            editor.restore_section(true);
+            editor.apply_section().unwrap();
+            stale.toggle_mode(false).unwrap();
+            stale.section = Section::General;
+            stale.draft.confirm_quit = false;
+            stale.apply_section().unwrap();
+            let reloaded = Panel::load(true); // old workspace mode must lose to saved preferences
+            assert!(reloaded.settings.mode == Mode::Light);
+            assert_eq!(reloaded.settings.themes, Themes::default());
+            let ctx = egui::Context::default();
+            ctx.set_theme(egui::Theme::Dark);
+            ctx.set_visuals(egui::Visuals {
+                panel_fill: egui::Color32::RED,
+                ..egui::Visuals::dark()
+            });
+            crate::theme::apply(&ctx, false);
+            assert_eq!(ctx.theme(), egui::Theme::Light);
+            for (mode, dark) in [(egui::Theme::Dark, true), (egui::Theme::Light, false)] {
+                assert_eq!(
+                    ctx.style_of(mode).visuals.panel_fill,
+                    Palette::defaults(dark).colors().panel
+                );
+            }
+            let mut system = reloaded.settings.clone();
+            system.mode = Mode::System;
+            install(system);
+            crate::theme::apply(&ctx, true);
+            for mode in [egui::Theme::Light, egui::Theme::Dark, egui::Theme::Light] {
+                let _ = ctx.run(
+                    egui::RawInput {
+                        system_theme: Some(mode),
+                        ..Default::default()
+                    },
+                    |ctx| {
+                        assert_eq!(ctx.theme(), mode);
+                        assert_eq!(
+                            ctx.style().visuals.panel_fill,
+                            Palette::defaults(mode == egui::Theme::Dark).colors().panel
+                        );
+                    },
+                );
+            }
         });
     }
     #[test]

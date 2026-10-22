@@ -40,6 +40,7 @@ impl Sample {
 }
 #[derive(Clone, Default)]
 pub struct WindowSizing {
+    minimum: Option<Vec2>,
     initial: Option<Vec2>,
     preferred: Option<Vec2>, // Windows logical size, independent of application zoom.
     applied: Option<Signature>,
@@ -135,7 +136,46 @@ pub(crate) fn diagnostic_size(ctx: &egui::Context, viewport: egui::ViewportId) -
     ctx.data(|d| d.get_temp::<WindowSizing>(state_id(viewport)))
         .and_then(|s| s.applied.and(s.current_size))
 }
+/// Seed from the child viewport's own DPI and measured decorations, never its
+/// parent's DPI. Keep the same policy for later monitor transitions.
+pub(crate) fn application_initial_size(ctx: &egui::Context, desired: Vec2) -> Vec2 {
+    let desired = sample(ctx)
+        .map(|s| desired.min(s.signature.available))
+        .unwrap_or(desired)
+        .max(egui::vec2(100.0, 80.0));
+    let key = state_id(ctx.viewport_id());
+    let zoom = ctx.zoom_factor();
+    ctx.data_mut(|d| {
+        let mut sizing = d.get_temp::<WindowSizing>(key).unwrap_or_default();
+        sizing.minimum = Some(egui::vec2(100.0, 80.0));
+        sizing.preferred = Some(desired * zoom);
+        d.insert_temp(key, sizing);
+    });
+    desired
+}
+/// Remote application resizing must wait for Windows' move/DPI transaction and
+/// our native size command to finish. A monitor transition is a new baseline,
+/// not a request to resize an application on the server.
+pub(crate) fn application_resize_environment(ctx: &egui::Context) -> Option<(egui::Rect, u32)> {
+    let s = sample(ctx)?;
+    let key = state_id(ctx.viewport_id());
+    let sizing = ctx.data(|d| d.get_temp::<WindowSizing>(key))?;
+    sizing
+        .settled(s)
+        .then_some((s.signature.monitor, ctx.pixels_per_point().to_bits()))
+}
 impl WindowSizing {
+    fn settled(&self, s: Sample) -> bool {
+        !s.moving
+            && s.coherent
+            && !s.suspended
+            && self.applied == Some(s.signature)
+            && self.pending.is_none()
+            && self.awaiting.is_none()
+            && self
+                .last_size
+                .is_some_and(|size| (size - s.native_size()).length() < 1.0)
+    }
     fn update_named(&mut self, ctx: &egui::Context, role: &'static str) {
         let Some(sample) = sample(ctx) else { return };
         self.current_size = Some(sample.inner);
@@ -231,7 +271,9 @@ impl WindowSizing {
         if changed {
             let available = s.signature.available;
             commands.push(egui::ViewportCommand::MinInnerSize(
-                MINIMUM.min(egui::vec2(available.x * 0.5, available.y)),
+                self.minimum
+                    .unwrap_or(MINIMUM)
+                    .min(egui::vec2(available.x * 0.5, available.y)),
             ));
             if !s.snapped() {
                 let wanted = (self.preferred.unwrap() / s.signature.zoom).min(available);
@@ -255,6 +297,41 @@ pub fn sidebar_maximum(available: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn remote_application_resize_waits_for_native_drag_dpi_and_size_acknowledgement() {
+        let monitor =
+            egui::Rect::from_min_size(egui::pos2(-1920.0, 0.0), egui::vec2(1920.0, 1080.0));
+        let first = fixture(monitor, 1.0, 1.0, egui::vec2(800.0, 600.0));
+        let mut sizing = WindowSizing::default();
+        settle(&mut sizing, first, 0.0);
+        assert!(sizing.settled(first));
+        let mut next = fixture(
+            egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(2560.0, 1440.0)),
+            1.5,
+            1.0,
+            first.inner,
+        );
+        next.moving = true;
+        for at in [1.0, 2.0, 3.0] {
+            assert!(sizing.step(next, at).is_empty());
+            assert!(!sizing.settled(next));
+        }
+        next.moving = false;
+        next.coherent = false;
+        assert!(sizing.step(next, 4.0).is_empty());
+        assert!(!sizing.settled(next));
+        next.coherent = true;
+        settle(&mut sizing, next, 5.0);
+        assert!(sizing.settled(next));
+        // A manual resize is admitted only after its stable native size is known.
+        next.inner = egui::vec2(900.0, 650.0);
+        next.outer = egui::Rect::from_min_size(next.outer.min, next.inner + egui::vec2(12.0, 32.0));
+        assert!(!sizing.settled(next));
+        settle(&mut sizing, next, 6.0);
+        assert!(sizing.settled(next));
+        sizing.awaiting = Some((next.inner, 7.0));
+        assert!(!sizing.settled(next));
+    }
     fn fixture(monitor: egui::Rect, dpi: f32, zoom: f32, inner: Vec2) -> Sample {
         let work = egui::Rect::from_min_max(monitor.min / (dpi * zoom), monitor.max / (dpi * zoom));
         Sample {

@@ -46,6 +46,13 @@ pub fn graphics_failure(detail: &str) {
         let _ = file.sync_data();
     }
 }
+#[cfg(windows)]
+pub fn gui_unresponsive(age_ms: u64, phase: &str, thread: u32) {
+    if let Some(mut file) = REPORT.get() {
+        let _ = writeln!(file, "GUI unresponsive: last_update_ms_ago={age_ms} phase={phase} thread={thread}; three bounded WM_NULL probes failed. See health-{}.log. This is hang evidence, not a native exception.", std::process::id());
+        let _ = file.sync_data();
+    }
+}
 fn graphics_record(mut output: impl Write, detail: &str) {
     let detail = crate::logging::redact("graphics_error", detail);
     let _ = writeln!(

@@ -82,6 +82,7 @@ pub struct RemoteSessionLifecycle<C: AgentConnection> {
     session: Option<Arc<ArppSession>>,
     capabilities: Option<Capabilities>,
     lossless_tiles: bool,
+    cursor_shapes: bool,
 }
 
 impl<C: AgentConnection> RemoteSessionLifecycle<C> {
@@ -96,6 +97,7 @@ impl<C: AgentConnection> RemoteSessionLifecycle<C> {
             session: None,
             capabilities: None,
             lossless_tiles: false,
+            cursor_shapes: false,
         }
     }
 
@@ -117,6 +119,10 @@ impl<C: AgentConnection> RemoteSessionLifecycle<C> {
     /// Enable only when the caller owns a lossless transaction consumer.
     pub fn enable_lossless_tiles(&mut self, enabled: bool) {
         self.lossless_tiles = enabled;
+    }
+    /// Enable only for a client that paints shape updates at its local pointer.
+    pub fn enable_cursor_shapes(&mut self, enabled: bool) {
+        self.cursor_shapes = enabled;
     }
 
     pub fn capabilities(&self) -> Option<&Capabilities> {
@@ -253,7 +259,11 @@ impl<C: AgentConnection> RemoteSessionLifecycle<C> {
         .map_err(|_| LifecycleError::HandshakeTimeout)??;
         let session = Arc::new(ArppSession::new(transport));
         self.session = Some(session.clone());
-        let capabilities = cancellable(cancel, client_hello(&session, self.lossless_tiles)).await?;
+        let capabilities = cancellable(
+            cancel,
+            client_hello(&session, self.lossless_tiles, self.cursor_shapes),
+        )
+        .await?;
         validate_capabilities(&capabilities, parameters)?;
         cancellable(cancel, async {
             if saved_desktop {
@@ -305,7 +315,7 @@ impl<C: AgentConnection> RemoteSessionLifecycle<C> {
             .await?;
         let transport = self.connection.open_transport(&endpoint).await?;
         let session = Arc::new(ArppSession::new(transport));
-        let capabilities = client_hello(&session, self.lossless_tiles).await?;
+        let capabilities = client_hello(&session, self.lossless_tiles, self.cursor_shapes).await?;
         let manager = ResumptionManager::new(self.session_id, session.clone());
         manager.request(snapshot).await?;
         let state = wait_for_resume_state(&session, self.session_id).await?;
@@ -449,6 +459,7 @@ async fn cancellable<T>(
 async fn client_hello(
     session: &Arc<ArppSession>,
     lossless_tiles: bool,
+    cursor_shapes: bool,
 ) -> Result<Capabilities, LifecycleError> {
     let mut nonce = [0_u8; 32];
     SystemRandom::new()
@@ -456,6 +467,9 @@ async fn client_hello(
         .map_err(|_| LifecycleError::Random)?;
     if lossless_tiles {
         ad_stream_protocol::lossless::advertise(&mut nonce);
+    }
+    if cursor_shapes {
+        ad_stream_protocol::advertise_cursor_shapes(&mut nonce);
     }
     session
         .send(ArppMessage::Control(ControlMessage::ClientHello {

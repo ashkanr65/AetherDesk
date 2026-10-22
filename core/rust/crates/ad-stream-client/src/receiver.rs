@@ -33,6 +33,7 @@ struct Feedback {
 }
 
 pub struct StreamDemuxer {
+    joined: [bool; 4],
     receive_task: JoinHandle<()>,
     input_task: JoinHandle<()>,
     feedback_task: JoinHandle<()>,
@@ -163,6 +164,7 @@ impl StreamDemuxer {
 
         (
             Self {
+                joined: [false; 4],
                 receive_task,
                 input_task,
                 feedback_task,
@@ -199,10 +201,24 @@ impl StreamDemuxer {
     /// Return ownership of session.receive only after all workers have stopped.
     pub async fn shutdown_and_wait(&mut self) {
         self.shutdown();
-        let _ = (&mut self.receive_task).await;
-        let _ = (&mut self.input_task).await;
-        let _ = (&mut self.feedback_task).await;
-        let _ = (&mut self.receipt_task).await;
+        // Cleanup can run both before lifecycle disconnect and in the common
+        // exit path. A completed JoinHandle must never be polled a second time.
+        // Mark each one immediately after its await so cancellation halfway
+        // through shutdown can also be resumed safely.
+        for (index, task) in [
+            &mut self.receive_task,
+            &mut self.input_task,
+            &mut self.feedback_task,
+            &mut self.receipt_task,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            if !self.joined[index] {
+                let _ = task.await;
+                self.joined[index] = true;
+            }
+        }
     }
 }
 
@@ -382,6 +398,8 @@ mod tests {
         let (mut demuxer, _channels) = StreamDemuxer::spawn(session.clone());
         tokio::task::yield_now().await;
         demuxer.shutdown_and_wait().await;
+        demuxer.shutdown_and_wait().await;
+        assert!(demuxer.joined.iter().all(|joined| *joined));
         let reply = ad_stream_protocol::ArppFrame::new(
             1,
             ArppMessage::Control(ControlMessage::Close {

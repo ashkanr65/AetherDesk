@@ -50,7 +50,16 @@ pub struct Mirror {
     selected: Option<Selected>,
     keys: BTreeSet<u8>,
     buttons: BTreeSet<u8>,
+    wheel: [i32; 2],
     popups: std::collections::BTreeMap<u32, PopupCapture>,
+}
+
+fn wheel_steps(remainder: &mut i32, value: i32) -> i32 {
+    let total = i64::from(*remainder) + i64::from(value);
+    *remainder = (total % 120) as i32;
+    // X11 exposes whole wheel buttons. Preserve small movements, retain the
+    // existing eight-click per-request bound, and never amplify every fraction.
+    (total / 120).clamp(-8, 8) as i32
 }
 
 fn private(path: &Path, directory: bool) -> Result<(), Error> {
@@ -169,6 +178,7 @@ impl Mirror {
             selected: None,
             keys: BTreeSet::new(),
             buttons: BTreeSet::new(),
+            wheel: [0; 2],
             popups: std::collections::BTreeMap::new(),
         })
     }
@@ -245,6 +255,7 @@ impl Mirror {
             .collect())
     }
     fn release_input(&mut self) -> Result<(), Error> {
+        self.wheel = [0; 2];
         if self.keys.is_empty() && self.buttons.is_empty() {
             return Ok(());
         }
@@ -502,7 +513,7 @@ impl Mirror {
     }
     fn focus(&mut self) -> Result<(), Error> {
         let id = self.selected.as_ref().ok_or("No application selected")?.id;
-        if self.active()? == id {
+        if self.application_has_focus()? {
             return Ok(());
         }
         self.release_input()?;
@@ -516,7 +527,7 @@ impl Mirror {
             .check()?;
         self.connection.flush()?;
         let deadline = Instant::now() + Duration::from_millis(250);
-        while self.active()? != id {
+        while !self.application_has_focus()? {
             if Instant::now() >= deadline {
                 return Err("Activate the application in the remote desktop before typing".into());
             }
@@ -526,13 +537,65 @@ impl Mirror {
     }
     fn require_focus(&mut self) -> Result<u32, Error> {
         let id = self.selected.as_ref().ok_or("No application selected")?.id;
-        if self.active()? != id {
+        if !self.application_has_focus()? {
             self.release_input()?;
             return Err(
                 "Application focus changed; click its independent view to activate it again".into(),
             );
         }
         Ok(id)
+    }
+    fn application_has_focus(&self) -> Result<bool, Error> {
+        let id = self.selected.as_ref().ok_or("No application selected")?.id;
+        let active = self.active()?;
+        let focused = self.connection.get_input_focus()?.reply()?.focus;
+        if active == id && (focused == id || focused <= 1) {
+            return Ok(true);
+        }
+        // A toolkit may focus a menu (or a child of it) while its popup grab
+        // owns input. Discover current, ownership-checked menus rather than
+        // trusting the previous captured frame or accepting any same-PID window.
+        let menus = self.popup_candidates(id)?;
+        let belongs = |mut window: u32| -> Result<bool, Error> {
+            for _ in 0..32 {
+                if window == id || menus.iter().any(|m| m.0 == window) {
+                    return Ok(true);
+                }
+                if window <= 1 || window == self.root {
+                    break;
+                }
+                let Ok(tree) = self.connection.query_tree(window)?.reply() else {
+                    break;
+                };
+                window = tree.parent;
+            }
+            Ok(false)
+        };
+        // A genuinely different active application always wins, even if an old
+        // menu from the selected app is still mapped.
+        if active != 0 && !belongs(active)? {
+            return Ok(false);
+        }
+        if focused > 1 {
+            return belongs(focused);
+        }
+        // PointerRoot/None is used during some legacy menu grabs. Require an
+        // actual pointer target in the currently validated family, not merely
+        // a cached menu or an unset active-window property.
+        if active == 0 && !menus.is_empty() {
+            let mut target = self.root;
+            for _ in 0..32 {
+                let pointer = self.connection.query_pointer(target)?.reply()?;
+                target = pointer.child;
+                if target == 0 {
+                    break;
+                }
+                if belongs(target)? {
+                    return Ok(true);
+                }
+            }
+        }
+        Ok(active == id || menus.iter().any(|m| m.0 == active))
     }
     fn motion(&mut self, x: i32, y: i32) -> Result<(), Error> {
         let id = self.require_focus()?;
@@ -676,10 +739,12 @@ impl Mirror {
                 vertical,
             } => {
                 self.require_focus()?;
-                for (value, positive, negative) in [(vertical, 4, 5), (horizontal, 7, 6)] {
-                    let steps = ((i64::from(value).abs() + 119) / 120).min(8);
-                    for _ in 0..steps {
-                        let code = if value > 0 { positive } else { negative };
+                for (index, value, positive, negative) in
+                    [(0, vertical, 4, 5), (1, horizontal, 7, 6)]
+                {
+                    let steps = wheel_steps(&mut self.wheel[index], value);
+                    for _ in 0..steps.abs() {
+                        let code = if steps > 0 { positive } else { negative };
                         xtest::fake_input(
                             &self.connection,
                             BUTTON_PRESS_EVENT,
@@ -1212,6 +1277,23 @@ pub(crate) fn verify_existing_window(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn x11_wheel_fractions_accumulate_without_amplification_or_axis_leakage() {
+        let mut axes = [0; 2];
+        for value in [30, 30, 30] {
+            assert_eq!(wheel_steps(&mut axes[0], value), 0);
+        }
+        assert_eq!(wheel_steps(&mut axes[1], -120), -1);
+        assert_eq!(wheel_steps(&mut axes[0], 30), 1);
+        assert_eq!(axes, [0; 2]);
+        assert_eq!(wheel_steps(&mut axes[0], 60), 0);
+        assert_eq!(wheel_steps(&mut axes[0], -60), 0);
+        assert_eq!(wheel_steps(&mut axes[0], -240), -2);
+        assert_eq!(wheel_steps(&mut axes[0], i32::MIN), -8);
+        assert!(axes[0].abs() < 120);
+        assert_eq!(wheel_steps(&mut axes[1], i32::MAX), 8);
+        assert!(axes[1].abs() < 120);
+    }
     #[test]
     fn window_capture_converts_padded_truecolour_without_channel_loss() {
         assert_eq!(

@@ -3356,6 +3356,18 @@
           "phase": "windows",
           "package": "ad-desktop",
           "source": "ui/rust/crates/ad-desktop/src/remote_keyboard.rs",
+          "test": "hooks_never_wait_for_route_ownership_or_hold_it_across_the_next_hook"
+        },
+        {
+          "phase": "windows",
+          "package": "ad-desktop",
+          "source": "ui/rust/crates/ad-desktop/src/process_health.rs",
+          "test": "health_probes_require_repeated_failures_and_ignore_idle_painting_and_sleep_gaps"
+        },
+        {
+          "phase": "windows",
+          "package": "ad-desktop",
+          "source": "ui/rust/crates/ad-desktop/src/remote_keyboard.rs",
           "test": "extended_keys_and_numpad_remain_distinct"
         },
         {
@@ -3447,6 +3459,12 @@
           "package": "ad-desktop",
           "source": "ui/rust/crates/ad-desktop/src/remote_mouse.rs",
           "test": "native_and_gui_mouse_routes_agree_on_buttons_releases_and_wheel_directions"
+        },
+        {
+          "phase": "windows",
+          "package": "ad-desktop",
+          "source": "ui/rust/crates/ad-desktop/src/remote_mouse.rs",
+          "test": "fractional_scrolls_preserve_distance_direction_and_view_isolation"
         },
         {
           "phase": "windows",
@@ -3626,6 +3644,18 @@
           "phase": "windows",
           "package": "ad-desktop",
           "source": "ui/rust/crates/ad-desktop/src/remote_application_view.rs",
+          "test": "scrolling_activates_the_application_before_ordered_motion_and_wheel"
+        },
+        {
+          "phase": "linux",
+          "package": "agent-wayland",
+          "source": "core/rust/crates/agent-wayland/src/window_mirror.rs",
+          "test": "x11_wheel_fractions_accumulate_without_amplification_or_axis_leakage"
+        },
+        {
+          "phase": "windows",
+          "package": "ad-desktop",
+          "source": "ui/rust/crates/ad-desktop/src/remote_application_view.rs",
           "test": "application_pixels_are_not_magnified_by_container_or_ui_scale"
         },
         {
@@ -3651,9 +3681,45 @@
           "package": "ad-desktop",
           "source": "ui/rust/crates/ad-desktop/src/remote_application_view.rs",
           "test": "menu_origin_adds_client_and_signed_popup_offsets_without_scaling_the_app"
+        },
+        {
+          "phase": "linux",
+          "package": "agent-wayland",
+          "source": "core/rust/crates/agent-wayland/src/host_cursor.rs",
+          "test": "cursor_shapes_preserve_channels_alpha_hotspot_and_bounds"
+        },
+        {
+          "phase": "windows",
+          "package": "ad-desktop",
+          "source": "ui/rust/crates/ad-desktop/src/remote_cursor.rs",
+          "test": "host_cursor_hotspot_tracks_local_pointer_at_every_presentation_scale"
+        },
+        {
+          "phase": "windows",
+          "package": "ad-desktop",
+          "source": "ui/rust/crates/ad-desktop/src/app_layout.rs",
+          "test": "remote_application_resize_waits_for_native_drag_dpi_and_size_acknowledgement"
+        },
+        {
+          "phase": "windows",
+          "package": "ad-stream-protocol",
+          "source": "core/rust/crates/ad-stream-protocol/src/lib.rs",
+          "test": "cursor_shape_opt_in_preserves_lossless_negotiation_and_random_tail"
+        },
+        {
+          "phase": "linux",
+          "package": "ad-stream-protocol",
+          "source": "core/rust/crates/ad-stream-protocol/src/lib.rs",
+          "test": "cursor_shape_opt_in_preserves_lossless_negotiation_and_random_tail"
+        },
+        {
+          "phase": "windows",
+          "package": "ad-desktop",
+          "source": "ui/rust/crates/ad-desktop/src/remote_cursor.rs",
+          "test": "host_cursor_uploads_only_its_small_shape_and_restores_local_pointer_outside_desktop"
         }
       ],
-      "liveAcceptance": "R6 source uses native physical monitor geometry and window placement, mixed DPI/negative origins, full host layouts on every tab/current/all transition, even/protocol-bounded sizes and unplugged-device fallback. Compile and verify host window repositioning, pointer alignment and hotplug under R12. Selected-window mirror remains a local prototype: verify exact colours under occlusion, focus/keyboard/mouse and resize, disposal without app termination, tab switching and connection-specific VPN. Window-family dialogs, native keyboard capture, hidden-original behavior and measured latency remain incomplete."
+      "liveAcceptance": "R6 source uses native physical monitor geometry and window placement, mixed DPI/negative origins, full host layouts on every tab/current/all transition, even/protocol-bounded sizes and unplugged-device fallback. Compile and verify host window repositioning, pointer alignment and hotplug under R12. Selected-window mirror remains a local prototype: verify exact colours under occlusion, focus/keyboard/mouse and resize, disposal without app termination, tab switching and connection-specific VPN. Window-family dialogs, native keyboard capture, hidden-original behavior and measured latency remain incomplete. Verify owned-menu focus, live host resize/text pointer shapes in tab/current/all modes, detached mixed-DPI dragging. Keeping a minimized original live still requires true-detachment architecture and is not implemented."
     },
     {
       "id": "desktop.toolbar",
@@ -5464,6 +5530,12 @@
     {
       "id": "preferences.application",
       "checks": [
+        {
+          "phase": "windows",
+          "package": "ad-desktop",
+          "source": "ui/rust/crates/ad-desktop/src/preferences.rs",
+          "test": "reset_palettes_survive_restart_stale_instance_toggles_and_system_theme_changes"
+        },
         {
           "phase": "windows",
           "package": "ad-desktop",

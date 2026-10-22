@@ -10,6 +10,7 @@ use worker::{State, Worker};
 mod view;
 
 pub(crate) struct Applications {
+    wheel: crate::remote_mouse::Wheel,
     target: Option<Target>,
     worker: Option<Worker>,
     id: egui::ViewportId,
@@ -22,6 +23,7 @@ pub(crate) struct Applications {
     input_window: Option<isize>,
     sized_window: Option<u32>,
     last_extent: Option<(u32, u32)>,
+    resize_environment: Option<(egui::Rect, u32)>,
     resize_due: Option<(std::time::Instant, (u32, u32))>,
     resize_after: std::time::Instant,
     popup_textures:
@@ -36,6 +38,7 @@ pub(crate) struct Applications {
 impl Applications {
     pub(crate) fn new(target: Option<Target>, session: uuid::Uuid) -> Self {
         Self {
+            wheel: Default::default(),
             target,
             worker: None,
             id: egui::ViewportId::from_hash_of(("remote-application", session)),
@@ -48,6 +51,7 @@ impl Applications {
             input_window: None,
             sized_window: None,
             last_extent: None,
+            resize_environment: None,
             resize_due: None,
             resize_after: std::time::Instant::now(),
             popup_textures: std::collections::BTreeMap::new(),
@@ -166,6 +170,7 @@ impl Applications {
             }
             if let Some(id) = pick {
                 self.release();
+                self.wheel = Default::default();
                 self.start(ctx);
                 self.send(Request::Select(id));
                 self.view = true;
@@ -254,6 +259,16 @@ mod tests {
                 egui::ViewportInfo {
                     parent: Some(viewport.ids.parent),
                     focused: Some(false),
+                    inner_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(800.0, 600.0),
+                    )),
+                    outer_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(812.0, 632.0),
+                    )),
+                    monitor_size: Some(egui::vec2(1920.0, 1080.0)),
+                    native_pixels_per_point: Some(1.0),
                     events: if close.get() {
                         vec![egui::ViewportEvent::Close]
                     } else {

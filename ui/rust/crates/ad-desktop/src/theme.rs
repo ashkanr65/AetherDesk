@@ -75,7 +75,7 @@ pub fn heading_font(size: f32) -> egui::FontId {
     egui::FontId::new(size, egui::FontFamily::Name("ui-heading".into()))
 }
 pub use crate::theme_palette::colors;
-pub fn apply(ctx: &egui::Context, dark: bool) {
+fn visuals(dark: bool) -> egui::Visuals {
     let c = colors(dark);
     let mut v = if dark {
         egui::Visuals::dark()
@@ -111,14 +111,26 @@ pub fn apply(ctx: &egui::Context, dark: bool) {
     v.selection.bg_fill = c.selection;
     v.selection.stroke = Stroke::new(1.0_f32, c.selection_text);
     v.hyperlink_color = c.information;
-    ctx.set_visuals(v);
+    v
+}
+pub fn apply(ctx: &egui::Context, dark: bool) {
+    // set_visuals() only changes whichever egui style is currently selected.
+    // Install both palettes before selecting the saved application mode so a
+    // previous/system theme can never redirect the saved colours into the other slot.
+    ctx.set_visuals_of(egui::Theme::Dark, visuals(true));
+    ctx.set_visuals_of(egui::Theme::Light, visuals(false));
+    ctx.set_theme(match crate::preferences::current().mode {
+        crate::preferences::Mode::System => egui::ThemePreference::System,
+        crate::preferences::Mode::Dark => egui::ThemePreference::Dark,
+        crate::preferences::Mode::Light => egui::ThemePreference::Light,
+    });
     ctx.send_viewport_cmd(egui::ViewportCommand::SetTheme(if dark {
         egui::SystemTheme::Dark
     } else {
         egui::SystemTheme::Light
     }));
     let font_size = crate::preferences::current().font_size;
-    ctx.style_mut(|style| {
+    ctx.all_styles_mut(|style| {
         style.spacing.button_padding = egui::vec2(10.0, 5.0);
         style.spacing.item_spacing = egui::vec2(8.0, 6.0);
         style

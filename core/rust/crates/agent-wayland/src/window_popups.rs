@@ -62,7 +62,10 @@ impl Mirror {
             }
         }
     }
-    fn popup_candidates(&self, selected: u32) -> Result<Vec<(u32, i32, i32, u32, u32)>, Error> {
+    pub(super) fn popup_candidates(
+        &self,
+        selected: u32,
+    ) -> Result<Vec<(u32, i32, i32, u32, u32)>, Error> {
         let origin = self
             .connection
             .translate_coordinates(selected, self.root, 0, 0)?
@@ -84,7 +87,8 @@ impl Mirror {
         .map(|name| self.atom(name))
         .collect::<Result<Vec<_>, _>>()?;
         let client_range = self.selected.as_ref().and_then(|s| s.client_range);
-        let selected_active = self.active()? == selected;
+        let active = self.active()?;
+        let selected_active = active == selected || active == 0;
         let mut family = BTreeSet::new();
         let mut regions = vec![(
             i32::from(origin.dst_x),
@@ -148,7 +152,14 @@ impl Mirror {
                 // EWMH menu properties. Accept only adjacent, untyped windows
                 // from the selected application's proven X client while active.
                 let menu_type = declared_types.iter().any(|v| types.contains(v))
-                    || (declared_types.is_empty() && same_client && selected_active);
+                    || (declared_types.is_empty()
+                        && same_client
+                        && (selected_active
+                            || active == id
+                            || self
+                                .selected
+                                .as_ref()
+                                .is_some_and(|s| s.popups.iter().any(|p| p.window == active))));
                 let owner_match =
                     same_client || leader == Some(owner) || (pid.is_some() && pid == other_pid);
                 if !related(
@@ -527,6 +538,80 @@ pub(super) fn verify_menus(mirror: &mut Mirror, controller: &RustConnection, win
         &[0x56, 0x34, 0x12, 255],
         "menu colours changed"
     );
+    // Toolkits can move actual X focus into menus/children, and temporarily
+    // advertise a menu as the active window. Neither is an unrelated app.
+    let active_atom = mirror.atom(b"_NET_ACTIVE_WINDOW").unwrap();
+    for focused in [menu, submenu, legacy] {
+        controller
+            .set_input_focus(InputFocus::PARENT, focused, 0u32)
+            .unwrap()
+            .check()
+            .unwrap();
+        controller
+            .change_property32(
+                PropMode::REPLACE,
+                root,
+                active_atom,
+                AtomEnum::WINDOW,
+                &[focused],
+            )
+            .unwrap()
+            .check()
+            .unwrap();
+        assert!(
+            mirror.application_has_focus().unwrap(),
+            "owned menu lost focus"
+        );
+        mirror
+            .handle(wire::Request::Key {
+                evdev: 42,
+                pressed: true,
+            })
+            .unwrap();
+        mirror
+            .handle(wire::Request::Key {
+                evdev: 42,
+                pressed: false,
+            })
+            .unwrap();
+    }
+    controller
+        .change_property32(
+            PropMode::REPLACE,
+            root,
+            active_atom,
+            AtomEnum::WINDOW,
+            &[foreign],
+        )
+        .unwrap()
+        .check()
+        .unwrap();
+    assert!(
+        !mirror.application_has_focus().unwrap(),
+        "foreign window acquired application input"
+    );
+    assert!(mirror
+        .handle(wire::Request::Key {
+            evdev: 42,
+            pressed: true
+        })
+        .is_err());
+    controller
+        .change_property32(
+            PropMode::REPLACE,
+            root,
+            active_atom,
+            AtomEnum::WINDOW,
+            &[window],
+        )
+        .unwrap()
+        .check()
+        .unwrap();
+    controller
+        .set_input_focus(InputFocus::PARENT, window, 0u32)
+        .unwrap()
+        .check()
+        .unwrap();
     mirror
         .handle(wire::Request::Move {
             x: menu_image.x + 40,

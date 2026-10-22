@@ -42,12 +42,15 @@ impl HostClipboard {
         display: u32,
         cookie: [u8; 16],
         output: tokio::sync::mpsc::Sender<CapturedClipboard>,
+        cursors: tokio::sync::watch::Sender<
+            Option<std::sync::Arc<crate::host_cursor::CursorImage>>,
+        >,
     ) -> std::io::Result<Self> {
         let (sender, receiver) = mpsc::channel();
         std::thread::Builder::new()
             .name("aetherdesk-x11-clipboard".into())
             .spawn(move || {
-                if let Err(error) = Bridge::run(display, cookie, receiver, output) {
+                if let Err(error) = Bridge::run(display, cookie, receiver, output, cursors) {
                     tracing::warn!(%error, "host desktop clipboard bridge stopped");
                 }
             })?;
@@ -106,6 +109,9 @@ impl Bridge {
         cookie: [u8; 16],
         commands: mpsc::Receiver<DesktopCommand>,
         output: tokio::sync::mpsc::Sender<CapturedClipboard>,
+        cursors: tokio::sync::watch::Sender<
+            Option<std::sync::Arc<crate::host_cursor::CursorImage>>,
+        >,
     ) -> Result<(), Error> {
         let stream = DefaultStream::from_unix_stream(UnixStream::connect(format!(
             "/tmp/.X11-unix/X{display}"
@@ -151,6 +157,16 @@ impl Bridge {
                 | xfixes::SelectionEventMask::SELECTION_CLIENT_CLOSE,
         )?
         .check()?;
+        // Cursor shape notifications are independent of desktop damage/video.
+        let cursor_supported = xfixes::select_cursor_input(
+            &connection,
+            window,
+            xfixes::CursorNotifyMask::DISPLAY_CURSOR,
+        )?
+        .check()
+        .is_ok();
+        let mut cursor_dirty = cursor_supported;
+        let mut cursor_at = Instant::now() - Duration::from_secs(1);
         let mut bridge = Self {
             window,
             clipboard,
@@ -211,9 +227,26 @@ impl Bridge {
                 let Some(event) = bridge.connection.poll_for_event()? else {
                     break;
                 };
+                if matches!(event, Event::XfixesCursorNotify(_)) {
+                    cursor_dirty = true;
+                    continue;
+                }
                 // A disappearing application must not tear down the bridge.
                 if let Err(error) = bridge.event(event) {
                     tracing::debug!(%error, "X11 clipboard transfer failed");
+                }
+            }
+            if cursor_dirty && cursor_at.elapsed() >= Duration::from_millis(20) {
+                cursor_dirty = false;
+                cursor_at = Instant::now();
+                match crate::host_cursor::capture(&bridge.connection) {
+                    Ok(image) => {
+                        let changed = cursors.borrow().as_deref() != Some(&image);
+                        if changed {
+                            cursors.send_replace(Some(std::sync::Arc::new(image)));
+                        }
+                    }
+                    Err(error) => tracing::debug!(%error, "Host cursor shape unavailable"),
                 }
             }
             // Let the window manager consume RandR/work-area notifications

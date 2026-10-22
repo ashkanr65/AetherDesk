@@ -208,12 +208,14 @@ async fn run_client(
     let client_id = Uuid::new_v4();
     let mut attached = false;
     let mut lossless = false;
+    let mut cursor_shapes = false;
     let mut hello_received = false;
     let (media_mode_tx, mut media_mode_rx) = tokio::sync::watch::channel(None::<bool>);
     let (mut width, mut height) = *dimensions;
     let mut packets = supervisor.subscribe_packets();
     let delivery = crate::delivery::DeliveryWindow::default();
     let mut clipboard_events = supervisor.subscribe_clipboards();
+    let mut cursors = supervisor.subscribe_cursors();
     let mut files = AgentFileReceiver::new(session_directory.join("drops"));
     let mut clipboard = AgentClipboardRelay::default();
     let held = std::sync::Mutex::new(HeldInput::default());
@@ -314,6 +316,18 @@ async fn run_client(
     let control_loop = async {
         let disposition = loop {
             tokio::select! {
+                cursor = cursors.changed(), if attached && cursor_shapes => {
+                    cursor.map_err(|_| AgentServerError::SupervisorStopped)?;
+                    let image = cursors.borrow_and_update().clone();
+                    if let Some(image) = image {
+                        session.send(ArppMessage::Display(DisplayMessage::CursorUpdate {
+                            frame_id: 0, x: 0, y: 0,
+                            hotspot_x: image.hotspot_x, hotspot_y: image.hotspot_y,
+                            width: image.width, height: image.height,
+                            visible: true, rgba: image.rgba.clone(),
+                        })).await?;
+                    }
+                },
                 clipboard_event = clipboard_events.recv(), if attached => match clipboard_event {
                     Ok(value) => clipboard.publish_remote(&session, value.mime_type, value.data).await?,
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
@@ -333,6 +347,7 @@ async fn run_client(
                             }
                             hello_received = true;
                             lossless = ad_stream_protocol::lossless::supported(&client_nonce);
+                            cursor_shapes = ad_stream_protocol::cursor_shapes_supported(&client_nonce);
                             supervisor.set_lossless_mode(lossless).await?;
                             session.send(ArppMessage::Control(ControlMessage::ServerHello {
                                 protocol_version: PROTOCOL_VERSION,

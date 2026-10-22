@@ -137,35 +137,45 @@ impl Applications {
                             window.height as f32 / ctx.pixels_per_point() + header,
                         );
                         // Initial sizing is a one-time viewport command, never an HWND resize while drawing.
-                        let available = crate::window_geometry::area(ctx)
-                            .map(|a| a.work.size() - egui::vec2(0.0, 32.0))
-                            .unwrap_or(desired);
-                        ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(
-                            desired.min(available).max(egui::vec2(100.0, 80.0)),
-                        ));
+                        let desired = crate::app_layout::application_initial_size(ctx, desired);
+                        ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(desired));
                         self.sized_window = Some(window.id);
                         self.resize_after = Instant::now() + Duration::from_millis(500);
                         self.last_extent = None;
-                    } else if Instant::now() >= self.resize_after {
-                        if self.last_extent != Some(extent) {
+                        self.resize_environment = None;
+                    } else if let Some(environment) =
+                        crate::app_layout::application_resize_environment(ctx)
+                    {
+                        if self.resize_environment != Some(environment) {
+                            self.resize_environment = Some(environment);
                             self.last_extent = Some(extent);
-                            self.resize_due =
-                                Some((Instant::now() + Duration::from_millis(180), extent));
-                        }
-                        if self
-                            .resize_due
-                            .is_some_and(|(due, _)| Instant::now() >= due)
-                        {
                             self.resize_due = None;
-                            if extent != (window.width, window.height)
-                                && wire::dimensions(extent.0, extent.1).is_ok()
+                            self.resize_after = Instant::now() + Duration::from_millis(500);
+                        } else if Instant::now() >= self.resize_after {
+                            if self.last_extent != Some(extent) {
+                                self.last_extent = Some(extent);
+                                self.resize_due =
+                                    Some((Instant::now() + Duration::from_millis(180), extent));
+                            }
+                            if self
+                                .resize_due
+                                .is_some_and(|(due, _)| Instant::now() >= due)
                             {
-                                self.send(Request::Resize {
-                                    width: extent.0,
-                                    height: extent.1,
-                                });
+                                self.resize_due = None;
+                                if extent != (window.width, window.height)
+                                    && wire::dimensions(extent.0, extent.1).is_ok()
+                                {
+                                    self.send(Request::Resize {
+                                        width: extent.0,
+                                        height: extent.1,
+                                    });
+                                }
                             }
                         }
+                    } else {
+                        // Never resize either side while Windows is dragging,
+                        // adapting DPI, or applying our native geometry command.
+                        self.resize_due = None;
                     }
                     if let Some(error) = self.error.as_ref().or(state.error.as_ref()) {
                         ui.painter().text(
@@ -333,14 +343,15 @@ impl Applications {
         activate: bool,
         alive: bool,
     ) -> bool {
-        if response.hovered() && ui.input(|i| i.pointer.any_pressed()) {
+        if !alive {
+            return false;
+        }
+        let scrolling = crate::remote_mouse::scroll_interaction(ui, response, image, false);
+        if (response.hovered() && ui.input(|i| i.pointer.any_pressed())) || scrolling {
             response.request_focus();
             if activate {
                 self.send(Request::Focus);
             }
-        }
-        if !alive {
-            return false;
         }
         let keyboard_focus = response.has_focus() && ui.input(|i| i.focused);
         // Menus receive hover events while the application keeps keyboard focus.
@@ -446,18 +457,18 @@ impl Applications {
                         y,
                     });
                 }
-                egui::Event::MouseWheel { unit, delta, .. } if response.hovered() => {
-                    if let Some((x, y)) = motion
-                        .take()
-                        .or_else(|| ui.input(|i| i.pointer.hover_pos()).map(point))
-                    {
-                        self.send(Request::Move { x, y });
-                    }
-                    if let ad_stream_protocol::InputMessage::PointerWheel {
+                egui::Event::MouseWheel { unit, delta, .. } if scrolling => {
+                    if let Some(ad_stream_protocol::InputMessage::PointerWheel {
                         horizontal,
                         vertical,
-                    } = crate::remote_mouse::gui_wheel(unit, delta)
+                    }) = self.wheel.convert(unit, delta)
                     {
+                        if let Some((x, y)) = motion
+                            .take()
+                            .or_else(|| ui.input(|i| i.pointer.hover_pos()).map(point))
+                        {
+                            self.send(Request::Move { x, y });
+                        }
                         self.send(Request::Wheel {
                             horizontal,
                             vertical,
@@ -484,6 +495,93 @@ impl Applications {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn scrolling_activates_the_application_before_ordered_motion_and_wheel() {
+        use std::sync::Arc;
+        let ctx = egui::Context::default();
+        ctx.options_mut(|o| o.max_passes = 1.try_into().unwrap());
+        let (commands, mut requests) = tokio::sync::mpsc::channel(64);
+        let mut app = Applications::new(None, uuid::Uuid::new_v4());
+        app.worker = Some(Worker {
+            commands,
+            state: Arc::new(parking_lot::Mutex::new(State::default())),
+            cancel: tokio_util::sync::CancellationToken::new(),
+        });
+        let mut text = String::new();
+        let mut rect = egui::Rect::NOTHING;
+        for stage in 0..4 {
+            let pos = if stage == 3 {
+                egui::pos2(450.0, 400.0)
+            } else {
+                egui::pos2(80.0, 80.0)
+            };
+            let mut events = vec![egui::Event::PointerMoved(pos)];
+            if stage > 0 {
+                events.push(egui::Event::MouseWheel {
+                    unit: egui::MouseWheelUnit::Line,
+                    delta: egui::vec2(0.0, 1.0),
+                    modifiers: Default::default(),
+                });
+            }
+            let _ = ctx.run(egui::RawInput {
+                focused: stage != 2,
+                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(600.0, 450.0))),
+                events,
+                ..Default::default()
+            }, |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    let local = ui.text_edit_singleline(&mut text);
+                    let (image, response) = ui.allocate_exact_size(egui::vec2(300.0, 160.0), egui::Sense::click_and_drag());
+                    rect = image;
+                    if stage == 0 { local.request_focus(); }
+                    let captured = app.application_input(ui, &response, image, (300, 160), (0, 0), true, true);
+                    if stage == 1 {
+                        assert!(captured, "scroll did not activate the image while a local field owned keyboard focus");
+                        assert!(!crate::remote_mouse::scroll_interaction(ui, &response, image, true), "overlay must block scrolling");
+                        assert!(!crate::remote_mouse::scroll_interaction(ui, &response, egui::Rect::NOTHING, false), "letterbox margin must not scroll");
+                    }
+                });
+            });
+            let mut sent = Vec::new();
+            while let Ok(request) = requests.try_recv() {
+                sent.push(request);
+            }
+            if stage == 1 {
+                let focus = sent
+                    .iter()
+                    .position(|r| matches!(r, Request::Focus))
+                    .expect("missing activation");
+                let movement = sent
+                    .iter()
+                    .position(|r| matches!(r, Request::Move { x, y } if *x >= 0 && *y >= 0))
+                    .expect("missing pointer location");
+                let wheel = sent
+                    .iter()
+                    .position(|r| {
+                        matches!(
+                            r,
+                            Request::Wheel {
+                                horizontal: 0,
+                                vertical: 120
+                            }
+                        )
+                    })
+                    .expect("missing wheel");
+                assert!(focus < movement && movement < wheel);
+                assert_eq!(
+                    sent.iter()
+                        .filter(|r| matches!(r, Request::Wheel { .. }))
+                        .count(),
+                    1
+                );
+            } else {
+                assert!(
+                    !sent.iter().any(|r| matches!(r, Request::Wheel { .. })),
+                    "background/outside scroll reached host at stage {stage}, image={rect:?}"
+                );
+            }
+        }
+    }
     #[test]
     fn menu_origin_adds_client_and_signed_popup_offsets_without_scaling_the_app() {
         let native_origin = egui::pos2(-1600.0, 40.0);

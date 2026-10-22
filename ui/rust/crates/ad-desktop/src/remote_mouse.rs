@@ -12,17 +12,52 @@ pub fn gui_button(button: egui::PointerButton) -> u8 {
     }
 }
 
-pub fn gui_wheel(unit: egui::MouseWheelUnit, delta: egui::Vec2) -> InputMessage {
-    let scale = match unit {
-        egui::MouseWheelUnit::Point => 3.0,
-        egui::MouseWheelUnit::Line => 120.0,
-        egui::MouseWheelUnit::Page => 360.0,
-    };
-    // egui/winit express horizontal content movement (positive left).
-    InputMessage::PointerWheel {
-        horizontal: (-delta.x * scale) as i32,
-        vertical: (delta.y * scale) as i32,
+#[derive(Default)]
+pub struct Wheel {
+    horizontal: f64,
+    vertical: f64,
+}
+impl Wheel {
+    pub fn convert(
+        &mut self,
+        unit: egui::MouseWheelUnit,
+        delta: egui::Vec2,
+    ) -> Option<InputMessage> {
+        if !delta.is_finite() {
+            return None;
+        }
+        let scale = match unit {
+            egui::MouseWheelUnit::Point => 3.0,
+            egui::MouseWheelUnit::Line => 120.0,
+            egui::MouseWheelUnit::Page => 360.0,
+        };
+        // Keep sub-unit precision across touchpad/high-resolution wheel events.
+        // egui/winit express horizontal content movement (positive left).
+        self.horizontal -= f64::from(delta.x) * scale;
+        self.vertical += f64::from(delta.y) * scale;
+        let horizontal = self.horizontal.trunc() as i32;
+        let vertical = self.vertical.trunc() as i32;
+        self.horizontal = self.horizontal.fract();
+        self.vertical = self.vertical.fract();
+        (horizontal != 0 || vertical != 0).then_some(InputMessage::PointerWheel {
+            horizontal,
+            vertical,
+        })
     }
+}
+
+/// An explicit scroll activates the image under the pointer, like a click.
+/// It must never capture a background viewport, overlay or letterbox margin.
+pub fn scroll_interaction(
+    ui: &egui::Ui,
+    response: &egui::Response,
+    image: egui::Rect,
+    blocked: bool,
+) -> bool {
+    !blocked && response.hovered() && ui.input(|i| {
+        i.focused && i.pointer.hover_pos().is_some_and(|p| image.contains(p))
+            && i.events.iter().any(|e| matches!(e, egui::Event::MouseWheel { delta, .. } if delta.is_finite() && *delta != egui::Vec2::ZERO))
+    })
 }
 
 #[cfg(windows)]
@@ -129,24 +164,73 @@ mod tests {
             ] {
                 assert_eq!(
                     windows_message(event, raw, 0, 0),
-                    Some(gui_wheel(egui::MouseWheelUnit::Line, gui_delta))
+                    Wheel::default().convert(egui::MouseWheelUnit::Line, gui_delta)
                 );
             }
         }
         assert_eq!(
-            gui_wheel(egui::MouseWheelUnit::Point, egui::vec2(-10.0, 10.0)),
-            InputMessage::PointerWheel {
+            Wheel::default().convert(egui::MouseWheelUnit::Point, egui::vec2(-10.0, 10.0)),
+            Some(InputMessage::PointerWheel {
                 horizontal: 30,
                 vertical: 30
-            }
+            })
         );
         assert_eq!(
-            gui_wheel(egui::MouseWheelUnit::Page, egui::vec2(1.0, -1.0)),
-            InputMessage::PointerWheel {
+            Wheel::default().convert(egui::MouseWheelUnit::Page, egui::vec2(1.0, -1.0)),
+            Some(InputMessage::PointerWheel {
                 horizontal: -360,
                 vertical: -360
-            }
+            })
         );
         assert_eq!(windows_message(WM_XBUTTONDOWN, 3 << 16, 0, 0), None);
+    }
+}
+
+#[cfg(test)]
+mod precision_tests {
+    use super::*;
+    #[test]
+    fn fractional_scrolls_preserve_distance_direction_and_view_isolation() {
+        let mut wheel = Wheel::default();
+        let (mut horizontal, mut vertical) = (0, 0);
+        for _ in 0..64 {
+            if let Some(InputMessage::PointerWheel {
+                horizontal: x,
+                vertical: y,
+            }) = wheel.convert(egui::MouseWheelUnit::Point, egui::vec2(0.0625, 0.125))
+            {
+                horizontal += x;
+                vertical += y;
+            }
+        }
+        assert_eq!((horizontal, vertical), (-12, 24));
+        assert_eq!(
+            wheel.convert(egui::MouseWheelUnit::Line, egui::Vec2::ZERO),
+            None
+        );
+        assert_eq!(
+            wheel.convert(egui::MouseWheelUnit::Line, egui::vec2(f32::NAN, 1.0)),
+            None
+        );
+        assert_eq!(
+            wheel.convert(egui::MouseWheelUnit::Point, egui::vec2(0.125, 0.125)),
+            None
+        );
+        let mut other = Wheel::default();
+        assert_eq!(
+            other.convert(egui::MouseWheelUnit::Point, egui::vec2(0.25, 0.25)),
+            None
+        );
+        assert_eq!(
+            wheel.convert(egui::MouseWheelUnit::Point, egui::vec2(-0.125, -0.125)),
+            None
+        );
+        assert_eq!(
+            wheel.convert(egui::MouseWheelUnit::Line, egui::vec2(-1.0, -1.0)),
+            Some(InputMessage::PointerWheel {
+                horizontal: 120,
+                vertical: -120
+            })
+        );
     }
 }

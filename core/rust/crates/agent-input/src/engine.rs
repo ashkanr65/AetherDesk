@@ -166,7 +166,10 @@ impl InputEngine {
             modifiers,
         );
         self.synchronize_modifiers(modifiers)?;
-        if snapshot_edge {
+        if snapshot_edge
+            || (matches!(code, 42 | 54 | 29 | 97 | 56 | 100 | 125 | 126)
+                && self.pressed_keys.contains(&code) == pressed)
+        {
             return Ok(());
         }
         let value = if repeat {
@@ -197,7 +200,7 @@ impl InputEngine {
         for (bit, code) in mapping {
             let was_pressed = self.modifiers & bit != 0;
             let should_press = requested & bit != 0;
-            if was_pressed != should_press {
+            if was_pressed != should_press && self.pressed_keys.contains(&code) != should_press {
                 events.push(InputEvent::new(
                     EventType::KEY.0,
                     code,

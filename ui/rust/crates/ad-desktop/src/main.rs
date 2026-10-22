@@ -25,6 +25,7 @@ mod migration;
 mod navigation;
 mod notifications;
 mod preferences;
+mod process_health;
 mod process_job;
 mod profile_store;
 #[cfg(all(test, windows))]
@@ -33,6 +34,7 @@ mod r12_ui;
 mod remote;
 mod remote_applications;
 mod remote_clipboard;
+mod remote_cursor;
 mod remote_frames;
 mod remote_geometry;
 mod remote_input;
@@ -695,6 +697,7 @@ impl RustDesktop {
 }
 impl eframe::App for RustDesktop {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        process_health::pulse(1);
         app_layout::update(ctx, "main");
         self.theme.initialize(ctx);
         let dark = self.preferences.settings.dark(ctx, self.dark);
@@ -705,6 +708,7 @@ impl eframe::App for RustDesktop {
         ctx.request_repaint_after(std::time::Duration::from_secs(1));
         // Navigation shortcuts are consumed below, after checking whether a
         // remote desktop owns the keyboard. Do not consume Ctrl+Shift+K here.
+        process_health::pulse(2);
         self.assistant.poll(ctx);
         let had_update = self.updates.available();
         self.updates.poll(ctx);
@@ -787,6 +791,7 @@ impl eframe::App for RustDesktop {
             if pending && start.elapsed() < std::time::Duration::from_secs(75) {
                 ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
                 ctx.request_repaint_after(std::time::Duration::from_millis(30));
+                process_health::pulse(3);
                 egui::CentralPanel::default().show(ctx, |ui| {
                     ui.heading("Closing connections…");
                     ui.label("Finishing file operations and releasing SSH sessions.");
@@ -1258,6 +1263,7 @@ impl eframe::App for RustDesktop {
             self.show_migration = open;
         }
         self.workspace_sidebar(ctx);
+        process_health::pulse(3);
         egui::CentralPanel::default()
             .frame(
                 egui::Frame::central_panel(&ctx.style())
@@ -1390,6 +1396,7 @@ impl eframe::App for RustDesktop {
         if let Some(stage) = self.update_health.take() {
             let _ = update_apply::mark_healthy(&stage);
         }
+        process_health::pulse(4);
         ctx.request_repaint_after(std::time::Duration::from_secs(1));
     }
 }
@@ -1447,10 +1454,14 @@ fn main() -> eframe::Result {
             .unwrap_or_default()
             .renderer,
     );
+    let _health = storage::root()
+        .ok()
+        .map(|root| process_health::start(&root.join("logs")));
     eframe::run_native(
         "AetherDesk",
         options,
         Box::new(|creation| {
+            process_health::pulse(0);
             graphics::log_adapter(creation);
             remote_keypad::install();
             let app = RustDesktop::default();

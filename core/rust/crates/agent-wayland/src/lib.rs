@@ -3,6 +3,7 @@
 pub mod compositor;
 pub mod damage;
 mod host_clipboard;
+pub mod host_cursor;
 #[cfg(target_os = "linux")]
 mod host_desktop;
 mod host_windows;

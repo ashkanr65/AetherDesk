@@ -140,6 +140,29 @@ pub(crate) fn current_modifiers(_fallback: eframe::egui::Modifiers) -> eframe::e
         _fallback
     }
 }
+/// Never wait in a low-level hook, and drop route ownership before calling any
+/// downstream hook (which may reenter the GUI or pump another input event).
+#[cfg(any(windows, test))]
+fn route_hook<T>(
+    state: &parking_lot::Mutex<T>,
+    handle: impl FnOnce(&mut T) -> bool,
+    pass: impl FnOnce() -> isize,
+) -> isize {
+    let suppress = state.try_lock().is_some_and(|mut state| handle(&mut state));
+    if suppress {
+        1
+    } else {
+        pass()
+    }
+}
+/// Contention is unknown ownership, not evidence that capture was lost.
+#[cfg(any(windows, test))]
+fn route_status<T>(
+    state: &parking_lot::Mutex<T>,
+    inspect: impl FnOnce(&T) -> bool,
+) -> Option<bool> {
+    state.try_lock().map(|state| inspect(&state))
+}
 /// Keep GUI forwarding active while a repeatedly failing native hook cools
 /// down. Reinstalling at display-frame rate churns modifier ownership.
 #[derive(Default)]
@@ -164,11 +187,35 @@ impl RecoveryPolicy {
 #[derive(Default)]
 struct Held {
     keys: BTreeSet<u32>,
+    windows_owned: BTreeSet<u32>,
     locks: u16,
     last_control: Option<u32>,
     suppress_control_up: bool,
 }
 impl Held {
+    fn reconcile_windows_modifiers(
+        &mut self,
+        down: &[u32],
+    ) -> Vec<ad_stream_protocol::InputMessage> {
+        let mut events = Vec::new();
+        for key in [42, 54, 29, 97] {
+            let pressed = down.contains(&key);
+            if self.keys.contains(&key) != pressed {
+                events.extend(self.event(key, pressed, 0));
+            }
+        }
+        events
+    }
+    fn passes_to_windows(&mut self, key: u32, pressed: bool) -> bool {
+        // Windows must see both edges of Ctrl/Shift, including a press before
+        // capture or during hook contention. Ordinary shortcut keys stay remote.
+        let pass =
+            matches!(key, 42 | 54 | 29 | 97 | 58 | 69 | 70) || self.windows_owned.contains(&key);
+        if !pressed {
+            self.windows_owned.remove(&key);
+        }
+        pass
+    }
     fn exit(&self, key: u32, pressed: bool) -> bool {
         pressed
             && key == 1
@@ -226,6 +273,7 @@ impl Held {
     }
     fn release(&mut self) -> Vec<ad_stream_protocol::InputMessage> {
         let keys = std::mem::take(&mut self.keys);
+        self.windows_owned.clear();
         self.last_control = None;
         self.suppress_control_up = false;
         keys.into_iter()
@@ -262,14 +310,14 @@ impl NativeKeyboard {
             false
         }
     }
-    pub fn active(&self) -> bool {
+    pub fn active(&self) -> Option<bool> {
         #[cfg(windows)]
         {
             windows::active(self.id)
         }
         #[cfg(not(windows))]
         {
-            false
+            Some(false)
         }
     }
     pub fn activate(
@@ -411,6 +459,24 @@ mod windows {
             send(&previous, events);
         }
     }
+    fn physical_modifiers() -> Vec<u32> {
+        let right_alt = unsafe { GetAsyncKeyState(VK_RMENU as i32) } < 0;
+        [
+            (VK_LSHIFT, 42),
+            (VK_RSHIFT, 54),
+            (VK_LCONTROL, 29),
+            (VK_RCONTROL, 97),
+            (VK_LMENU, 56),
+            (VK_RMENU, 100),
+            (VK_LWIN, 125),
+            (VK_RWIN, 126),
+        ]
+        .into_iter()
+        .filter_map(|(vk, key)| {
+            (!(key == 29 && right_alt) && unsafe { GetAsyncKeyState(vk as i32) } < 0).then_some(key)
+        })
+        .collect()
+    }
     pub fn subscribe() {
         if SUBSCRIBERS.fetch_add(1, Ordering::AcqRel) == 0 && STATUS.load(Ordering::Acquire) == -1 {
             STATUS.store(0, Ordering::Release);
@@ -514,9 +580,10 @@ mod windows {
                                 tracing::info!("remote keyboard hook recovered");
                             }
                         }
+                        let foreground = GetForegroundWindow() as isize;
                         let mut active = route().lock();
                         if active.as_ref().is_some_and(|r| {
-                            GetForegroundWindow() as isize != r.window || Instant::now() > r.until
+                            foreground != r.window || Instant::now() > r.until
                         }) {
                             clear(&mut active);
                         }
@@ -546,110 +613,121 @@ mod windows {
             return unsafe { CallNextHookEx(std::ptr::null_mut(), code, wp, lp) };
         }
         let event = unsafe { &*(lp as *const KBDLLHOOKSTRUCT) };
-        // This hook forwards to the remote transport and never calls SendInput.
-        // Windows/accessibility-generated key events are therefore safe to route
-        // here too; skipping them while suppressing the GUI fallback loses keys.
-        // Never block Windows' low-level hook behind the UI thread. A missed
-        // route is passed to the GUI, which can forward it and repair capture.
-        let Some(mut active) = route().try_lock() else {
-            return unsafe { CallNextHookEx(std::ptr::null_mut(), code, wp, lp) };
-        };
-        if active.as_ref().is_some_and(
-            |r| unsafe { GetForegroundWindow() } as isize != r.window || Instant::now() > r.until,
-        ) {
-            clear(&mut active);
-        }
-        let Some(current) = active.as_mut() else {
-            return unsafe { CallNextHookEx(std::ptr::null_mut(), code, wp, lp) };
-        };
+        let foreground = unsafe { GetForegroundWindow() };
         let mapped = if event.scanCode == 0 {
-            let thread =
-                unsafe { GetWindowThreadProcessId(current.window as HWND, std::ptr::null_mut()) };
+            let thread = unsafe { GetWindowThreadProcessId(foreground, std::ptr::null_mut()) };
             unsafe { MapVirtualKeyExW(event.vkCode, MAPVK_VK_TO_VSC_EX, GetKeyboardLayout(thread)) }
         } else {
             0
         };
-        let Some(key) = event_key(
-            event.scanCode,
-            event.flags & LLKHF_EXTENDED != 0,
-            event.vkCode,
-            mapped,
-        ) else {
-            return unsafe { CallNextHookEx(std::ptr::null_mut(), code, wp, lp) };
-        };
-        let pressed = matches!(wp as u32, WM_KEYDOWN | WM_SYSKEYDOWN);
-        if current.held.exit(key, pressed) {
-            if let Some(exit) = current.exit.upgrade() {
-                exit.store(true, Ordering::Release);
-            }
-            clear(&mut active);
-            return 1;
-        }
-        let events = current.held.event(key, pressed, event.time);
-        if !send(current, events) {
-            clear(&mut active);
-            return unsafe { CallNextHookEx(std::ptr::null_mut(), code, wp, lp) };
-        }
-        if matches!(key, 58 | 69 | 70) {
-            unsafe { CallNextHookEx(std::ptr::null_mut(), code, wp, lp) }
-        } else {
-            1
-        }
+        route_hook(
+            route(),
+            |active| {
+                if active
+                    .as_ref()
+                    .is_some_and(|r| foreground as isize != r.window || Instant::now() > r.until)
+                {
+                    clear(active);
+                }
+                let Some(current) = active.as_mut() else {
+                    return false;
+                };
+                let Some(key) = event_key(
+                    event.scanCode,
+                    event.flags & LLKHF_EXTENDED != 0,
+                    event.vkCode,
+                    mapped,
+                ) else {
+                    return false;
+                };
+                let pressed = matches!(wp as u32, WM_KEYDOWN | WM_SYSKEYDOWN);
+                if current.held.exit(key, pressed) {
+                    if let Some(exit) = current.exit.upgrade() {
+                        exit.store(true, Ordering::Release);
+                    }
+                    clear(active);
+                    return true;
+                }
+                let pass = current.held.passes_to_windows(key, pressed);
+                let events = current.held.event(key, pressed, event.time);
+                if !send(current, events) {
+                    clear(active);
+                    return false;
+                }
+                !pass
+            },
+            || unsafe { CallNextHookEx(std::ptr::null_mut(), code, wp, lp) },
+        )
     }
     unsafe extern "system" fn mouse_callback(code: i32, wp: WPARAM, lp: LPARAM) -> LRESULT {
         use ad_stream_protocol::InputMessage;
         let next = || unsafe { CallNextHookEx(std::ptr::null_mut(), code, wp, lp) };
-        if code != HC_ACTION as i32 {
+        // Wheels always use the window's GUI event route. A best-effort hook
+        // can pass through during contention or lease renewal; suppressing its
+        // GUI copy based on keyboard ownership silently loses those scrolls.
+        if code != HC_ACTION as i32 || matches!(wp as u32, WM_MOUSEWHEEL | WM_MOUSEHWHEEL) {
             return next();
         }
         let event = unsafe { &*(lp as *const MSLLHOOKSTRUCT) };
         if event.flags & LLMHF_INJECTED != 0 {
             return next();
         }
-        let mut active = route().lock();
-        if active.as_ref().is_some_and(
-            |r| unsafe { GetForegroundWindow() } as isize != r.window || Instant::now() > r.until,
-        ) {
-            clear(&mut active);
-        }
-        let Some(current) = active.as_mut() else {
-            return next();
-        };
-        let (x, y) = (event.pt.x, event.pt.y);
-        if current.buttons.is_empty() {
-            if !Surface::contains(current.surface.image, x, y)
-                || current
-                    .surface
-                    .toolbar
-                    .is_some_and(|r| Surface::contains(r, x, y))
-            {
-                return next();
-            }
-            let hit = unsafe { GetAncestor(WindowFromPoint(event.pt), GA_ROOT) };
-            if hit as isize != current.window {
-                return next();
-            }
-        }
-        let (x, y) = current.surface.point(x, y);
-        current.point = (x, y);
-        let Some(message) = crate::remote_mouse::windows_message(wp as u32, event.mouseData, x, y)
-        else {
-            return next();
-        };
-        if let InputMessage::PointerButton {
-            button, pressed, ..
-        } = &message
-        {
-            if *pressed {
-                current.buttons.insert(*button);
-            } else {
-                current.buttons.remove(button);
-            }
-        }
-        if !send(current, vec![message]) {
-            clear(&mut active);
-        }
-        next()
+        // Native hit testing/other window procedures must never run under the
+        // route lock: the GUI thread also renews/releases that same route.
+        let foreground = unsafe { GetForegroundWindow() } as isize;
+        let hit = unsafe { GetAncestor(WindowFromPoint(event.pt), GA_ROOT) } as isize;
+        let modifiers = physical_modifiers();
+        route_hook(
+            route(),
+            |active| {
+                if active
+                    .as_ref()
+                    .is_some_and(|r| foreground != r.window || Instant::now() > r.until)
+                {
+                    clear(active);
+                }
+                let Some(current) = active.as_mut() else {
+                    return false;
+                };
+                let (x, y) = (event.pt.x, event.pt.y);
+                if current.buttons.is_empty()
+                    && (!Surface::contains(current.surface.image, x, y)
+                        || current
+                            .surface
+                            .toolbar
+                            .is_some_and(|r| Surface::contains(r, x, y))
+                        || hit != current.window)
+                {
+                    return false;
+                }
+                let (x, y) = current.surface.point(x, y);
+                current.point = (x, y);
+                let Some(message) =
+                    crate::remote_mouse::windows_message(wp as u32, event.mouseData, x, y)
+                else {
+                    return false;
+                };
+                if let InputMessage::PointerButton {
+                    button, pressed, ..
+                } = &message
+                {
+                    if *pressed {
+                        current.buttons.insert(*button);
+                    } else {
+                        current.buttons.remove(button);
+                    }
+                }
+                // Repair an edge passed through during contention before the
+                // click, so Ctrl/Shift selections use the actual physical state.
+                let mut events = current.held.reconcile_windows_modifiers(&modifiers);
+                events.push(message);
+                if !send(current, events) {
+                    clear(active);
+                }
+                false // Mouse events still reach the local window for normal UI handling.
+            },
+            next,
+        )
     }
     pub fn activate(
         id: uuid::Uuid,
@@ -662,6 +740,23 @@ mod windows {
         if !ready() || crate::remote_geometry::foreground() != Some(window) {
             return false;
         }
+        let locks = ad_stream_protocol::MODIFIER_LOCK_STATE_VALID
+            | if unsafe { GetKeyState(VK_NUMLOCK as i32) } & 1 != 0 {
+                ad_stream_protocol::MODIFIER_NUM_LOCK
+            } else {
+                0
+            }
+            | if unsafe { GetKeyState(VK_CAPITAL as i32) } & 1 != 0 {
+                ad_stream_protocol::MODIFIER_CAPS_LOCK
+            } else {
+                0
+            };
+        let held = physical_modifiers();
+        let mut cursor = POINT { x: 0, y: 0 };
+        unsafe {
+            GetCursorPos(&mut cursor);
+        }
+        let point = surface.point(cursor.x, cursor.y);
         let mut active = route().lock();
         if active
             .as_ref()
@@ -670,14 +765,14 @@ mod windows {
             let current = active.as_mut().unwrap();
             current.until = Instant::now() + Duration::from_millis(600);
             current.surface = surface;
+            let events = current.held.reconcile_windows_modifiers(&held);
+            if !send(current, events) {
+                clear(&mut active);
+                return false;
+            }
             return true;
         }
         clear(&mut active);
-        let mut cursor = POINT { x: 0, y: 0 };
-        unsafe {
-            GetCursorPos(&mut cursor);
-        }
-        let point = surface.point(cursor.x, cursor.y);
         let mut current = Route {
             id,
             window,
@@ -689,48 +784,28 @@ mod windows {
             buttons: buttons.clone(),
             point,
         };
-        current.held.locks = ad_stream_protocol::MODIFIER_LOCK_STATE_VALID
-            | if unsafe { GetKeyState(VK_NUMLOCK as i32) } & 1 != 0 {
-                ad_stream_protocol::MODIFIER_NUM_LOCK
-            } else {
-                0
-            }
-            | if unsafe { GetKeyState(VK_CAPITAL as i32) } & 1 != 0 {
-                ad_stream_protocol::MODIFIER_CAPS_LOCK
-            } else {
-                0
-            };
-        let right_alt = unsafe { GetAsyncKeyState(VK_RMENU as i32) } < 0;
-        for (vk, key) in [
-            (VK_LSHIFT, 42),
-            (VK_RSHIFT, 54),
-            (VK_LCONTROL, 29),
-            (VK_RCONTROL, 97),
-            (VK_LMENU, 56),
-            (VK_RMENU, 100),
-            (VK_LWIN, 125),
-            (VK_RWIN, 126),
-        ] {
-            if key == 29 && right_alt {
-                continue;
-            }
-            if unsafe { GetAsyncKeyState(vk as i32) } < 0 {
-                let events = current.held.event(key, true, 0);
-                if !send(&current, events) {
-                    return false;
-                }
+        current.held.locks = locks;
+        // These presses were already delivered locally before acquiring capture.
+        current.held.windows_owned.extend(held.iter().copied());
+        for key in held {
+            let events = current.held.event(key, true, 0);
+            if !send(&current, events) {
+                return false;
             }
         }
         *active = Some(current);
         true
     }
-    pub fn active(id: uuid::Uuid) -> bool {
-        ready()
-            && route().lock().as_ref().is_some_and(|r| {
-                r.id == id
-                    && Instant::now() <= r.until
-                    && unsafe { GetForegroundWindow() } as isize == r.window
-            })
+    pub fn active(id: uuid::Uuid) -> Option<bool> {
+        let foreground = unsafe { GetForegroundWindow() } as isize;
+        if !ready() {
+            return Some(false);
+        }
+        route_status(route(), |active| {
+            active
+                .as_ref()
+                .is_some_and(|r| r.id == id && Instant::now() <= r.until && foreground == r.window)
+        })
     }
     pub fn release(id: uuid::Uuid) {
         let mut active = route().lock();
@@ -752,6 +827,52 @@ mod windows {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn hooks_never_wait_for_route_ownership_or_hold_it_across_the_next_hook() {
+        use std::{sync::mpsc, time::Duration};
+        let state = Arc::new(parking_lot::Mutex::new(0));
+        let guard = state.lock();
+        assert_eq!(route_status(&state, |_| true), None);
+        let (send, receive) = mpsc::channel();
+        let other = state.clone();
+        let worker = std::thread::spawn(move || {
+            let result = route_hook(
+                &other,
+                |_| panic!("contended hook must pass through"),
+                || 42,
+            );
+            let _ = send.send(result);
+        });
+        let result = receive.recv_timeout(Duration::from_secs(1));
+        drop(guard); // never strand a worker if the nonblocking assertion fails
+        worker.join().unwrap();
+        assert_eq!(route_status(&state, |_| true), Some(true));
+        assert_eq!(route_status(&state, |_| false), Some(false));
+        assert_eq!(result.unwrap(), 42);
+        let result = route_hook(
+            &state,
+            |value| {
+                *value = 1;
+                false
+            },
+            || {
+                assert!(
+                    state.try_lock().is_some(),
+                    "downstream hook reentered a locked route"
+                );
+                23
+            },
+        );
+        assert_eq!(result, 23);
+        assert_eq!(
+            route_hook(
+                &state,
+                |_| true,
+                || panic!("suppressed key must not pass twice")
+            ),
+            1
+        );
+    }
     #[test]
     fn repeated_hook_failures_use_gui_forwarding_with_bounded_retry_frequency() {
         use std::time::{Duration, Instant};
@@ -782,6 +903,31 @@ mod tests {
         assert_eq!(event_key(0, false, 0x25, 0xe04b), Some(105));
         assert_eq!(event_key(0x30, false, 0x42, 0x1e), Some(48));
         assert_eq!(event_key(0, false, 0xff, 0), None);
+        let mut local = Held::default();
+        for code in [42, 54, 29, 97] {
+            assert!(local.passes_to_windows(code, true));
+            assert!(local.passes_to_windows(code, false));
+        }
+        for code in [56, 100, 125, 126] {
+            assert!(!local.passes_to_windows(code, true));
+            local.windows_owned.insert(code);
+            assert!(local.passes_to_windows(code, false));
+            assert!(!local.passes_to_windows(code, true));
+        }
+        assert!(!local.passes_to_windows(30, true));
+        // Missed hook edges are repaired before a mouse selection and on lease
+        // renewal; holding the same key never generates additional presses.
+        for code in [42, 54, 29, 97] {
+            let events = local.reconcile_windows_modifiers(&[code]);
+            assert!(matches!(events.as_slice(), [InputMessage::Keyboard {
+                scan_code, pressed: true, repeat: false, ..
+            }] if *scan_code == code));
+            assert!(local.reconcile_windows_modifiers(&[code]).is_empty());
+            let events = local.reconcile_windows_modifiers(&[]);
+            assert!(matches!(events.as_slice(), [InputMessage::Keyboard {
+                scan_code, pressed: false, ..
+            }] if *scan_code == code));
+        }
         // Ctrl+A/E/F/B/U/K/W/Y/T/_, Alt+F/B/T, arrows, F-keys, and
         // window-manager chords travel as ordinary physical press/release edges.
         for (modifier, key) in [

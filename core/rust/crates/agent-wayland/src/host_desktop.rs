@@ -156,6 +156,7 @@ impl AgentCompositorState {
                         display_number,
                         desktop.cookie,
                         self.clipboard_tx.clone(),
+                        self.cursor_tx.clone(),
                     )?);
                     if let (Some(clipboard), Some(selection)) =
                         (&desktop.clipboard, &self.clipboard_selection)
@@ -363,6 +364,7 @@ mod tests {
             parent, screen.root,
             "application must be reparented inside the host's decoration frame"
         );
+        crate::host_cursor::verify_forwarding(&compositor, &connection, window);
         let executor = tokio::runtime::Builder::new_current_thread()
             .enable_time()
             .build()
@@ -497,6 +499,7 @@ mod tests {
             display.trim_start_matches(':').parse().unwrap(),
             cookie.try_into().unwrap(),
             peer_tx,
+            tokio::sync::watch::channel(None).0,
         )
         .unwrap();
         std::thread::sleep(Duration::from_millis(100));
