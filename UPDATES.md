@@ -164,3 +164,35 @@ signed-release and release-check pointers now refer to build 4. Older installati
 can use the gear menu → Updates → Check now. Existing build 4 installations
 correctly find no newer version. No user installation was replaced; real upgrade,
 restart/recovery and data-preservation acceptance remains pending.
+
+
+## 0.1.3 build 1 publication — 22 October 2026
+
+[AetherDesk 0.1.3 build 1](https://github.com/ashkanr65/AetherDesk/releases/tag/v0.1.3-build1)
+is the normal latest release in the public source repository. The user explicitly
+authorized publication with the known independent-window bugs, lifting the
+previous publication hold for this release. Release notes mark that feature
+experimental and retain its remaining limitations.
+
+The completed user build passed all seven stages, Windows/Linux compiler
+regressions and bundled-X11 verification. Package fingerprint
+`851876908a16037cfd0bf102228af9c407139f16dd620b49a3671a8f237b2d51`
+matched the build inputs before publication. Release source/tag commit is
+`7539e8df0cd62370e3018aa19004f25b98dee87f`; source was pushed directly to main.
+The subsequent documentation-only publication record does not alter build inputs.
+
+The existing pinned Ed25519 key signed the update. All 7,181 portable inventory
+entries, installer copy and three uploaded GitHub asset digests verified. The
+explicitly approved packaged UI smoke check passed using isolated settings and no
+remote connections or compilation. After publication, anonymous requests through
+the runtime's latest-release and asset routes returned the new version and valid
+signed metadata. Actual anonymous ZIP, installer and metadata downloads matched
+their complete SHA-256 hashes.
+
+Evidence: `AetherDesk-Rust-output/acceptance/update-0.1.3-build1-20261022`.
+Latest signed-release and release-check pointers now refer to this release.
+Existing installations can use gear menu → Updates → Check now. No user
+installation, saved profile or live remote application was changed. Real upgrade,
+restart/recovery, idle/wake and comprehensive detached-window acceptance remain
+pending; publication does not establish complete feature parity or resolution of
+the reported EOF/idle-hang root causes.
