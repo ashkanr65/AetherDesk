@@ -22,6 +22,8 @@ mod graphics;
 mod log_panel;
 mod logging;
 mod migration;
+mod monitoring;
+mod monitoring_data;
 mod navigation;
 mod notifications;
 mod preferences;
@@ -82,6 +84,7 @@ struct RustDesktop {
     editors: editor::Editors,
     assistant: assistant::Assistant,
     tools: user_tools::Panel,
+    monitoring: monitoring::Panel,
     profiles_valid: bool,
     profile_io: Option<bool>,
     profile_path: String,
@@ -135,6 +138,7 @@ impl Default for RustDesktop {
             editors: editor::Editors::default(),
             assistant: assistant::Assistant::default(),
             tools: user_tools::Panel::default(),
+            monitoring: monitoring::Panel::default(),
             profiles_valid,
             profile_io: None,
             profile_path: String::new(),
@@ -473,6 +477,7 @@ impl RustDesktop {
                         ui.label("No active connections");
                     }
                 }
+                Sidebar::Monitoring => self.monitoring.ui(ui),
                 Sidebar::Logs => {
                     self.show_logs = true;
                     ui.label("Log files are open in a popup.");
@@ -778,6 +783,7 @@ impl eframe::App for RustDesktop {
             self.closing = Some(std::time::Instant::now());
             self.assistant.stop();
             self.tools.stop();
+            self.monitoring.stop();
             transfers::pause_all();
             if let Ok(runtime) = &self.connections {
                 runtime.begin_shutdown();
@@ -859,6 +865,35 @@ impl eframe::App for RustDesktop {
         }
         if credential_preferences_changed {
             self.persist_profiles();
+        }
+        if let Ok(runtime) = &self.connections {
+            let target = self
+                .workspace
+                .selected
+                .and_then(|i| self.workspace.tabs.get(i))
+                .map(|tab| {
+                    let session = tab.ssh_session();
+                    let identity = session.as_ref().map(|session| session.host_identity());
+                    monitoring::Target {
+                        profile: tab.profile.id.clone(),
+                        label: tab.profile.name.clone(),
+                        host: identity
+                            .as_ref()
+                            .map(|i| i.host.clone())
+                            .unwrap_or_else(|| tab.profile.host.clone()),
+                        account: identity
+                            .as_ref()
+                            .map(|i| i.username.clone())
+                            .unwrap_or_else(|| tab.profile.username.clone()),
+                        session,
+                    }
+                });
+            self.monitoring.tick(
+                ctx,
+                runtime,
+                target,
+                self.workspace.sidebar_visible && self.workspace.sidebar == Sidebar::Monitoring,
+            );
         }
         egui::TopBottomPanel::top("toolbar")
             .exact_height(47.0)
@@ -1043,6 +1078,16 @@ impl eframe::App for RustDesktop {
                 self.show_desktop_recovery = false;
             }
         }
+        {
+            egui::TopBottomPanel::bottom("monitoring-status")
+                .frame(egui::Frame::side_top_panel(&ctx.style()).inner_margin(egui::Margin::ZERO))
+                .exact_height((self.preferences.settings.font_size + 16.0).max(28.0))
+                .show(ctx, |ui| {
+                    if self.monitoring.compact(ui) {
+                        self.workspace.select_sidebar(Sidebar::Monitoring);
+                    }
+                });
+        }
         egui::TopBottomPanel::bottom("status")
             .exact_height((self.preferences.settings.font_size + 12.0).max(24.0))
             .frame(
@@ -1153,6 +1198,9 @@ impl eframe::App for RustDesktop {
         if self.show_appearance {
             self.preferences.show();
             self.show_appearance = false;
+        }
+        if let Ok(runtime) = &self.connections {
+            self.monitoring.windows(ctx, runtime);
         }
         match self.preferences.ui(ctx) {
             Some(preferences::Action::Applied) => {

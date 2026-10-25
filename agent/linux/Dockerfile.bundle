@@ -55,6 +55,8 @@ COPY tools/rust-build-kit/check_regression_registry.py /src/tools/rust-build-kit
 COPY tools/rust-build-kit/test_regression_registry.py /src/tools/rust-build-kit/test_regression_registry.py
 COPY tools/rust-build-kit/test_scoped_command.py /src/tools/rust-build-kit/test_scoped_command.py
 COPY tools/rust-build-kit/test_terminal_integration.py /src/tools/rust-build-kit/test_terminal_integration.py
+COPY tools/rust-build-kit/monitor_host.sh /src/tools/rust-build-kit/monitor_host.sh
+COPY tools/rust-build-kit/test_monitoring_collector.py /src/tools/rust-build-kit/test_monitoring_collector.py
 COPY ui/rust/crates/ad-desktop/src/connection.rs /src/ui/rust/crates/ad-desktop/src/connection.rs
 RUN install -d -m 1777 /tmp/.X11-unix \
     && cargo test --locked --release --manifest-path core/rust/Cargo.toml \
@@ -64,6 +66,7 @@ RUN install -d -m 1777 /tmp/.X11-unix \
       -p agent-wayland -p agent-supervisor -p agent-input -p agent-encoder -p ad-ssh -p ad-stream-protocol -p ad-display-decoder -- --test-threads=1 \
     && python3 tools/rust-build-kit/test_scoped_command.py \
     && python3 tools/rust-build-kit/test_terminal_integration.py \
+    && python3 tools/rust-build-kit/test_monitoring_collector.py \
     && python3 tools/test_x11_icons.py \
     && python3 tools/rust-build-kit/test_regression_registry.py \
     && bash tools/package-linux-agent.sh core/rust/target/release/ad-agent /src/agent-bundle \

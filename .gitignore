@@ -49,3 +49,19 @@ Thumbs.db
 
 # Recreated by the shared EditorAssets stage
 /ui/flutter/ad_remote_desktop/assets/editor/
+
+# Local application data and server credentials (never source defaults)
+/monitoring.json
+/sessions.json
+/sessions.json.bak
+/settings.json
+/preferences.json
+/providers.json
+/ai-history*.json
+/desktop-recovery.json
+/credentials.json
+/vault.json
+/.ssh/
+/id_rsa
+/id_ed25519
+*.lic

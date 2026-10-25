@@ -39,6 +39,12 @@ Compiler/test/package stages remain locked. Do not delete lock files or remove
 
 ## Stages
 
+Monitoring cards, FlexNet licence filters and custom check output formats are
+documented in `MONITORING.md` at the repository root. The build snapshot includes
+the embedded Linux collector and its fixtures. Stage 2 runs the collector fixtures
+in the Linux container and the registered native parser/layout/scheduler tests on
+Windows. These tests do not query a real licence server.
+
 Explicit R12 live checks are available through `Run-Acceptance.ps1`, with a
 non-secret configuration and a verified extracted package. They use disposable
 host files/session IDs, existing keys in place, and isolated UI settings. Provider

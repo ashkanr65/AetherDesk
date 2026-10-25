@@ -1481,9 +1481,15 @@
           "package": "ad-desktop",
           "source": "ui/rust/crates/ad-desktop/src/terminal.rs",
           "test": "terminal_queries_are_answered_without_reading_clipboard"
+        },
+        {
+          "phase": "windows",
+          "package": "ad-desktop",
+          "source": "ui/rust/crates/ad-desktop/src/terminal.rs",
+          "test": "terminal_scrollbar_tracks_real_history_and_keeps_gutter_out_of_pty_input"
         }
       ],
-      "liveAcceptance": "R2 adds mouse protocols/motion/wheel, IME commit deduplication, AltGr and saved screen geometry/settings. Compare vim/top, split Unicode, wide cells and focus release live."
+      "liveAcceptance": "R2 adds mouse protocols/motion/wheel, IME commit deduplication, AltGr and saved screen geometry/settings. Compare vim/top, split Unicode, wide cells and focus release live. Verify the right-side history rail in SSH and SSH+X11; dragging it must not send mouse bytes to a remote terminal application."
     },
     {
       "id": "terminal.shortcuts",
@@ -5628,6 +5634,52 @@
         }
       ],
       "liveAcceptance": "Verify the selected SSH, SSH+X11, SFTP and desktop connection shows server-local time and clears on disconnect, server silence and tab changes. Clock probes show SSH liveness, not health of every remote application."
+    },
+    {
+      "id": "monitoring.server",
+      "checks": [
+        {
+          "phase": "windows",
+          "package": "ad-desktop",
+          "source": "ui/rust/crates/ad-desktop/src/monitoring_data.rs",
+          "test": "licence_filters_preserve_counts_and_match_users_machines_and_aliases"
+        },
+        {
+          "phase": "windows",
+          "package": "ad-desktop",
+          "source": "ui/rust/crates/ad-desktop/src/monitoring_data.rs",
+          "test": "monitor_commands_quote_parameters_and_validate_custom_output_bounds"
+        },
+        {
+          "phase": "windows",
+          "package": "ad-desktop",
+          "source": "ui/rust/crates/ad-desktop/src/monitoring_data.rs",
+          "test": "system_parser_uses_deltas_and_preserves_mount_names_and_login_sessions"
+        },
+        {
+          "phase": "windows",
+          "package": "ad-desktop",
+          "source": "ui/rust/crates/ad-desktop/src/monitoring.rs",
+          "test": "monitoring_settings_preserve_scopes_and_corrupt_files"
+        },
+        {
+          "phase": "windows",
+          "package": "ad-desktop",
+          "source": "ui/rust/crates/ad-desktop/src/monitoring.rs",
+          "test": "monitor_schedule_does_not_overlap_or_treat_old_results_as_live"
+        },
+        {
+          "phase": "windows",
+          "package": "ad-desktop",
+          "source": "ui/rust/crates/ad-desktop/src/monitoring.rs",
+          "test": "monitoring_cards_stack_within_a_narrow_panel"
+        },
+        {
+          "phase": "offline",
+          "script": "tools/rust-build-kit/test_monitoring_collector.py"
+        }
+      ],
+      "liveAcceptance": "Compile registered monitoring tests, then verify Linux system readings, stale/disconnected states, stacked layout at narrow widths/large fonts, popup footer visibility, licence users/features/machines/aliases and friendly labels against real lmstat output. Verify custom Text/Value/JSON-table checks only run for their selected saved connection, never enter PTY history, cancel on hiding/disconnect and remain isolated across VPN routes. Test restart persistence and optional compact status bar. No real-server or native UI acceptance is claimed by offline fixtures."
     }
   ],
   "originalSuites": [

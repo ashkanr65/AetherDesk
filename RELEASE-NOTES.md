@@ -1,6 +1,16 @@
-# AetherDesk 0.1.3 — build 2
+# AetherDesk 0.1.3 — build 3
 
-AetherDesk 0.1.3 build 2 improves keyboard capture, mouse-wheel handling, independent application windows and saved appearance settings.
+AetherDesk 0.1.3 build 3 adds connection-scoped server monitoring and configurable licence/custom checks.
+
+## Changes in build 3
+
+- **Monitoring:** vertically stacked CPU, memory/swap, recorded-login, storage, network-interface, uptime and connection-response cards, with an always-visible icon status bar, per-item visibility, compact account/session counts and an Add monitor popup.
+- **Licence usage:** support lmutil and standalone lmstat, including multi-seat checkouts; add a FlexNet/Cadence card; hide unused features and filter by feature, user or machine. Add friendly feature labels, group results by user and open full details separately.
+- **Custom checks:** add a server-side command with Text, Single value or JSON table output; test it, save it, enable/disable it and filter its results.
+- Checks run in the background on the selected tab's existing SSH/VPN connection, outside the interactive terminal. Sources share results; timeouts, cancellation and stale/disconnected states are bounded.
+- **Home storage:** show the home filesystem and offer a bounded manual scan of home folders, with unknown/incomplete sizes clearly identified.
+- **SSH terminal history:** add a right-side scrollbar that stays separate from remote application mouse input.
+- See MONITORING.md for configuration, output formats and limitations. Build 3 passed Windows/Linux compiler regressions and bundled X11 verification. Live monitoring and upgrade acceptance remain separate.
 
 ## Changes in build 2
 
@@ -11,7 +21,7 @@ AetherDesk 0.1.3 build 2 improves keyboard capture, mouse-wheel handling, indepe
 - **Appearance:** preserve saved light/dark palettes and reset defaults more reliably, including when another application instance saves unrelated preferences.
 - **Reliability and diagnostics:** avoid awaiting completed shutdown tasks twice and add bounded background evidence when the Windows GUI stops responding. Installation shortcuts use a consistent working directory.
 
-The maintainer reports that the completed build works in their testing. This does not replace clean-machine, real upgrade/restart or wider EDA acceptance.
+All seven build stages for build 3 passed in 31 minutes 42 seconds. The package exactly matches the release source inputs. Live monitoring, clean-machine installation, real upgrade/restart and wider EDA acceptance are not established by those build results.
 
 ## New and improved
 
@@ -37,4 +47,4 @@ The reported idle hang and intermittent server-stream disconnections have not be
 
 Use the Windows x64 installer or extract the complete portable ZIP. Existing users can open the gear menu, choose **Updates**, and select **Check now**. Save work and disconnect sessions before installing an update. AetherDesk does not close your remote applications as part of updating the Windows client.
 
-Windows and Linux compiler regressions and the bundled-X11 package test passed for this build. Clean-machine, real upgrade/restart and comprehensive live detached-window acceptance remain pending.
+Windows and Linux compiler regressions and bundled-X11 verification passed for build 3. Update packages are verified against signed metadata. Clean-machine, real upgrade/restart and comprehensive live detached-window acceptance remain pending.

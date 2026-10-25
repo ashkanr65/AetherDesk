@@ -3,6 +3,13 @@ use eframe::egui::{self, Color32, Rect, Stroke};
 
 #[derive(Clone, Copy)]
 pub enum Icon {
+    Cpu,
+    Memory,
+    Uptime,
+    Upload,
+    Download,
+    Users,
+    Storage,
     Applications,
     Tab,
     Monitor,
@@ -223,6 +230,64 @@ pub fn draw(p: &egui::Painter, rect: Rect, icon: Icon, color: Color32) {
         );
     };
     match icon {
+        Icon::Cpu => {
+            border((0.24, 0.24), (0.76, 0.76));
+            border((0.37, 0.37), (0.63, 0.63));
+            for v in [0.33, 0.5, 0.67] {
+                line((v, 0.06), (v, 0.24));
+                line((v, 0.76), (v, 0.94));
+                line((0.06, v), (0.24, v));
+                line((0.76, v), (0.94, v));
+            }
+        }
+        Icon::Memory => {
+            border((0.04, 0.23), (0.96, 0.74));
+            for x in [0.16, 0.42, 0.68] {
+                border((x, 0.34), (x + 0.16, 0.6));
+            }
+            for x in [0.18, 0.34, 0.5, 0.66, 0.82] {
+                line((x, 0.74), (x, 0.9));
+            }
+        }
+        Icon::Uptime => {
+            p.circle_stroke(at(0.5, 0.5), rect.width() * 0.42, stroke);
+            line((0.5, 0.2), (0.5, 0.5));
+            line((0.5, 0.5), (0.72, 0.63));
+        }
+        Icon::Upload | Icon::Download => {
+            let (tip, tail, shoulder) = if matches!(icon, Icon::Upload) {
+                (0.1, 0.72, 0.36)
+            } else {
+                (0.72, 0.1, 0.46)
+            };
+            line((0.5, tail), (0.5, tip));
+            line((0.22, shoulder), (0.5, tip));
+            line((0.78, shoulder), (0.5, tip));
+            line((0.12, 0.91), (0.88, 0.91));
+        }
+        Icon::Users => {
+            p.circle_stroke(at(0.4, 0.28), rect.width() * 0.17, stroke);
+            p.circle_stroke(at(0.78, 0.35), rect.width() * 0.12, stroke);
+            p.add(egui::Shape::line(
+                vec![
+                    at(0.08, 0.9),
+                    at(0.08, 0.7),
+                    at(0.25, 0.55),
+                    at(0.55, 0.55),
+                    at(0.71, 0.7),
+                    at(0.71, 0.9),
+                ],
+                stroke,
+            ));
+            line((0.78, 0.58), (0.94, 0.72));
+            line((0.94, 0.72), (0.94, 0.9));
+        }
+        Icon::Storage => {
+            border((0.07, 0.15), (0.93, 0.87));
+            line((0.07, 0.66), (0.93, 0.66));
+            p.circle_filled(at(0.77, 0.77), rect.width() * 0.03, color);
+        }
+
         Icon::Applications => {
             border((0.03, 0.27), (0.72, 0.94));
             border((0.29, 0.03), (0.97, 0.68));

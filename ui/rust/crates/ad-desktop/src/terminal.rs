@@ -50,6 +50,8 @@ pub struct Terminal {
     mouse_button: Option<u8>,
     mouse_cell: Option<(u16, u16)>,
     history_limit: usize,
+    scrollback_available: usize,
+    scroll_grab: Option<f32>,
 }
 pub struct TerminalAction {
     pub input: Vec<u8>,
@@ -66,6 +68,8 @@ impl Default for Terminal {
             ),
             selection: None,
             history_limit: settings.scrollback_lines,
+            scrollback_available: 0,
+            scroll_grab: None,
             highlighter: crate::terminal_settings::Highlighter::new(&settings),
             settings_draft: None,
             settings,
@@ -88,7 +92,16 @@ impl Terminal {
     }
     pub fn process(&mut self, bytes: &[u8]) -> Vec<u8> {
         self.parser.process(bytes);
+        self.refresh_history();
         std::mem::take(&mut self.parser.callbacks_mut().0)
+    }
+    fn refresh_history(&mut self) {
+        // vt100 clamps the offset to the real retained history, not its capacity.
+        // Probe and restore without consuming output or changing the live screen.
+        let old = self.parser.screen().scrollback();
+        self.parser.screen_mut().set_scrollback(usize::MAX);
+        self.scrollback_available = self.parser.screen().scrollback();
+        self.parser.screen_mut().set_scrollback(old);
     }
     pub fn take_directory(&mut self) -> Option<String> {
         // The session's file-window switch gates both directions. Always drain
@@ -151,6 +164,7 @@ impl Terminal {
                 self.parser.process(&state);
                 self.selection = None;
                 self.history_limit = settings.scrollback_lines;
+                self.refresh_history();
             }
             self.highlighter = crate::terminal_settings::Highlighter::new(&settings);
             self.settings = settings;
@@ -213,15 +227,29 @@ impl Terminal {
         let cell_width = ui.fonts_mut(|fonts| fonts.glyph_width(&font, 'M')).max(1.0);
         let cell_height = (self.settings.font_size * self.settings.line_height).ceil();
         let available = ui.available_size();
-        let cols = (available.x / cell_width).floor().clamp(2.0, 500.0) as u16;
+        let cols = ((available.x - 18.0).max(0.0) / cell_width)
+            .floor()
+            .clamp(2.0, 500.0) as u16;
         let rows = (available.y / cell_height).floor().clamp(2.0, 250.0) as u16;
         let mut action = TerminalAction { input: Vec::new() };
         if self.parser.screen().size() != (rows, cols) {
             self.parser.screen_mut().set_size(rows, cols);
+            self.refresh_history();
             self.selection = None;
         }
-        let (rect, response) = ui.allocate_exact_size(
+        let (surface, _) = ui.allocate_exact_size(
             egui::vec2(available.x, available.y.max(2.0)),
+            egui::Sense::hover(),
+        );
+        let gutter = egui::Rect::from_min_max(
+            egui::pos2((surface.right() - 18.0).max(surface.left()), surface.top()),
+            surface.right_bottom(),
+        );
+        let rect =
+            egui::Rect::from_min_max(surface.min, egui::pos2(gutter.left(), surface.bottom()));
+        let response = ui.interact(
+            rect,
+            ui.id().with("terminal-surface"),
             egui::Sense::click_and_drag(),
         );
         if response.clicked() || response.drag_started() {
@@ -521,6 +549,87 @@ impl Terminal {
                 }
             }
         }
+        let track = egui::Rect::from_center_size(
+            gutter.center(),
+            egui::vec2(
+                (gutter.width() - 8.0).max(0.0),
+                (gutter.height() - 4.0).max(0.0),
+            ),
+        );
+        let history = if self.parser.screen().alternate_screen() {
+            0
+        } else {
+            self.scrollback_available
+        };
+        let offset = self.parser.screen().scrollback();
+        let thumb = scroll_thumb(track, usize::from(rows), history, offset);
+        let rail = ui.interact(
+            gutter,
+            ui.id().with("terminal-history"),
+            egui::Sense::click_and_drag(),
+        );
+        rail.widget_info(|| {
+            egui::WidgetInfo::labeled(egui::WidgetType::Slider, history > 0, "Terminal scrollback")
+        });
+        if history > 0 {
+            if rail.drag_started() || rail.clicked() {
+                response.request_focus();
+                if let Some(pos) = rail.interact_pointer_pos() {
+                    self.scroll_grab = Some(if thumb.contains(pos) {
+                        pos.y - thumb.top()
+                    } else {
+                        thumb.height() / 2.0
+                    });
+                }
+            }
+            if rail.dragged() || rail.clicked() {
+                if let Some(pos) = rail.interact_pointer_pos() {
+                    let offset = scroll_offset(
+                        track,
+                        thumb.height(),
+                        history,
+                        pos.y - self.scroll_grab.unwrap_or(thumb.height() / 2.0),
+                    );
+                    self.parser.screen_mut().set_scrollback(offset);
+                    self.selection = None;
+                }
+            }
+            if rail.hovered() {
+                let wheel = ui.input(|i| i.raw_scroll_delta.y);
+                if wheel.abs() >= 1.0 {
+                    let old = self.parser.screen().scrollback();
+                    self.parser.screen_mut().set_scrollback(if wheel > 0.0 {
+                        old.saturating_add(3)
+                    } else {
+                        old.saturating_sub(3)
+                    });
+                    self.selection = None;
+                }
+            }
+        }
+        if rail.drag_stopped() {
+            self.scroll_grab = None;
+        }
+        ui.painter()
+            .rect_filled(gutter, 0, self.settings.color("background"));
+        ui.painter()
+            .rect_filled(track, 4, ui.visuals().extreme_bg_color);
+        let thumb = scroll_thumb(
+            track,
+            usize::from(rows),
+            history,
+            self.parser.screen().scrollback(),
+        );
+        ui.painter().rect_filled(
+            thumb,
+            4,
+            if history == 0 {
+                ui.visuals().widgets.noninteractive.bg_fill
+            } else {
+                ui.style().interact(&rail).fg_stroke.color
+            },
+        );
+        rail.on_hover_text("Terminal history · drag to scroll · bottom returns to live output");
         let painter = ui.painter().with_clip_rect(rect);
         painter.rect_filled(rect, 0.0, self.settings.color("background"));
         let screen = self.parser.screen();
@@ -897,9 +1006,96 @@ fn row_word_colours(
         })
         .collect()
 }
+fn scroll_thumb(track: egui::Rect, rows: usize, history: usize, offset: usize) -> egui::Rect {
+    let height = (track.height() * rows as f32 / (rows + history).max(1) as f32)
+        .max(18.0)
+        .min(track.height());
+    let fraction = if history == 0 {
+        0.0
+    } else {
+        offset.min(history) as f32 / history as f32
+    };
+    egui::Rect::from_min_size(
+        egui::pos2(
+            track.left(),
+            track.top() + (track.height() - height) * (1.0 - fraction),
+        ),
+        egui::vec2(track.width(), height),
+    )
+}
+fn scroll_offset(track: egui::Rect, thumb_height: f32, history: usize, top: f32) -> usize {
+    let travel = (track.height() - thumb_height).max(1.0);
+    ((1.0 - (top - track.top()) / travel).clamp(0.0, 1.0) * history as f32).round() as usize
+}
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn terminal_scrollbar_tracks_real_history_and_keeps_gutter_out_of_pty_input() {
+        let mut t = Terminal::default();
+        t.parser.screen_mut().set_size(3, 20);
+        t.process(b"one\r\ntwo\r\nthree\r\nfour\r\nfive\r\n");
+        assert!(t.scrollback_available > 0);
+        let retained = t.scrollback_available;
+        t.parser.screen_mut().set_scrollback(1);
+        t.refresh_history();
+        assert_eq!(t.parser.screen().scrollback(), 1);
+        let track = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(10.0, 200.0));
+        let bottom = scroll_thumb(track, 3, retained, 0);
+        let top = scroll_thumb(track, 3, retained, retained);
+        assert_eq!(bottom.bottom(), track.bottom());
+        assert_eq!(top.top(), track.top());
+        assert_eq!(
+            scroll_offset(track, top.height(), retained, track.top()),
+            retained
+        );
+        assert_eq!(
+            scroll_offset(track, bottom.height(), retained, bottom.top()),
+            0
+        );
+        t.process(b"\x1b[?1049h");
+        assert_eq!(t.scrollback_available, 0);
+        t.process(b"\x1b[?1049l");
+        assert_eq!(t.scrollback_available, retained);
+        // Exercise the production UI with mouse reporting enabled. A click on
+        // the rail must only move history; no escape/mouse bytes reach the PTY.
+        let ctx = egui::Context::default();
+        for _ in 0..80 {
+            t.process(b"line\r\n");
+        }
+        t.process(b"\x1b[?1000h\x1b[?1006h");
+        let mut input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(400.0, 240.0),
+            )),
+            ..Default::default()
+        };
+        let mut gutter = egui::Pos2::ZERO;
+        let _ = ctx.run(input.clone(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                gutter = egui::pos2(ui.max_rect().right() - 9.0, ui.max_rect().top() + 4.0);
+                assert!(t.ui(ui, true).input.is_empty());
+            });
+        });
+        for pressed in [true, false] {
+            input.events = vec![
+                egui::Event::PointerMoved(gutter),
+                egui::Event::PointerButton {
+                    pos: gutter,
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ];
+            let _ = ctx.run(input.clone(), |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    assert!(t.ui(ui, true).input.is_empty());
+                });
+            });
+        }
+        assert!(t.parser.screen().scrollback() > 0);
+    }
     #[test]
     fn word_colours_map_wide_cells_and_preserve_host_ansi() {
         let settings = crate::terminal_settings::Settings::default();

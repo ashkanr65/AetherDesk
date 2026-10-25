@@ -896,6 +896,19 @@
         "ui/rust/crates/ad-desktop/src/main.rs"
       ],
       "acceptance": "Compile registered clock tests, then verify server timezone, no terminal/history output, active-tab changes, graceful disconnect and stale server replies in packaged connections. SSH liveness does not establish remote application health."
+    },
+    {
+      "id": "monitoring.server",
+      "area": "Monitoring",
+      "behavior": "Connection-scoped system cards, shared licence collectors and filtered user checkouts, custom finite checks, saved configuration and optional compact bar",
+      "references": [],
+      "status": "implemented_unverified",
+      "implementation": [
+        "ui/rust/crates/ad-desktop/src/monitoring.rs",
+        "ui/rust/crates/ad-desktop/src/monitoring_data.rs",
+        "tools/rust-build-kit/monitor_host.sh"
+      ],
+      "acceptance": "Compile registered monitoring tests, then verify Linux system readings, stale/disconnected states, stacked layout at narrow widths/large fonts, popup footer visibility, licence users/features/machines/aliases and friendly labels against real lmstat output. Verify custom Text/Value/JSON-table checks only run for their selected saved connection, never enter PTY history, cancel on hiding/disconnect and remain isolated across VPN routes. Test restart persistence and optional compact status bar. No real-server or native UI acceptance is claimed by offline fixtures."
     }
   ],
   "sourceFiles": [
