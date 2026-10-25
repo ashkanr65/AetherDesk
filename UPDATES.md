@@ -221,3 +221,28 @@ the assistant, no installation was replaced, and no live remote work was changed
 Actual two-version upgrades/restart, clean-machine and wider EDA acceptance remain
 separate. Release notes retain experimental independent-window limitations,
 including lack of live viewing after minimizing the original application.
+
+
+## 0.1.3 build 3 publication — 25 October 2026
+
+[AetherDesk 0.1.3 build 3](https://github.com/ashkanr65/AetherDesk/releases/tag/v0.1.3-build3)
+is published as the normal latest release. The source was pushed directly to
+public main at 69384c7536d72938d04ef11b4b5dce0f7cbd696a; the public release tag
+resolves to that exact commit. The completed seven-stage build passed in 31:42
+and matches source fingerprint
+59c0f8d90bf93a8b8ab5a6e18162324d04b7be6a87808403fb1abaf55362b19f.
+Windows/Linux compiler and bundled-X11 checks passed. Monitoring documentation
+and fixtures use fictional server/account examples; local connection data,
+credentials and the supplied raw licence report were not added to the release source.
+
+The existing pinned Ed25519 key signed the metadata. All 7,181 portable file
+lengths/hashes and the installer copy were verified. GitHub's three uploaded asset
+hashes/lengths match the signed local files. Anonymous latest-feed access and full
+metadata/installer/ZIP downloads through the application's asset API routes passed;
+the downloaded metadata signature verifies against the unchanged public key.
+Evidence is retained outside source under output/acceptance/update-0.1.3-build3-20261025.
+
+This preparation did not compile again, replace a user installation, restart an
+application or change a live server. Actual GUI update/restart, clean-machine
+installation and wider EDA/Monitoring acceptance remain separate from these
+publication checks. Experimental independent-window limitations remain documented.
