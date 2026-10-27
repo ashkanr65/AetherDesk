@@ -1,6 +1,7 @@
 #![cfg(target_os = "linux")]
 
 mod delivery;
+pub mod endpoint;
 mod lossless;
 pub mod server;
 pub mod supervisor;

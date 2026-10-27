@@ -157,7 +157,9 @@ impl AgentSupervisor {
             }
         });
 
-        set_state(&state, SessionState::Detached);
+        // A task can fail immediately on another runtime worker. Startup must
+        // never overwrite its terminal failure with a resumable state.
+        set_state_if_running(&state, SessionState::Detached);
         info!(%session_id, "persistent AetherDesk session started");
         Ok(Self {
             cursors,

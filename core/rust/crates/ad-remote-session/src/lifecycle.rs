@@ -238,7 +238,7 @@ impl<C: AgentConnection> RemoteSessionLifecycle<C> {
             return Err(LifecycleError::Cancelled);
         }
         let endpoint = timeout(
-            Duration::from_secs(35),
+            Duration::from_secs(65),
             self.connection
                 .launch_agent(&deployment, self.session_id, Some(parameters)),
         )

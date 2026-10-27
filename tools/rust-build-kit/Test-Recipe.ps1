@@ -52,6 +52,9 @@ $realFiles = @(Get-RustSourceFiles)
 foreach($required in @('ui/rust/crates/ad-desktop/src/monitoring.rs','ui/rust/crates/ad-desktop/src/monitoring_data.rs','tools/rust-build-kit/monitor_host.sh','tools/rust-build-kit/test_monitoring_collector.py')) {
     if($realFiles -notcontains $required){throw "Snapshot omitted a monitoring source: $required"}
 }
+foreach($required in @('tools/rust-build-kit/auto_update.py','tools/rust-build-kit/test_auto_update.py','tools/rust-build-kit/Prepare-Auto-Update.py','tools/rust-build-kit/Prepare-Auto-Update.cmd')) {
+    if($realFiles -notcontains $required){throw "Snapshot omitted an automatic publisher source: $required"}
+}
 if(!$linuxRecipe.Contains('python3 tools/rust-build-kit/test_monitoring_collector.py')) {throw 'Linux collector fixtures must run in the agent recipe.'}
 foreach ($required in @('core/rust/Cargo.toml','core/rust/crates/ad-ssh/src/client.rs','core/rust/crates/ad-ssh/src/scoped_command.sh','core/rust/crates/ad-vpn/Cargo.toml','tools/x11-icons.py','tools/rust-build-kit/test_scoped_command.py','tools/rust-build-kit/test_xwayland_download.py','ui/rust/crates/ad-desktop/src/session.rs','ui/rust/crates/ad-desktop/src/desktop_recovery.rs','rust-feature-inventory.json')) {
     if ($realFiles -notcontains $required -or !(Test-Path -LiteralPath (Join-Path $sourceRoot $required) -PathType Leaf)) { throw "Native snapshot omitted its backend dependency: $required" }

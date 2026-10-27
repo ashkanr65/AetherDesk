@@ -14,7 +14,8 @@ use crate::bootstrap::{
 };
 use crate::lifecycle::{channel_prelude, AgentConnection, AgentEndpoint, LifecycleError};
 
-const LAUNCH_TIMEOUT: Duration = Duration::from_secs(30);
+// Includes a serialized launch, confirmed-dead legacy recovery and fresh startup.
+const LAUNCH_TIMEOUT: Duration = Duration::from_secs(60);
 const ENDPOINT_PREFIX: &str = "AETHERDESK_AGENT_V1";
 
 pub struct SshAgentHost {

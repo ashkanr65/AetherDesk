@@ -77,6 +77,12 @@ impl AgentServer {
 
     pub async fn run(self) -> Result<(), AgentServerError> {
         let supervisor = AgentSupervisor::start(self.config.supervisor.clone()).await?;
+        if let Err(error) =
+            crate::endpoint::publish_ready(&self.config.session_directory, &self.endpoint).await
+        {
+            supervisor.shutdown().await?;
+            return Err(error.into());
+        }
         let mut dimensions = (self.initial_width, self.initial_height);
         info!(port = self.endpoint.port, session_id = %supervisor.session_id(), "agent broker ready");
         let claimed = tokio_util::sync::CancellationToken::new();
@@ -110,8 +116,16 @@ impl AgentServer {
         // A launch that never reaches Start/Resume must not leave a compositor
         // behind indefinitely after a cancelled upload/handshake or network loss.
         // Once claimed, a detached desktop keeps its existing unlimited lifetime.
-        let closing_session =
-            wait_for_claim_or_end(serving, &claimed, Duration::from_secs(60)).await;
+        let closing_session = tokio::select! {
+            result = wait_for_claim_or_end(serving, &claimed, Duration::from_secs(60)) => result,
+            _ = wait_for_failure(|| supervisor.state()) => {
+                warn!(session_id = %supervisor.session_id(), "failed desktop is no longer resumable; stopping its broker");
+                if let Err(error) = crate::endpoint::publish_health(&self.config.session_directory, &self.endpoint, true).await {
+                    warn!(%error, "failed desktop health could not be published");
+                }
+                Some(Err(AgentServerError::SupervisorStopped))
+            }
+        };
         supervisor.shutdown().await?;
         // The desktop is stopped. Log/storage cleanup is best-effort and must
         // never suppress the authoritative acknowledgement of that fact.
@@ -169,6 +183,18 @@ impl AgentServer {
         })
         .await
         .map_err(|_| AgentServerError::ChannelTimeout)?
+    }
+}
+
+async fn wait_for_failure(state: impl Fn() -> crate::SessionState) {
+    loop {
+        if matches!(
+            state(),
+            crate::SessionState::Failed | crate::SessionState::Stopped
+        ) {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
     }
 }
 
@@ -1081,6 +1107,25 @@ pub enum AgentServerError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn failure_monitor_preserves_detached_sessions_and_detects_failed_desktops() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let failed = AtomicBool::new(false);
+        let monitor = wait_for_failure(|| {
+            if failed.load(Ordering::Relaxed) {
+                crate::SessionState::Failed
+            } else {
+                crate::SessionState::Detached
+            }
+        });
+        tokio::pin!(monitor);
+        assert!(timeout(Duration::from_millis(20), &mut monitor)
+            .await
+            .is_err());
+        failed.store(true, Ordering::Relaxed);
+        timeout(Duration::from_secs(1), &mut monitor).await.unwrap();
+    }
     #[tokio::test]
     async fn an_unclaimed_startup_expires() {
         let claimed = tokio_util::sync::CancellationToken::new();

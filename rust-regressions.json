@@ -4311,6 +4311,42 @@
           "package": "agent-wayland",
           "source": "core/rust/crates/agent-wayland/src/terminal_flow_control.rs",
           "test": "terminal_scope_requires_exact_display_and_authority_environment_entries"
+        },
+        {
+          "phase": "linux",
+          "package": "agent-supervisor",
+          "source": "core/rust/crates/agent-supervisor/src/endpoint.rs",
+          "test": "legacy_recovery_requires_terminal_failure_after_latest_start"
+        },
+        {
+          "phase": "linux",
+          "package": "agent-supervisor",
+          "source": "core/rust/crates/agent-supervisor/src/endpoint.rs",
+          "test": "healthy_retained_endpoint_is_reused_without_attaching_or_terminating"
+        },
+        {
+          "phase": "linux",
+          "package": "agent-supervisor",
+          "source": "core/rust/crates/agent-supervisor/src/endpoint.rs",
+          "test": "mismatched_health_never_terminates_another_endpoint"
+        },
+        {
+          "phase": "linux",
+          "package": "agent-supervisor",
+          "source": "core/rust/crates/agent-supervisor/src/endpoint.rs",
+          "test": "legacy_failed_broker_is_closed_and_cleanup_confirmed_before_replacement"
+        },
+        {
+          "phase": "linux",
+          "package": "agent-supervisor",
+          "source": "core/rust/crates/agent-supervisor/src/server.rs",
+          "test": "failure_monitor_preserves_detached_sessions_and_detects_failed_desktops"
+        },
+        {
+          "phase": "linux",
+          "package": "agent-supervisor",
+          "source": "core/rust/crates/agent-supervisor/src/endpoint.rs",
+          "test": "modern_failed_health_recovers_but_eof_without_cleanup_never_allows_replacement"
         }
       ],
       "liveAcceptance": "Existing production Rust agent is retained and included by the native build recipe, which runs its integration tests when the user builds."

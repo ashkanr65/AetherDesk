@@ -1,4 +1,17 @@
-# AetherDesk 0.1.3 — build 3
+# AetherDesk 0.1.3 — build 4
+
+AetherDesk 0.1.3 build 4 fixes reconnection to failed saved desktops and adds a standalone publishing utility for maintainers.
+
+## Changes in build 4
+
+- **Remote desktop recovery:** opening one saved connection can recover a confirmed failed retained desktop instead of requiring a second tab. Healthy disconnected desktops and their applications remain resumable.
+- **Host-agent lifecycle:** publish connection details after desktop startup, detect fatal failures while connected or detached, and clean up failed brokers. Serialize concurrent launches for the same desktop.
+- **Recovery safeguards:** use the existing authenticated session-close command, require confirmed cleanup before replacement, and preserve sessions when their health cannot be established. Include compatibility with older retained agents.
+- **Publisher utility:** provide a standalone Python environment and a double-click launcher for completed-build verification, signing and release publication. This is a maintainer tool; ordinary AetherDesk users do not need Python.
+
+The affected agent/client lifecycle packages passed 45 native tests. Isolated real-process checks verified healthy legacy reuse, recovery from a failed older broker in one launch, and cleanup after a new compositor failure. Six recovery checks are registered in the build kit. The complete build 4 Windows/Linux packaging run and real installed-client upgrade acceptance remain pending.
+
+## Previous releases
 
 AetherDesk 0.1.3 build 3 adds connection-scoped server monitoring and configurable licence/custom checks.
 
@@ -21,7 +34,7 @@ AetherDesk 0.1.3 build 3 adds connection-scoped server monitoring and configurab
 - **Appearance:** preserve saved light/dark palettes and reset defaults more reliably, including when another application instance saves unrelated preferences.
 - **Reliability and diagnostics:** avoid awaiting completed shutdown tasks twice and add bounded background evidence when the Windows GUI stops responding. Installation shortcuts use a consistent working directory.
 
-All seven build stages for build 3 passed in 31 minutes 42 seconds. The package exactly matches the release source inputs. Live monitoring, clean-machine installation, real upgrade/restart and wider EDA acceptance are not established by those build results.
+All seven build stages for the published build 3 passed in 31 minutes 42 seconds. Those results apply to build 3; live monitoring, clean-machine installation, real upgrade/restart and wider EDA acceptance are not established by those build results.
 
 ## New and improved
 
@@ -47,4 +60,4 @@ The reported idle hang and intermittent server-stream disconnections have not be
 
 Use the Windows x64 installer or extract the complete portable ZIP. Existing users can open the gear menu, choose **Updates**, and select **Check now**. Save work and disconnect sessions before installing an update. AetherDesk does not close your remote applications as part of updating the Windows client.
 
-Windows and Linux compiler regressions and bundled-X11 verification passed for build 3. Update packages are verified against signed metadata. Clean-machine, real upgrade/restart and comprehensive live detached-window acceptance remain pending.
+Windows and Linux compiler regressions and bundled-X11 verification passed for build 3. The complete build 4 packaging run remains pending. Update packages are verified against signed metadata. Clean-machine, real upgrade/restart and comprehensive live detached-window acceptance remain pending.

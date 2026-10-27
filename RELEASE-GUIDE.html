@@ -16,6 +16,7 @@
 <p class="lead">Prepare, sign, upload, publish and test an AetherDesk update yourself, using the existing Rust build kit and protected signing key.</p>
 <p class="meta">Prepared 19 October 2026. Local paths match this PC. The next-release example is <strong>0.1.2 build 3</strong>; build 2 is already published. Change the example for each future release.</p>
 <div class="notice"><strong>Publishing a normal release enables updates for all eligible users.</strong> Drafts and previews do not appear in the application's stable update channel. Increasing a version in a text file is not enough: the new executable must be built, packaged and signed.</div>
+<div class="success"><strong>Automatic local publisher:</strong> After a fresh completed build, double-click <code>Prepare-Auto-Update.cmd</code> in the beginner build-kit folder. The Python entry point is <code>Prepare-Auto-Update.py</code>. Normal mode verifies, signs, commits/pushes main, publishes stable and checks public downloads. Use <code>--check</code> for local preflight only or <code>--draft</code> to leave an unpublished release. Read the accompanying <code>AUTO-UPDATE.md</code> before first use. Choose an unused version/build before building; this tool never relabels an old executable. The manual steps below remain available.</div>
 <nav aria-label="Guide contents"><ol>
 <li><a href="#setup">Set up the publisher computer</a></li><li><a href="#version">Prepare the next version</a></li>
 <li><a href="#build">Build the application</a></li><li><a href="#verify">Check the completed build</a></li>

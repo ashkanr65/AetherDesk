@@ -1,19 +1,18 @@
 use std::ffi::OsString;
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 use ad_stream_protocol::VideoCodec;
 use agent_encoder::EncoderConfig;
 use agent_input::InputConfig;
+use agent_supervisor::endpoint::read_live_endpoint;
 use agent_supervisor::{AgentServer, AgentServerConfig, SupervisorConfig};
 use agent_wayland::compositor::{ApplicationSpec, CompositorConfig};
-use tokio::io::AsyncWriteExt;
 use tracing_subscriber::EnvFilter;
 use uuid::Uuid;
 
-const ENDPOINT_PREFIX: &str = "AETHERDESK_AGENT_V1";
 const START_TIMEOUT: Duration = Duration::from_secs(20);
 
 #[derive(Clone, Debug)]
@@ -61,6 +60,33 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 async fn launch(options: Options) -> Result<(), Box<dyn std::error::Error>> {
     let session_directory = session_directory(options.session_id)?;
+    // Keep the lock outside the removable session directory. Concurrent tabs
+    // must never start competing brokers or race a confirmed-failed cleanup.
+    tokio::fs::create_dir_all(
+        session_directory
+            .parent()
+            .ok_or("Missing sessions directory")?,
+    )
+    .await?;
+    let lock = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .mode(0o600)
+        .open(session_directory.with_file_name(format!(".{}.launch-lock", options.session_id)))?;
+    let lock_deadline = Instant::now() + Duration::from_secs(25);
+    loop {
+        match lock.try_lock() {
+            Ok(()) => break,
+            Err(std::fs::TryLockError::WouldBlock) if Instant::now() < lock_deadline => {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            Err(error) => {
+                return Err(format!("Could not acquire desktop launch lock: {error}").into())
+            }
+        }
+    }
     tokio::fs::create_dir_all(&session_directory).await?;
     tokio::fs::set_permissions(&session_directory, std::fs::Permissions::from_mode(0o700)).await?;
     let endpoint_path = session_directory.join("endpoint");
@@ -68,6 +94,21 @@ async fn launch(options: Options) -> Result<(), Box<dyn std::error::Error>> {
         println!("{endpoint}");
         return Ok(());
     }
+
+    // A closed listener can leave old discovery files after an abrupt exit.
+    // Do not let those files race the next broker's atomic ready publication.
+    for name in ["endpoint", "health"] {
+        match tokio::fs::remove_file(session_directory.join(name)).await {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
+
+    // Confirmed-failed legacy cleanup removes the old directory only after
+    // stopping its compositor. Recreate it while still holding the launch lock.
+    tokio::fs::create_dir_all(&session_directory).await?;
+    tokio::fs::set_permissions(&session_directory, std::fs::Permissions::from_mode(0o700)).await?;
 
     let executable = std::env::current_exe()?;
     let log_path = session_directory.join("agent.log");
@@ -147,12 +188,7 @@ async fn serve(options: Options) -> Result<(), Box<dyn std::error::Error>> {
         session_directory: session_directory.clone(),
     })
     .await?;
-    write_endpoint(
-        &session_directory.join("endpoint"),
-        server.endpoint().port,
-        &server.endpoint().token,
-    )
-    .await?;
+    // The broker publishes its endpoint only after the desktop has started.
     server.run().await?;
     Ok(())
 }
@@ -263,64 +299,6 @@ fn session_directory(session_id: Uuid) -> Result<PathBuf, String> {
         .join(".aetherdesk")
         .join("sessions")
         .join(session_id.to_string()))
-}
-
-async fn write_endpoint(path: &Path, port: u16, token: &[u8; 32]) -> Result<(), std::io::Error> {
-    let temporary = path.with_extension(format!("tmp-{}", std::process::id()));
-    let mut file = tokio::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .open(&temporary)
-        .await?;
-    file.write_all(format!("{ENDPOINT_PREFIX} {port} {}\n", encode_hex(token)).as_bytes())
-        .await?;
-    file.flush().await?;
-    file.sync_all().await?;
-    drop(file);
-    tokio::fs::rename(temporary, path).await
-}
-
-async fn read_live_endpoint(path: &Path) -> Result<Option<String>, std::io::Error> {
-    let text = match tokio::fs::read_to_string(path).await {
-        Ok(value) => value,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(error) => return Err(error),
-    };
-    let mut fields = text.split_ascii_whitespace();
-    if fields.next() != Some(ENDPOINT_PREFIX) {
-        return Ok(None);
-    }
-    let Some(port) = fields.next().and_then(|value| value.parse::<u16>().ok()) else {
-        return Ok(None);
-    };
-    let Some(token) = fields.next() else {
-        return Ok(None);
-    };
-    if port == 0
-        || token.len() != 64
-        || !token.bytes().all(|byte| byte.is_ascii_hexdigit())
-        || fields.next().is_some()
-    {
-        return Ok(None);
-    }
-    if tokio::net::TcpStream::connect((std::net::Ipv4Addr::LOCALHOST, port))
-        .await
-        .is_err()
-    {
-        return Ok(None);
-    }
-    Ok(Some(format!("{ENDPOINT_PREFIX} {port} {token}")))
-}
-
-fn encode_hex(bytes: &[u8]) -> String {
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    let mut output = String::with_capacity(bytes.len() * 2);
-    for byte in bytes {
-        output.push(char::from(HEX[usize::from(byte >> 4)]));
-        output.push(char::from(HEX[usize::from(byte & 0x0f)]));
-    }
-    output
 }
 
 fn codec_name(codec: VideoCodec) -> &'static str {

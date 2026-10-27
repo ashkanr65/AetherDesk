@@ -1,5 +1,11 @@
 # AetherDesk build kit
 
+After a completed build, **Prepare-Auto-Update.py** (or the double-click
+**Prepare-Auto-Update.cmd** launcher) verifies, signs, commits/pushes main,
+publishes a stable update and verifies public downloads. See
+[automatic publisher instructions](AUTO-UPDATE.md). Normal mode publishes for
+all users; `--check` is local-only and `--draft` leaves a new release unpublished.
+
 For the complete independent signing, publishing and update-test procedure,
 open [AetherDesk build and release guide](../../RELEASE-GUIDE.html) in a browser.
 A copy is included beside the beginner kit launchers as `RELEASE-GUIDE.html`.

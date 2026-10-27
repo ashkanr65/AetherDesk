@@ -75,6 +75,8 @@ jobs:
           $installer=(Get-Content (Join-Path $env:AETHERDESK_RUST_OUTPUT_ROOT 'LATEST-INSTALLER.txt') -Raw).Trim()
           python tools/rust-build-kit/test_update_release.py
           if($LASTEXITCODE -ne 0){throw 'Publisher regressions failed'}
+          python tools/rust-build-kit/test_auto_update.py
+          if($LASTEXITCODE -ne 0){throw 'Automatic publisher regressions failed'}
           python tools/rust-build-kit/update_release.py prepare --package $package --installer $installer --output signed-update --notes-file RELEASE-NOTES.md
           if($LASTEXITCODE -ne 0){throw 'Release signing failed'}
           python tools/rust-build-kit/update_release.py verify --directory signed-update

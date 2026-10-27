@@ -1,5 +1,6 @@
 """Release synchronization regression tests; all writes use temporary fixtures."""
 import importlib.util
+import hashlib
 import json
 from pathlib import Path
 import tempfile
@@ -91,6 +92,39 @@ version = "1.0.0"
         (self.root / "core/rust/Cargo.lock").unlink()
         with self.assertRaisesRegex(ValueError, "Cargo.lock is required"):
             module.sync(self.root)
+
+    def freeze_flutter_references(self):
+        self.write("ui/flutter/ad_remote_desktop/lib/app_version.dart", "// Frozen old client version.\nconst appBuild = 1;\n")
+        entries = [
+            {"path": name, "sha256": hashlib.sha256((self.root / name).read_bytes()).hexdigest()}
+            for name in ("ui/flutter/ad_remote_desktop/pubspec.yaml",
+                         "ui/flutter/ad_remote_desktop/lib/app_version.dart")
+        ]
+        self.write("rust-migration.json", json.dumps({"schemaVersion": 1, "referenceFiles": entries}))
+        return {entry["path"]: (self.root / entry["path"]).read_bytes() for entry in entries}
+
+    def test_native_version_sync_preserves_frozen_migration_references(self):
+        originals = self.freeze_flutter_references()
+        manifest = (self.root / "rust-migration.json").read_bytes()
+        self.write("ui/rust/Cargo.toml", '[workspace.package]\nversion = "0.1.0"\n')
+        module.sync(self.root)
+        self.assertIn('version = "0.2.0"', self.read("ui/rust/Cargo.toml"))
+        self.assertIn('version = "0.2.0"', self.read("core/rust/Cargo.toml"))
+        for name, content in originals.items():
+            self.assertEqual((self.root / name).read_bytes(), content)
+        self.assertEqual((self.root / "rust-migration.json").read_bytes(), manifest)
+        module.sync(self.root, check=True)
+
+    def test_changed_frozen_reference_stops_without_rehashing_or_writing_versions(self):
+        self.freeze_flutter_references()
+        before = self.read("core/rust/Cargo.toml")
+        manifest = (self.root / "rust-migration.json").read_bytes()
+        self.write("ui/flutter/ad_remote_desktop/lib/app_version.dart", "// Unexpected edit\n")
+        for check in (False, True):
+            with self.assertRaisesRegex(ValueError, "Frozen migration reference changed"):
+                module.sync(self.root, check=check)
+        self.assertEqual(self.read("core/rust/Cargo.toml"), before)
+        self.assertEqual((self.root / "rust-migration.json").read_bytes(), manifest)
 
 
 if __name__ == "__main__":

@@ -67,6 +67,14 @@ downloaded archives still carry versioned names for release identification.
 
 ## Signing and publication
 
+For the self-service local workflow, run `Prepare-Auto-Update.cmd` or
+`Prepare-Auto-Update.py` from the beginner build-kit folder after a fresh completed
+build. Normal mode verifies, signs, commits/pushes main, publishes and checks
+anonymous downloads without another chat session. `--check` is local-only;
+`--draft` uploads a new unpublished release. See
+[AUTO-UPDATE.md](tools/rust-build-kit/AUTO-UPDATE.md) for prerequisites, safeguards,
+retry behavior and the distinction between publication checks and live upgrades.
+
 The verification key and public download repository in `update-config.json` are
 embedded at compile time. Signed metadata declares version/build, Windows x64,
 one-year expiry, package SHA-256/length and every portable file. The client rejects
