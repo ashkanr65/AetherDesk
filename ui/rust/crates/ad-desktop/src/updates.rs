@@ -12,6 +12,7 @@ use std::{
 struct Preferences {
     automatic: bool,
     download: bool,
+    install_on_exit: bool,
     last_check: i64,
     highest: [u64; 4],
     pending: Option<PathBuf>,
@@ -21,6 +22,7 @@ impl Default for Preferences {
         Self {
             automatic: true,
             download: false,
+            install_on_exit: true,
             last_check: 0,
             highest: [0; 4],
             pending: None,
@@ -38,7 +40,12 @@ enum Event {
     Checked(Result<Option<Candidate>, String>),
     Progress(u64, u64),
     Downloaded(Result<PathBuf, String>),
-    Restored(Result<Option<(Candidate, PathBuf)>, String>),
+    Restored(Result<Restored, String>),
+}
+enum Restored {
+    Available(Candidate, PathBuf),
+    AwaitingHealth(PathBuf),
+    None,
 }
 pub struct Updates {
     prefs: Preferences,
@@ -54,6 +61,8 @@ pub struct Updates {
     pub open: bool,
     confirm: bool,
     restored: bool,
+    health_pending: Option<PathBuf>,
+    exit_attempted: bool,
     #[cfg(not(test))]
     maintenance_done: bool,
 }
@@ -80,6 +89,8 @@ impl Default for Updates {
             open: false,
             confirm: false,
             restored: false,
+            health_pending: None,
+            exit_attempted: false,
             #[cfg(not(test))]
             maintenance_done: false,
         }
@@ -290,7 +301,7 @@ fn retire_obsolete_download(stage: &std::path::Path) {
         let _ = discard_stage(stage);
     }
 }
-fn restore(stage: PathBuf, highest: [u64; 4]) -> Result<Option<(Candidate, PathBuf)>, String> {
+fn restore(stage: PathBuf, highest: [u64; 4]) -> Result<Restored, String> {
     let root = cache()?
         .canonicalize()
         .map_err(|_| "Cannot inspect update cache")?;
@@ -312,12 +323,19 @@ fn restore(stage: PathBuf, highest: [u64; 4]) -> Result<Option<(Candidate, PathB
         chrono::Utc::now().timestamp(),
     )?;
     let version = metadata::version(&manifest.version, manifest.build)?;
+    if version == metadata::current()?
+        && stage.join("awaiting-health").is_file()
+        && !stage.join("complete").is_file()
+    {
+        crate::update_apply::validate_health_target(&stage)?;
+        return Ok(Restored::AwaitingHealth(stage));
+    }
     if version <= metadata::current()? {
         // On the first updated launch the old helper still needs its plan,
         // journal and backup until it receives our health confirmation.
         // Completed installation stages are removed by delayed maintenance.
         retire_obsolete_download(&stage);
-        return Ok(None);
+        return Ok(Restored::None);
     }
     if version < highest {
         return Err("Saved update is older than the newest verified release".into());
@@ -345,7 +363,7 @@ fn restore(stage: PathBuf, highest: [u64; 4]) -> Result<Option<(Candidate, PathB
     {
         return Err("The saved update failed verification. Check again for updates.".into());
     }
-    Ok(Some((candidate, stage)))
+    Ok(Restored::Available(candidate, stage))
 }
 fn selected(candidate: &Candidate) -> &Asset {
     if candidate.installer {
@@ -480,6 +498,20 @@ impl Updates {
                     let _ = sender.send(Event::Restored(restore(stage, highest)));
                     ctx.request_repaint();
                 });
+            } else if cfg!(not(test)) {
+                let (sender, receiver) = mpsc::channel();
+                self.receiver = Some(receiver);
+                let ctx = ctx.clone();
+                let highest = self.prefs.highest;
+                std::thread::spawn(move || {
+                    let result =
+                        crate::update_apply::pending_health().and_then(|stage| match stage {
+                            Some(stage) => restore(stage, highest),
+                            None => Ok(Restored::None),
+                        });
+                    let _ = sender.send(Event::Restored(result));
+                    ctx.request_repaint();
+                });
             }
         }
         #[cfg(not(test))]
@@ -548,12 +580,15 @@ impl Updates {
                 Event::Restored(result) => {
                     self.receiver = None;
                     match result {
-                        Ok(Some((candidate, path))) => {
+                        Ok(Restored::Available(candidate, path)) => {
                             self.candidate = Some(candidate);
                             self.downloaded = Some(path);
                             self.status = "Verified update ready to install".into();
                         }
-                        Ok(None) => {
+                        Ok(Restored::AwaitingHealth(path)) => {
+                            self.health_pending = Some(path);
+                        }
+                        Ok(Restored::None) => {
                             self.prefs.pending = None;
                             self.save();
                         }
@@ -580,6 +615,54 @@ impl Updates {
             self.start(ctx, None);
         }
     }
+    /// Called after a normal GUI frame, never merely because the process loaded.
+    pub fn rendered(&mut self) {
+        if let Some(stage) = self.health_pending.take() {
+            match crate::update_apply::mark_healthy(&stage) {
+                Ok(()) => {
+                    if self.prefs.pending.as_ref() == Some(&stage) {
+                        self.prefs.pending = None;
+                        self.save();
+                    }
+                }
+                Err(error) => {
+                    self.error = Some(error);
+                }
+            }
+        }
+    }
+    /// Do not wait for downloads or install on an unconfirmed/forced shutdown.
+    pub fn on_exit(&mut self, safe: bool) {
+        self.on_exit_using(
+            safe,
+            crate::update_exit::system_ending(),
+            crate::update_apply::stage_apply_on_exit,
+        );
+    }
+    fn on_exit_using(
+        &mut self,
+        safe: bool,
+        system_ending: bool,
+        install: impl FnOnce(&std::path::Path, bool) -> Result<(), String>,
+    ) {
+        if self.exit_attempted {
+            return;
+        }
+        self.exit_attempted = true;
+        if !self.valid
+            || !self.prefs.install_on_exit
+            || !safe
+            || self.receiver.is_some()
+            || system_ending
+        {
+            return;
+        }
+        if let (Some(stage), Some(candidate)) = (&self.downloaded, &self.candidate) {
+            if let Err(error) = install(stage, candidate.installer) {
+                tracing::warn!(%error, "update deferred at application close");
+            }
+        }
+    }
     /// Returns true only after confirmation, a safe-work check and helper launch.
     pub fn ui(&mut self, ctx: &egui::Context, safe: bool) -> bool {
         let mut install = false;
@@ -593,8 +676,9 @@ impl Updates {
                 ui.heading(format!("AetherDesk {}", env!("CARGO_PKG_VERSION")));
                 ui.label("Stable releases · Installer and portable updates");
                 let changed = ui.checkbox(&mut self.prefs.automatic, "Check for updates automatically").changed()
-                    | ui.checkbox(&mut self.prefs.download, "Download updates automatically").changed();
-                ui.small("Checks at startup, then daily. Installing always asks before restarting.");
+                    | ui.checkbox(&mut self.prefs.download, "Download updates automatically").changed()
+                    | ui.checkbox(&mut self.prefs.install_on_exit, "Install downloaded updates when AetherDesk closes").changed();
+                ui.small("Checks run in the background. Updates installed on close leave AetherDesk closed; the next launch uses the new version.");
                 if changed { self.save(); }
                 if self.prefs.last_check > 0 {
                     if let Some(time) = chrono::DateTime::from_timestamp(self.prefs.last_check, 0) {
@@ -614,6 +698,7 @@ impl Updates {
                     if self.downloaded.is_none() && ui.add_enabled(self.receiver.is_none(), egui::Button::new("Download update")).clicked() { self.start(ctx, self.candidate.clone()); }
                 }
                 if self.downloaded.is_some() {
+                    if self.prefs.install_on_exit { ui.small("Ready to install after all AetherDesk windows from this folder close. The application will stay closed."); }
                     if !safe { ui.small("Disconnect sessions, finish transfers and agent/tool work, and save editor changes before installing."); }
                     if ui.add_enabled(safe, egui::Button::new("Update and restart…")).clicked() { self.confirm = true; }
                     if ui.button("Discard download").clicked() {
@@ -647,6 +732,7 @@ impl Updates {
                                 match crate::update_apply::stage_apply(stage, candidate.installer) {
                                     Ok(()) => {
                                         install = true;
+                                        self.exit_attempted = true;
                                         self.confirm = false;
                                     }
                                     Err(error) => {
@@ -672,6 +758,74 @@ impl Updates {
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn ready_update() -> Candidate {
+        Candidate {
+            manifest: Manifest {
+                schema: 1,
+                product: "AetherDesk".into(),
+                target: "windows-x86_64".into(),
+                version: "0.1.3".into(),
+                build: 99,
+                published: 1,
+                expires: i64::MAX,
+                notes: String::new(),
+                portable: Asset {
+                    name: "update.zip".into(),
+                    bytes: 1,
+                    sha256: "0".repeat(64),
+                },
+                installer: None,
+                files: Vec::new(),
+            },
+            envelope: Vec::new(),
+            asset_id: 0,
+            installer: false,
+        }
+    }
+    #[test]
+    fn close_updates_require_consent_a_complete_download_and_safe_normal_exit() {
+        let root = tempfile::tempdir().unwrap();
+        crate::storage::with_test_root(root.path(), || {
+            for (consent, ready, safe, ending, busy) in [
+                (false, true, true, false, false),
+                (true, false, true, false, false),
+                (true, true, false, false, false),
+                (true, true, true, true, false),
+                (true, true, true, false, true),
+            ] {
+                let mut updates = Updates::default();
+                updates.prefs.install_on_exit = consent;
+                if ready {
+                    updates.downloaded = Some(root.path().into());
+                    updates.candidate = Some(ready_update());
+                }
+                if busy {
+                    let (_, receiver) = mpsc::channel();
+                    updates.receiver = Some(receiver);
+                }
+                updates.on_exit_using(safe, ending, |_, _| {
+                    panic!("an unsafe or disabled exit started installation")
+                });
+            }
+            let mut updates = Updates::default();
+            updates.downloaded = Some(root.path().into());
+            updates.candidate = Some(ready_update());
+            let calls = std::cell::Cell::new(0);
+            updates.on_exit_using(true, false, |stage, installer| {
+                assert_eq!(stage, root.path());
+                assert!(!installer);
+                calls.set(calls.get() + 1);
+                Ok(())
+            });
+            updates.on_exit_using(true, false, |_, _| {
+                panic!("same close started a second helper")
+            });
+            assert_eq!(calls.get(), 1);
+            updates.prefs.install_on_exit = false;
+            updates.save();
+            assert!(!Updates::default().prefs.install_on_exit);
+        });
+    }
     #[test]
     fn first_updated_launch_preserves_the_helpers_recovery_files() {
         let stage = tempfile::tempdir().unwrap();

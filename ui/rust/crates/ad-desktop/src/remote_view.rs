@@ -278,6 +278,29 @@ impl RemoteView {
             modifiers: key.modifiers,
         });
     }
+    fn clipboard_shortcut(&mut self, scan_code: u32) {
+        let previous = egui::Modifiers {
+            shift: self.modifiers & 1 != 0,
+            ctrl: self.modifiers & 2 != 0,
+            alt: self.modifiers & 4 != 0,
+            mac_cmd: self.modifiers & 8 != 0,
+            command: self.modifiers & 2 != 0,
+        };
+        self.sync_modifiers(egui::Modifiers {
+            ctrl: true,
+            command: true,
+            ..previous
+        });
+        for pressed in [true, false] {
+            self.input(InputMessage::Keyboard {
+                scan_code,
+                pressed,
+                repeat: false,
+                modifiers: self.modifiers,
+            });
+        }
+        self.sync_modifiers(previous);
+    }
     fn surface(&mut self, ui: &mut egui::Ui) {
         if let Some(image) = self.client.prepared_after(self.sequence) {
             self.upload_frame(ui.ctx(), &image);
@@ -494,6 +517,12 @@ impl RemoteView {
                     continue;
                 }
                 match event {
+                    ref event
+                        if !self.raw_active
+                            && crate::remote_clipboard::shortcut(event).is_some() =>
+                    {
+                        self.clipboard_shortcut(crate::remote_clipboard::shortcut(event).unwrap());
+                    }
                     egui::Event::Key {
                         key,
                         physical_key,
@@ -617,8 +646,9 @@ impl RemoteView {
                 let _ = crate::remote_keypad::take(self.id, window);
             }
         }
+        let entered = focused && !self.keyboard_paused && !self.input_focus;
         self.input_focus = focused && !self.keyboard_paused;
-        if self.clipboard_tick.elapsed() > Duration::from_millis(300) {
+        if entered || self.clipboard_tick.elapsed() > Duration::from_millis(300) {
             self.clipboard_tick = Instant::now();
             let state = self.client.status();
             if let Some(text) = &state.clipboard {
@@ -685,7 +715,7 @@ fn gui_key_reached_window(event: &egui::Event) -> bool {
             scan_code(physical_key.unwrap_or(*key))
                 .is_some_and(|scan| !matches!(scan, 58 | 69 | 70))
         }
-        _ => false,
+        _ => crate::remote_clipboard::shortcut(event).is_some(),
     }
 }
 fn point(pos: egui::Pos2, rect: egui::Rect, size: (u32, u32)) -> (i32, i32) {
@@ -818,6 +848,35 @@ fn lock_state() -> u16 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn clipboard_shortcuts_restore_prior_modifiers_and_never_type_paste_payloads() {
+        let client = RemoteClient::test_stub(egui::Context::default());
+        let mut view = RemoteView::new(client.clone(), uuid::Uuid::new_v4());
+        for event in [
+            egui::Event::Copy,
+            egui::Event::Cut,
+            egui::Event::Paste("private text".into()),
+        ] {
+            assert!(gui_key_reached_window(&event));
+            let scan = crate::remote_clipboard::shortcut(&event).unwrap();
+            view.clipboard_shortcut(scan);
+            assert_eq!(view.modifiers & 3, 0, "synthetic Ctrl was retained");
+            for (expected, down) in [(29, true), (scan, true), (scan, false), (29, false)] {
+                assert!(
+                    matches!(client.test_next_input().await, ad_stream_protocol::ArppMessage::Input(InputMessage::Keyboard {scan_code,pressed,..}) if scan_code==expected && pressed==down)
+                );
+            }
+        }
+        view.modifiers = 3;
+        view.clipboard_shortcut(46);
+        assert_eq!(view.modifiers & 3, 3, "already-held Ctrl/Shift changed");
+        for pressed in [true, false] {
+            assert!(
+                matches!(client.test_next_input().await, ad_stream_protocol::ArppMessage::Input(InputMessage::Keyboard {scan_code:46,pressed:p,modifiers,..}) if p==pressed && modifiers & 3 == 3)
+            );
+        }
+        view.modifiers = 0; // fixture has no physically held keys
+    }
     #[test]
     fn presentation_resizes_use_new_textures_and_reject_unsupported_frames() {
         let ctx = egui::Context::default();

@@ -321,6 +321,13 @@ impl Applications {
         focused
     }
     fn application_keypad(&mut self, key: &crate::remote_keypad::KeypadEvent) {
+        self.sync_modifiers(egui::Modifiers {
+            shift: key.modifiers & 1 != 0,
+            ctrl: key.modifiers & 2 != 0,
+            alt: key.modifiers & 4 != 0,
+            mac_cmd: key.modifiers & 8 != 0,
+            command: key.modifiers & 2 != 0,
+        });
         if key.pressed {
             self.keys.insert(key.scan_code);
         } else {
@@ -404,6 +411,21 @@ impl Applications {
                 continue;
             }
             match event {
+                ref event
+                    if keyboard_focus && crate::remote_clipboard::shortcut(event).is_some() =>
+                {
+                    let previous = self.modifiers;
+                    self.sync_modifiers(egui::Modifiers {
+                        ctrl: true,
+                        command: true,
+                        ..previous
+                    });
+                    let evdev = crate::remote_clipboard::shortcut(event).unwrap();
+                    for pressed in [true, false] {
+                        self.send(Request::Key { evdev, pressed });
+                    }
+                    self.sync_modifiers(previous);
+                }
                 egui::Event::Key {
                     key,
                     physical_key,
@@ -495,6 +517,73 @@ impl Applications {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn clipboard_commands_only_reach_a_focused_application_and_release_temporary_control() {
+        use std::sync::Arc;
+        let ctx = egui::Context::default();
+        ctx.options_mut(|o| o.max_passes = 1.try_into().unwrap());
+        let (commands, mut requests) = tokio::sync::mpsc::channel(64);
+        let mut app = Applications::new(None, uuid::Uuid::new_v4());
+        app.worker = Some(Worker {
+            commands,
+            state: Arc::new(parking_lot::Mutex::new(State::default())),
+            cancel: tokio_util::sync::CancellationToken::new(),
+        });
+        for focused in [true, false] {
+            let _ = ctx.run(
+                egui::RawInput {
+                    focused,
+                    events: vec![
+                        egui::Event::Copy,
+                        egui::Event::Paste("private text".into()),
+                        egui::Event::Cut,
+                    ],
+                    ..Default::default()
+                },
+                |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| {
+                        let (image, response) = ui.allocate_exact_size(
+                            egui::vec2(300.0, 160.0),
+                            egui::Sense::click_and_drag(),
+                        );
+                        response.request_focus();
+                        app.application_input(ui, &response, image, (300, 160), (0, 0), true, true);
+                    });
+                },
+            );
+            let mut keys = Vec::new();
+            while let Ok(request) = requests.try_recv() {
+                if let Request::Key { evdev, pressed } = request {
+                    keys.push((evdev, pressed));
+                }
+            }
+            if focused {
+                assert_eq!(
+                    keys,
+                    vec![
+                        (29, true),
+                        (46, true),
+                        (46, false),
+                        (29, false),
+                        (29, true),
+                        (47, true),
+                        (47, false),
+                        (29, false),
+                        (29, true),
+                        (45, true),
+                        (45, false),
+                        (29, false)
+                    ]
+                );
+            } else {
+                assert!(
+                    keys.is_empty(),
+                    "background application consumed a local clipboard command"
+                );
+            }
+            assert!(!app.modifiers.ctrl);
+        }
+    }
     #[test]
     fn scrolling_activates_the_application_before_ordered_motion_and_wheel() {
         use std::sync::Arc;

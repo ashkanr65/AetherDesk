@@ -20,6 +20,8 @@ struct X11Server {
     child: Child,
     _directory: tempfile::TempDir,
     pub config: X11ForwardingConfig,
+    pid: u32,
+    failure: Option<crate::x11_diagnostics::Failure>,
 }
 
 struct SharedServer(parking_lot::Mutex<X11Server>);
@@ -65,8 +67,46 @@ impl X11Runtime {
                 .ok_or("Application directory missing")?
                 .join("x11"),
         };
-        let server = X11Server::start(&root, cancel).await?;
+        let server = X11Server::start(&root, cancel, None).await?;
         let server = Arc::new(SharedServer(parking_lot::Mutex::new(server)));
+        *current = Arc::downgrade(&server);
+        Ok(self.lease(server))
+    }
+    pub async fn recover(
+        self: &Arc<Self>,
+        config: &X11ForwardingConfig,
+        cancel: &tokio_util::sync::CancellationToken,
+    ) -> Result<X11Lease, String> {
+        let mut current = tokio::select! {
+            _ = cancel.cancelled() => return Err("Connection cancelled".into()),
+            gate = self.current.lock() => gate,
+        };
+        if let Some(server) = current.upgrade() {
+            let running = server.0.lock().is_running()?;
+            if running {
+                let compatible = {
+                    let server = server.0.lock();
+                    server.config.local_port == config.local_port
+                        && server.config.local_authentication_cookie
+                            == config.local_authentication_cookie
+                };
+                if !compatible {
+                    return Err("Another X11 generation is using a different display identity. Reconnect this tab to enable graphical applications; terminal and files remain connected.".into());
+                }
+                return Ok(self.lease(server));
+            }
+        }
+        let root = match &self.root {
+            Some(root) => root.clone(),
+            None => std::env::current_exe()
+                .map_err(|e| e.to_string())?
+                .parent()
+                .ok_or("Application directory missing")?
+                .join("x11"),
+        };
+        let server = Arc::new(SharedServer(parking_lot::Mutex::new(
+            X11Server::start(&root, cancel, Some(config)).await?,
+        )));
         *current = Arc::downgrade(&server);
         Ok(self.lease(server))
     }
@@ -81,6 +121,12 @@ impl X11Runtime {
     }
 }
 impl X11Lease {
+    pub fn failure(&self) -> Result<Option<crate::x11_diagnostics::Failure>, String> {
+        self.server
+            .as_ref()
+            .map(|server| server.0.lock().failure())
+            .unwrap_or(Ok(None))
+    }
     pub fn is_running(&self) -> Result<bool, String> {
         self.server
             .as_ref()
@@ -165,10 +211,12 @@ impl X11Server {
     async fn start(
         root: &Path,
         cancel: &tokio_util::sync::CancellationToken,
+        retained: Option<&X11ForwardingConfig>,
     ) -> Result<Self, String> {
         if cancel.is_cancelled() {
             return Err("Connection cancelled".into());
         }
+        crate::update_exit::stable_display(cancel).await?;
         for name in [
             "vcxsrv.exe",
             "xauth.exe",
@@ -197,9 +245,29 @@ impl X11Server {
         )
         .await
         .map_err(|e| e.to_string())?;
-        let local_cookie = cookie();
+        let local_cookie = match retained {
+            Some(config) => {
+                let encoded = &config.local_authentication_cookie;
+                if encoded.len() != 32 {
+                    return Err("Invalid retained X11 authentication".into());
+                }
+                let mut bytes = [0; 16];
+                for (i, pair) in encoded.as_bytes().chunks_exact(2).enumerate() {
+                    bytes[i] = u8::from_str_radix(
+                        std::str::from_utf8(pair).map_err(|_| "Invalid X11 cookie")?,
+                        16,
+                    )
+                    .map_err(|_| "Invalid X11 cookie")?;
+                }
+                bytes
+            }
+            None => cookie(),
+        };
         let mut display = None;
         for number in 10..=39u16 {
+            if retained.is_some_and(|config| config.local_port != 6000 + number) {
+                continue;
+            }
             if cancel.is_cancelled() {
                 return Err("Connection cancelled".into());
             }
@@ -246,6 +314,8 @@ impl X11Server {
             .arg(format!(":{display}"))
             .args([
                 "-multiwindow",
+                "-engine",
+                "1",
                 "-notrayicon",
                 "-noreset",
                 "-clipboard",
@@ -276,6 +346,8 @@ impl X11Server {
             #[cfg(windows)]
             job: Some(job),
             child,
+            pid: 0,
+            failure: None,
             _directory: directory,
             config: X11ForwardingConfig {
                 local_port: 6000 + display,
@@ -285,12 +357,15 @@ impl X11Server {
                 screen_number: 0,
             },
         };
+        server.pid = server.child.id().unwrap_or(0);
+        crate::windows_crash_reports::track_x11(server.pid, &root.join("vcxsrv.exe"));
         for _ in 0..40 {
             if cancel.is_cancelled() {
                 server.stop().await;
                 return Err("Connection cancelled".into());
             }
             if !server.is_running()? {
+                let _ = server.failure();
                 return Err("Bundled X11 server exited during startup".into());
             }
             if probe(server.config.local_port, &local_cookie, true).await {
@@ -310,6 +385,26 @@ impl X11Server {
             .try_wait()
             .map(|s| s.is_none())
             .map_err(|e| e.to_string())
+    }
+    fn failure(&mut self) -> Result<Option<crate::x11_diagnostics::Failure>, String> {
+        if let Some(failure) = &self.failure {
+            return Ok(Some(failure.clone()));
+        }
+        let Some(status) = self.child.try_wait().map_err(|e| e.to_string())? else {
+            return Ok(None);
+        };
+        let failure = crate::x11_diagnostics::preserve(
+            self._directory.path(),
+            self.pid,
+            self.config.local_port - 6000,
+            status.to_string(),
+            &[
+                &self.config.authentication_cookie,
+                &self.config.local_authentication_cookie,
+            ],
+        );
+        self.failure = Some(failure.clone());
+        Ok(Some(failure))
     }
     pub async fn stop(&mut self) {
         #[cfg(windows)]
@@ -451,6 +546,8 @@ mod tests {
         assert!(!directory.exists());
 
         let mut old = runtime.acquire(&cancel).await.unwrap();
+        let original_config = old.config.clone();
+        let mut old_peer = runtime.acquire(&cancel).await.unwrap();
         old.server
             .as_ref()
             .unwrap()
@@ -466,10 +563,28 @@ mod tests {
         })
         .await
         .unwrap();
-        let mut replacement = runtime.acquire(&cancel).await.unwrap();
+        let reports = tempfile::tempdir().unwrap();
+        let failure = crate::storage::with_test_root(reports.path(), || old.failure())
+            .unwrap()
+            .unwrap();
+        assert!(failure.report.as_ref().unwrap().is_file());
+        let mut replacement = runtime.recover(&original_config, &cancel).await.unwrap();
+        let mut peer_replacement = runtime.recover(&old_peer.config, &cancel).await.unwrap();
+        assert_eq!(replacement.config.local_port, original_config.local_port);
+        assert_eq!(
+            replacement.config.local_authentication_cookie,
+            original_config.local_authentication_cookie
+        );
+        assert!(
+            fixed_font_works(&original_config).await,
+            "existing SSH forwarding authentication stopped working"
+        );
         old.stop().await;
+        old_peer.stop().await;
         assert!(replacement.is_running().unwrap());
         replacement.stop().await;
+        assert!(peer_replacement.is_running().unwrap());
+        peer_replacement.stop().await;
         assert!(runtime.current.lock().await.upgrade().is_none());
     }
 }

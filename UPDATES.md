@@ -8,31 +8,53 @@ Clients without this updater need one initial manual upgrade.
 
 ## User experience
 
-Settings → Updates provides automatic checking (on), automatic downloading (off),
-Check now, release notes, progress, Discard download and Update and restart.
-Automatic checks start after ten seconds, then run at most daily. Updates never
-force a restart. Downloads are remembered and reverified after restarting.
+Preferences → Updates provides automatic checking (on), automatic downloading
+(off), installation of downloaded updates on normal close (on), Check now,
+release notes, progress, Discard download and Update and restart. Automatic checks
+start after ten seconds, then run at most daily. Startup never installs an update.
+Downloads are remembered and reverified after restarting.
 
-Installation requires confirmation and is disabled during active connections,
-transfers, unsaved/busy editors and assistant/tool operations. Profiles, Windows
-credentials, working copies and chats keep their existing data locations. Full
-runtime packages include the matching Linux agent; the updater itself never
-changes remote hosts. Verify compatibility with retained desktops before release.
+With installation on close enabled, a completed verified download is installed
+by a background helper after AetherDesk exits normally. The GUI stays closed;
+open AetherDesk normally next time to use the new version. Downloading remains
+an independent choice: enable automatic downloading or download an update manually.
+Opt out by clearing **Install downloaded updates when AetherDesk closes**.
+**Update and restart** remains the explicit immediate option.
 
-Installer upgrades use the existing per-user Inno AppId and installation
-transaction, disable forced application closing, and preserve failure logs.
-Installer first-launch failure is reported for recovery; automatic rollback of
-the installer after a failed first launch is not claimed.
+Closing follows the existing connection/work cleanup flow. A busy or unsafe exit,
+an incomplete download, a crash, or Windows shutdown/logoff does not start an
+installation. The helper waits for the application to exit and briefly for other
+windows using that installation; it defers if the folder is still in use. It
+never forcibly closes another instance. If opened during replacement, wait for
+the helper to finish before trying again.
 
-Portable upgrades verify a flat ZIP against signed file lengths/hashes, back up
-overwritten files, journal changes and restore on replacement or first-launch
-failure. Only obsolete files from previous signed inventories can be removed;
+Profiles, Windows credentials, working copies and chats keep their existing data
+locations. Full runtime packages include the matching Linux agent; the updater
+itself never changes remote hosts. Verify compatibility with retained desktops
+before release.
+
+Installer upgrades use the existing per-user Inno AppId, disable forced
+application closing, and preserve failure logs. Both installer and portable
+updates back up affected application files before replacement and verify the
+installed signed inventory. Installed updates also back up the uninstaller files;
+file rollback does not restore Windows uninstall registry state, so an interrupted
+installer may still require installer repair.
+
+Portable upgrades verify a flat ZIP against signed file lengths/hashes and journal
+changes. Only obsolete files from previous signed inventories can be removed;
 unknown files remain. The helper copies its DLL dependencies to avoid locking the
-DLLs it replaces. First UI render confirms startup. This is not a power-loss-proof
-filesystem transaction: retain the recovery folder after interrupted installation.
-Completed update directories are cleaned after a successful startup.
-An installation lock also prevents updating a folder while another AetherDesk
-instance from that folder is open; other instances are never forcibly closed.
+DLLs it replaces. This is not a power-loss-proof filesystem transaction: retain
+the recovery folder after interrupted installation.
+
+After an update on close, the backup, journal and RECOVERY.txt remain in its
+LocalAppData/AetherDesk/updates/update-* folder until the user's next successful
+rendered launch. Completion is acknowledged without opening a test GUI on exit.
+If the new executable cannot start, close all copies and follow RECOVERY.txt to
+run that folder's AetherDesk-updater.exe with **--recover-update** and its plan.json.
+Recovery stays closed and preserves diagnostic evidence. Installer repair may
+still be needed as described above. Existing Update and restart retains its
+immediate first-launch check and portable rollback behavior. Completed update
+folders are cleaned after a subsequent successful startup.
 
 ### Portable recovery fix prepared for build 5
 
@@ -254,3 +276,16 @@ This preparation did not compile again, replace a user installation, restart an
 application or change a live server. Actual GUI update/restart, clean-machine
 installation and wider EDA/Monitoring acceptance remain separate from these
 publication checks. Experimental independent-window limitations remain documented.
+
+## Crash evidence at the next startup (build 5)
+
+A background reader checks up to 72 hours of recent Windows Application log
+entries for this executable path and its bundled X11 server, using saved process
+IDs and run times where available. It imports matching Error/Hang records and
+correlated Windows Error Reporting metadata into windows-event-*.log files in
+AetherDesk's existing Logs folder. It does not require administrator access,
+change Windows logging, enable dumps, import command lines, or show startup dialogs.
+Reports are deduplicated; imported Windows reports have seven-day retention.
+If Windows records no usable event, there is no external crash evidence to import.
+X11 failures separately preserve a bounded, redacted server-log tail before
+its temporary runtime directory is removed.

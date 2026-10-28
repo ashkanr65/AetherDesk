@@ -57,13 +57,16 @@ mod theme_palette;
 mod transfers;
 mod ui_icons;
 mod update_apply;
+mod update_exit;
 mod update_manifest;
 mod updates;
 mod user_tools;
 mod vault;
 mod window_geometry;
+mod windows_crash_reports;
 mod working_copies;
 mod x11;
+mod x11_diagnostics;
 use ad_desktop_model::{
     profiles::SavedSession,
     state::{Sidebar, WorkspaceState},
@@ -803,6 +806,12 @@ impl eframe::App for RustDesktop {
                     ui.label("Finishing file operations and releasing SSH sessions.");
                 });
             } else {
+                let safe = !pending
+                    && self.editors.update_ready()
+                    && !self.assistant.is_busy()
+                    && !self.tools.is_busy()
+                    && !transfers::is_busy();
+                self.updates.on_exit(safe);
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             }
             return;
@@ -1444,11 +1453,18 @@ impl eframe::App for RustDesktop {
         if let Some(stage) = self.update_health.take() {
             let _ = update_apply::mark_healthy(&stage);
         }
+        self.updates.rendered();
         process_health::pulse(4);
         ctx.request_repaint_after(std::time::Duration::from_secs(1));
     }
 }
 fn main() -> eframe::Result {
+    if std::env::args().nth(1).as_deref() == Some("--recover-update") {
+        if let Some(path) = std::env::args_os().nth(2) {
+            update_apply::recover_entry(std::path::Path::new(&path));
+        }
+        return Ok(());
+    }
     if std::env::args().nth(1).as_deref() == Some("--apply-update") {
         if let Some(path) = std::env::args_os().nth(2) {
             update_apply::entry(std::path::Path::new(&path));
@@ -1475,11 +1491,15 @@ fn main() -> eframe::Result {
             return Ok(());
         }
     };
+    update_exit::watch_shutdown();
     if let Ok(root) = storage::root() {
         logging::init(&root.join("logs/application.log"));
         crash_diagnostics::init(&root.join("logs"));
     }
     tracing::info!("AetherDesk starting");
+    let crash_run = storage::root()
+        .ok()
+        .map(|root| windows_crash_reports::begin(&root.join("logs")));
     let mut options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_icon(theme::native_icon())
@@ -1505,7 +1525,7 @@ fn main() -> eframe::Result {
     let _health = storage::root()
         .ok()
         .map(|root| process_health::start(&root.join("logs")));
-    eframe::run_native(
+    let result = eframe::run_native(
         "AetherDesk",
         options,
         Box::new(|creation| {
@@ -1523,7 +1543,13 @@ fn main() -> eframe::Result {
             );
             Ok(Box::new(app))
         }),
-    )
+    );
+    if result.is_ok() {
+        if let Some(run) = crash_run {
+            run.finish();
+        }
+    }
+    result
 }
 #[cfg(test)]
 mod tests {

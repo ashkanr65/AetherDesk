@@ -1,4 +1,21 @@
-# AetherDesk 0.1.3 — build 4
+# AetherDesk 0.1.3 - build 5
+
+AetherDesk 0.1.3 build 5 adds installation of downloaded updates after normal close, stronger SSH+X11 failure isolation, and recovery of Windows crash evidence at the next startup.
+
+## Changes in build 5
+
+- **Updates after close:** a new Updates preference installs a fully downloaded, verified package after a normal safe exit. AetherDesk stays closed; its next launch uses the new version. Automatic downloading remains off by default, and Update and restart remains available. Windows shutdown and incomplete/busy operations defer installation.
+- **Recovery safeguards:** wait for other windows using the same installation to close; retain the previous application files until the new version renders successfully. Installed packages also preserve application/uninstaller files for recovery, though restoring installer registry state may require installer repair.
+- **SSH+X11 resilience:** a failed local X server no longer disconnects the terminal or SFTP. Preserve its diagnostic tail and offer a Restart X11 icon using the original forwarding identity. Applications lost with the failed X server must be reopened.
+- **Crash evidence:** silently check recent Windows Application Error, Application Hang and correlated Windows Error Reporting events in the background at startup. Matching AetherDesk and bundled X11 reports appear in Logs, with duplicate reports suppressed and unrelated payloads excluded. Windows may not record every failure.
+- **Copy and paste:** preserve clipboard shortcut presses on the GUI fallback path, including Ctrl+Shift variants, empty/non-text Windows clipboards and independent application views. Keep native Ctrl/Shift capture rules and foreground-window scoping. Check the Windows clipboard immediately when entering the remote surface.
+- **Display changes:** wait briefly for a stable display layout before starting X11 and explicitly use its existing ShadowGDI path. This does not establish the root cause of the reported X11 exit or guarantee that it cannot recur.
+
+Windows regression and isolated bundled-server results are recorded in SESSION-UI-TASKS.md. A complete build 5 package and real installed/portable two-version update acceptance are still required before publication. No release has been published for these changes.
+
+## Earlier releases
+
+## AetherDesk 0.1.3 - build 4
 
 AetherDesk 0.1.3 build 4 fixes reconnection to failed saved desktops and adds a standalone publishing utility for maintainers.
 

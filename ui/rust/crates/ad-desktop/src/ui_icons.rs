@@ -24,6 +24,7 @@ pub enum Icon {
     Folder,
     File,
     Settings,
+    Refresh,
     NewChat,
     History,
     Send,
@@ -461,6 +462,17 @@ pub fn draw(p: &egui::Painter, rect: Rect, icon: Icon, color: Color32) {
         }
         Icon::Stop => {
             p.rect_filled(rect.shrink(rect.width() * 0.2), 1, color);
+        }
+        Icon::Refresh => {
+            let points = (0..=20)
+                .map(|i| {
+                    let angle = -0.8 + i as f32 * 4.9 / 20.0;
+                    rect.center() + egui::Vec2::angled(angle) * rect.width() * 0.33
+                })
+                .collect();
+            p.add(egui::Shape::line(points, stroke));
+            line((0.76, 0.13), (0.76, 0.39));
+            line((0.76, 0.39), (0.5, 0.39));
         }
         Icon::Settings => {
             p.circle_stroke(rect.center(), rect.width() * 0.26, stroke);

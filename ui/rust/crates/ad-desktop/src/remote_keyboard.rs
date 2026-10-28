@@ -931,6 +931,9 @@ mod tests {
         // Ctrl+A/E/F/B/U/K/W/Y/T/_, Alt+F/B/T, arrows, F-keys, and
         // window-manager chords travel as ordinary physical press/release edges.
         for (modifier, key) in [
+            (29, 46),
+            (29, 47),
+            (29, 45),
             (29, 30),
             (29, 18),
             (29, 33),

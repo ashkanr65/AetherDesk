@@ -23,6 +23,8 @@ pub struct SessionTab {
     tab_id: uuid::Uuid,
     notices: std::collections::VecDeque<crate::notifications::Notice>,
     failed: bool,
+    x11_unavailable: bool,
+    x11_restarting: bool,
     pub profile: SavedSession,
     pub connected: bool,
     backend: Option<Arc<ad_ssh::SshSession>>,
@@ -98,6 +100,8 @@ impl SessionTab {
             tab_id: uuid::Uuid::new_v4(),
             notices: std::collections::VecDeque::new(),
             failed: false,
+            x11_unavailable: false,
+            x11_restarting: false,
             credentials: Credentials {
                 username: profile.username.clone(),
                 secret: String::new(),
@@ -221,6 +225,8 @@ impl SessionTab {
                 self.connecting = true;
                 self.failed = false;
                 self.connected = false;
+                self.x11_unavailable = false;
+                self.x11_restarting = false;
                 self.challenge = None;
                 self.status = "Connecting…".into();
                 self.pending.clear();
@@ -369,6 +375,13 @@ impl SessionTab {
                         self.refresh_remote();
                         self.sync_generation = Some(self.list_generation);
                     }
+                }
+                Event::X11Unavailable(message) => self.x11_warning(message),
+                Event::X11Restored => {
+                    self.x11_unavailable = false;
+                    self.x11_restarting = false;
+                    self.status = "Connected · X11 ready".into();
+                    self.notify(crate::notifications::Kind::Status, "X11 restarted. You can launch new graphical applications; previously closed applications are not restored.".into());
                 }
                 Event::TrustRequired(challenge) => {
                     self.challenge = Some(challenge);
@@ -686,6 +699,12 @@ impl SessionTab {
         }
         self.status = "Disconnecting…".into();
     }
+    fn x11_warning(&mut self, message: String) {
+        self.x11_unavailable = true;
+        self.x11_restarting = false;
+        self.status = "Connected · X11 unavailable".into();
+        self.notify(crate::notifications::Kind::Warning, message);
+    }
     pub fn make_independent_desktop(&mut self) {
         self.desktop_id = uuid::Uuid::new_v4();
     }
@@ -953,6 +972,25 @@ impl SessionTab {
                         self.profile.connection_type,
                         ConnectionType::SshTerminal | ConnectionType::SshX11
                     ) {
+                        if self.connected
+                            && self.profile.connection_type == ConnectionType::SshX11
+                            && self.x11_unavailable
+                        {
+                            ui.add_enabled_ui(!self.x11_restarting, |ui| {
+                                if crate::ui_icons::button(
+                                    ui,
+                                    crate::ui_icons::Icon::Refresh,
+                                    "Restart X11 display; keep terminal and files connected",
+                                    false,
+                                )
+                                .clicked()
+                                {
+                                    self.x11_restarting = true;
+                                    self.status = "Connected · restarting X11…".into();
+                                    self.send(Command::RestartX11);
+                                }
+                            });
+                        }
                         self.terminal.settings_button(ui);
                     }
                     if let Some(remote) = &mut self.remote {
@@ -1970,6 +2008,32 @@ fn file_pane_rects(bounds: egui::Rect, narrow: bool, gap: f32) -> [egui::Rect; 2
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn x11_failure_keeps_terminal_files_and_connection_state_available() {
+        let mut profile = crate::profile_store::new_profile();
+        profile.connection_type = ConnectionType::SshX11;
+        let mut tab = SessionTab::new(profile);
+        tab.connected = true;
+        tab.credentials_open = false;
+        tab.files_visible = true;
+        tab.remote_path = "/home/user/work".into();
+        tab.pending.insert(
+            7,
+            Pending::List {
+                path: tab.remote_path.clone(),
+                generation: 1,
+            },
+        );
+        tab.terminal.process(b"retained terminal output");
+        tab.x11_warning("The local X11 display exited".into());
+        assert!(tab.connected);
+        assert!(!tab.failed);
+        assert!(!tab.credentials_open);
+        assert!(tab.files_visible);
+        assert!(tab.pending.contains_key(&7));
+        assert_eq!(tab.remote_path, "/home/user/work");
+        assert!(tab.x11_unavailable);
+    }
     #[test]
     fn folder_sync_switch_gates_both_directions_and_invalidates_pending_updates() {
         for kind in [ConnectionType::SshTerminal, ConnectionType::SshX11] {

@@ -257,6 +257,13 @@ impl RemoteClient {
     pub fn peek_status(&self) -> Status {
         self.status.lock().clone()
     }
+    #[cfg(test)]
+    pub(crate) async fn test_next_input(&self) -> ArppMessage {
+        tokio::time::timeout(Duration::from_secs(1), self.input.receive())
+            .await
+            .unwrap()
+            .unwrap()
+    }
     pub fn newly_created(&self) -> bool {
         self.newly_created
     }

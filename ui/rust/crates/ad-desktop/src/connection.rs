@@ -55,6 +55,8 @@ pub enum Event {
     Desktop(Arc<crate::remote::RemoteClient>),
     DesktopEnded,
     Output(Vec<u8>),
+    X11Unavailable(String),
+    X11Restored,
     TrustRequired(HostKeyChallenge),
     Failed(String),
     Closed,
@@ -64,6 +66,7 @@ pub enum Event {
     },
 }
 pub enum Command {
+    RestartX11,
     EndDesktop,
     Input(Vec<u8>),
     Navigate(String),
@@ -334,6 +337,7 @@ async fn run(
     }
     let host = config.host.clone();
     let port = config.port;
+    let x11_config = config.x11.clone();
     let client = SshClient::standalone(config);
     let connect = async {
         let result = if matches!(kind, ConnectionType::RemoteDesktop | ConnectionType::SshX11) {
@@ -424,11 +428,22 @@ async fn run(
     let mut progress = Vec::<Arc<FileProgress>>::new();
     let mut interval = tokio::time::interval(Duration::from_millis(if shell { 10 } else { 250 }));
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut x11_check = tokio::time::interval(Duration::from_millis(500));
+    x11_check.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut x11_check_warned = false;
     loop {
         tokio::select! {
             biased;
             _ = cancel.cancelled() => break,
             command = commands.recv() => match command {
+                Some(Command::RestartX11) => {
+                    if let Some(config) = &x11_config {
+                        match x11_runtime.recover(config, &cancel).await {
+                            Ok(lease) => { x11 = Some(lease); x11_check_warned = false; events.send(Event::X11Restored); },
+                            Err(error) => { events.send(Event::X11Unavailable(error)); },
+                        }
+                    }
+                },
                 Some(Command::EndDesktop) => {
                     if let Some(remote)=desktop.take() {
                         match remote.stop(true).await {
@@ -458,10 +473,21 @@ async fn run(
                 Ok((id, result)) => { if !events.send(Event::Files { request: id, result }) { break; } },
                 Err(_) => { events.send(Event::Failed("A file operation stopped unexpectedly".into())); break; },
             },
-            _ = interval.tick() => {
-                if let Some(server)=&mut x11 {
-                    if !server.is_running().unwrap_or(false) {events.send(Event::Failed("The local X11 server exited".into()));break;}
+            _ = x11_check.tick(), if x11.is_some() => {
+                match x11.as_ref().expect("X11 lease").failure() {
+                    Ok(Some(failure)) => {
+                        events.send(Event::X11Unavailable(failure.message()));
+                        if let Some(mut stopped) = x11.take() { stopped.stop().await; }
+                    },
+                    Ok(None) => {},
+                    Err(error) if !x11_check_warned => {
+                        x11_check_warned = true;
+                        tracing::warn!(%error, "could not inspect the X11 process; SSH was preserved");
+                    },
+                    Err(_) => {},
                 }
+            },
+            _ = interval.tick() => {
                 if let Some(remote)=&desktop {
                     let state=remote.peek_status();
                     if state.state!="connected" {events.send(Event::Failed(state.error.unwrap_or_else(||"Remote desktop closed".into())));break;}

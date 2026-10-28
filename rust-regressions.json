@@ -3513,6 +3513,24 @@
           "package": "ad-desktop",
           "source": "ui/rust/crates/ad-desktop/src/remote_keyboard.rs",
           "test": "repeated_hook_failures_use_gui_forwarding_with_bounded_retry_frequency"
+        },
+        {
+          "phase": "windows",
+          "package": "ad-desktop",
+          "source": "ui/rust/crates/ad-desktop/src/remote_keypad.rs",
+          "test": "clipboard_keys_survive_semantic_conversion_without_duplicate_edges_or_lost_modifiers"
+        },
+        {
+          "phase": "windows",
+          "package": "ad-desktop",
+          "source": "ui/rust/crates/ad-desktop/src/remote_view.rs",
+          "test": "clipboard_shortcuts_restore_prior_modifiers_and_never_type_paste_payloads"
+        },
+        {
+          "phase": "windows",
+          "package": "ad-desktop",
+          "source": "ui/rust/crates/ad-desktop/src/remote_application_view.rs",
+          "test": "clipboard_commands_only_reach_a_focused_application_and_release_temporary_control"
         }
       ],
       "liveAcceptance": "R6 source preserves physical Windows keypad/sided modifiers/AltGr/Win/menu/Print/Pause, lock flags, repeat, native mouse order and focus/lease release; exact foreground routing excludes injected events and toolbar/other windows. Existing IME path retains agent capability limits. Compile source regressions and verify live keyboard/drag/system shortcuts under R12. Mouse contract repairs add required client-route parity, wire/evdev mappings, Wayland axis frames and a real X11 application button/wheel bridge check. Run native checks during the next build, then manually compare mouse clicks, scrolling and EDA zoom in tab/fullscreen/all-monitor modes."
@@ -4383,6 +4401,24 @@
           "package": "ad-desktop",
           "source": "ui/rust/crates/ad-desktop/src/x11.rs",
           "test": "bundled_runtime_sharing_authentication_icons_and_cleanup"
+        },
+        {
+          "phase": "windows",
+          "package": "ad-desktop",
+          "source": "ui/rust/crates/ad-desktop/src/session.rs",
+          "test": "x11_failure_keeps_terminal_files_and_connection_state_available"
+        },
+        {
+          "phase": "windows",
+          "package": "ad-desktop",
+          "source": "ui/rust/crates/ad-desktop/src/update_exit.rs",
+          "test": "display_stabilization_is_cancellable_without_starting_a_server"
+        },
+        {
+          "phase": "windows",
+          "package": "ad-desktop",
+          "source": "ui/rust/crates/ad-desktop/src/x11_diagnostics.rs",
+          "test": "x11_failure_reports_are_bounded_redacted_and_survive_runtime_cleanup"
         }
       ],
       "liveAcceptance": "R9 adds serialized shared-server leases, per-tab forwarding cookies, last-tab shutdown, old-generation isolation, Windows cleanup jobs and private fallback-icon settings. The production icon helper, clipboard, software GLX and multiwindow mode remain. Stage 4 runs the real bundled-manager regression; compile/package/live verification remains R12."
@@ -5451,6 +5487,30 @@
           "package": "ad-desktop",
           "source": "ui/rust/crates/ad-desktop/src/logging.rs",
           "test": "file_writer_rotates_and_keeps_complete_records"
+        },
+        {
+          "phase": "windows",
+          "package": "ad-desktop",
+          "source": "ui/rust/crates/ad-desktop/src/windows_crash_reports.rs",
+          "test": "windows_reports_match_previous_pid_path_and_time_not_just_the_filename"
+        },
+        {
+          "phase": "windows",
+          "package": "ad-desktop",
+          "source": "ui/rust/crates/ad-desktop/src/windows_crash_reports.rs",
+          "test": "windows_crash_import_deduplicates_and_excludes_unrelated_payloads"
+        },
+        {
+          "phase": "windows",
+          "package": "ad-desktop",
+          "source": "ui/rust/crates/ad-desktop/src/windows_crash_reports.rs",
+          "test": "owned_x11_crashes_and_correlated_wer_reports_are_imported_but_unrelated_reports_are_not"
+        },
+        {
+          "phase": "windows",
+          "package": "ad-desktop",
+          "source": "ui/rust/crates/ad-desktop/src/windows_crash_reports.rs",
+          "test": "native_windows_report_query_is_bounded_and_read_only"
         }
       ],
       "liveAcceptance": "R10 adds rotated-file merge, structured severity/source/case filters, independent host choice, counts, copy/open-folder and asynchronous bounded export/reads. Native disk/redaction/filter fixtures added; compiler/live checks remain R12."
@@ -5513,6 +5573,24 @@
           "package": "ad-desktop",
           "source": "ui/rust/crates/ad-desktop/src/updates.rs",
           "test": "first_updated_launch_preserves_the_helpers_recovery_files"
+        },
+        {
+          "phase": "windows",
+          "package": "ad-desktop",
+          "source": "ui/rust/crates/ad-desktop/src/updates.rs",
+          "test": "close_updates_require_consent_a_complete_download_and_safe_normal_exit"
+        },
+        {
+          "phase": "windows",
+          "package": "ad-desktop",
+          "source": "ui/rust/crates/ad-desktop/src/update_apply.rs",
+          "test": "background_update_plans_stay_closed_and_keep_backups_until_next_rendered_launch"
+        },
+        {
+          "phase": "windows",
+          "package": "ad-desktop",
+          "source": "ui/rust/crates/ad-desktop/src/update_apply.rs",
+          "test": "installer_recovery_preserves_application_and_uninstaller_files_and_rejects_bad_inventory"
         }
       ],
       "liveAcceptance": "Build kit packages Windows/Linux regression reports and matching catalog hashes, plus a required passing bundled-X11 result, with installer/ZIP runtimes. Offline artifact/failure fixtures pass; real packaging and clean-machine checks remain R12."

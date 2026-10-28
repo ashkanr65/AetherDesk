@@ -5,6 +5,17 @@ use std::sync::{
     mpsc, Arc, OnceLock,
 };
 const LIMIT: usize = 1024 * 1024;
+/// Fallback for platforms without our physical message observer. Keep the
+/// operation on the host: a Paste payload is not typed as Unicode text.
+pub(crate) fn shortcut(event: &eframe::egui::Event) -> Option<u32> {
+    use eframe::egui::Event;
+    match event {
+        Event::Copy => Some(46),
+        Event::Cut => Some(45),
+        Event::Paste(_) => Some(47),
+        _ => None,
+    }
+}
 type Reply = Result<Option<String>, String>;
 enum Action {
     Read,

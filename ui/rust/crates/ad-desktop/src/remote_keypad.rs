@@ -1,4 +1,4 @@
-//! Preserve physical keypad identity on the GUI fallback path. Egui folds
+//! Preserve physical keypad and clipboard-key identity on the GUI fallback path. Egui folds
 //! keypad operators into ordinary punctuation (and has no Multiply key).
 //! Only bounded in-memory metadata for the armed remote viewport is retained.
 use eframe::egui;
@@ -36,6 +36,9 @@ pub(crate) fn evdev(vk: u32, scan: u32, extended: bool) -> Option<u32> {
 fn alias(vk: u32) -> Option<egui::Key> {
     use egui::Key::*;
     Some(match vk {
+        0x43 => C,
+        0x56 => V,
+        0x58 => X,
         0x60 => Num0,
         0x61 => Num1,
         0x62 => Num2,
@@ -65,6 +68,17 @@ fn alias(vk: u32) -> Option<egui::Key> {
         _ => return None,
     })
 }
+fn fallback_evdev(vk: u32, scan: u32, extended: bool) -> Option<u32> {
+    evdev(vk, scan, extended).or_else(|| match vk {
+        // Preserve the physical key and its original modifier snapshot before
+        // egui-winit replaces the press with Copy/Cut/Paste (or drops an empty
+        // paste). This observer never suppresses or injects Windows input.
+        0x43 | 0x56 | 0x58 if !extended && (1..=0x58).contains(&scan) => Some(scan),
+        0x2d if extended => Some(110),
+        0x2e if extended => Some(111),
+        _ => None,
+    })
+}
 pub(crate) fn take_gui(events: &mut Vec<KeypadEvent>, event: &egui::Event) -> Option<KeypadEvent> {
     let index = events.iter().position(|e| match event {
         egui::Event::Key {
@@ -78,6 +92,11 @@ pub(crate) fn take_gui(events: &mut Vec<KeypadEvent>, event: &egui::Event) -> Op
                     .is_some_and(|alias| alias == *key || Some(alias) == *physical_key)
         }
         egui::Event::Text(text) => e.pressed && e.scan_code == 55 && text == "*",
+        egui::Event::Copy => e.pressed && matches!(e.alias, Some(egui::Key::C | egui::Key::Insert)),
+        egui::Event::Cut => e.pressed && matches!(e.alias, Some(egui::Key::X | egui::Key::Delete)),
+        egui::Event::Paste(_) => {
+            e.pressed && matches!(e.alias, Some(egui::Key::V | egui::Key::Insert))
+        }
         _ => false,
     })?;
     Some(events.remove(index))
@@ -166,7 +185,7 @@ mod windows {
                 let vk = message.wParam as u32;
                 let scan = ((message.lParam as usize >> 16) & 0xff) as u32;
                 let extended = message.lParam as usize & (1 << 24) != 0;
-                if let Some(scan_code) = evdev(vk, scan, extended) {
+                if let Some(scan_code) = fallback_evdev(vk, scan, extended) {
                     STATE.with(|state| {
                         if let Ok(mut state) = state.try_borrow_mut() {
                             if state
@@ -257,6 +276,67 @@ mod windows {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn clipboard_keys_survive_semantic_conversion_without_duplicate_edges_or_lost_modifiers() {
+        for (vk, scan, event) in [
+            (0x43, 46, egui::Event::Copy),
+            (0x56, 47, egui::Event::Paste("clipboard payload".into())),
+            (0x58, 45, egui::Event::Cut),
+            (0x2d, 110, egui::Event::Copy),
+            (0x2d, 110, egui::Event::Paste(String::new())),
+            (0x2e, 111, egui::Event::Cut),
+        ] {
+            let extended = scan >= 110;
+            let physical = if scan == 110 {
+                0x52
+            } else if scan == 111 {
+                0x53
+            } else {
+                scan
+            };
+            assert_eq!(fallback_evdev(vk, physical, extended), Some(scan));
+            let mut pending = vec![
+                KeypadEvent {
+                    scan_code: scan,
+                    pressed: true,
+                    repeat: false,
+                    modifiers: 3,
+                    alias: alias(vk),
+                },
+                KeypadEvent {
+                    scan_code: scan,
+                    pressed: false,
+                    repeat: false,
+                    modifiers: 0,
+                    alias: alias(vk),
+                },
+            ];
+            let down = take_gui(&mut pending, &event).unwrap();
+            assert_eq!(
+                (down.scan_code, down.pressed, down.modifiers),
+                (scan, true, 3)
+            );
+            assert!(take_gui(&mut pending, &event).is_none());
+            let key = alias(vk).unwrap();
+            let up = take_gui(
+                &mut pending,
+                &egui::Event::Key {
+                    key,
+                    physical_key: Some(key),
+                    pressed: false,
+                    repeat: false,
+                    modifiers: Default::default(),
+                },
+            )
+            .unwrap();
+            assert!(!up.pressed);
+            assert!(pending.is_empty());
+        }
+        // A host using the same non-US layout needs the original scan, not
+        // the US physical position of the shortcut's logical C.
+        assert_eq!(fallback_evdev(0x43, 23, false), Some(23));
+        assert_eq!(fallback_evdev(0x41, 30, false), None);
+    }
     #[test]
     fn keypad_operators_keep_physical_identity_and_gui_aliases_are_consumed_once() {
         for (vk, scan, code, key) in [

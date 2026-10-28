@@ -13,6 +13,12 @@ pub struct Plan {
     pub parent: u32,
     pub installer: bool,
     pub created: i64,
+    /// Old plans always reopened the GUI. Exit updates deliberately stay closed.
+    #[serde(default = "restart_by_default")]
+    pub restart: bool,
+}
+fn restart_by_default() -> bool {
+    true
 }
 fn error(_: impl std::fmt::Display) -> String {
     "Cannot prepare the application update. Check available disk space and folder permissions."
@@ -111,7 +117,57 @@ fn installation_guard(target: &Path) -> Result<Option<std::fs::File>, String> {
 fn installation_guard(_: &Path) -> Result<Option<std::fs::File>, String> {
     Err("Windows installation required".into())
 }
+#[cfg(windows)]
+fn stage_guard(stage: &Path) -> Result<Option<std::fs::File>, String> {
+    use std::os::windows::fs::OpenOptionsExt;
+    no_links(stage)?;
+    std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .share_mode(0)
+        .open(stage.join("apply.lock"))
+        .map(Some)
+        .map_err(|_| {
+            "This downloaded update is already being prepared or installed. It remains queued."
+                .into()
+        })
+}
+#[cfg(not(windows))]
+fn stage_guard(_: &Path) -> Result<Option<std::fs::File>, String> {
+    Ok(None)
+}
+
+fn verify_payload(target: &Path, manifest: &Manifest) -> Result<(), String> {
+    for file in &manifest.files {
+        if !metadata::relative(&file.path) {
+            return Err("Invalid update inventory path".into());
+        }
+        let path = target.join(&file.path);
+        no_links(&path)?;
+        if std::fs::metadata(&path).map_err(error)?.len() != file.bytes
+            || metadata::file_hash(&path)? != file.sha256.to_ascii_lowercase()
+        {
+            return Err(format!(
+                "Installed update verification failed: {}",
+                file.path
+            ));
+        }
+    }
+    Ok(())
+}
 pub fn stage_apply(stage: &Path, installer: bool) -> Result<(), String> {
+    stage_apply_mode(stage, installer, true)
+}
+pub fn stage_apply_on_exit(stage: &Path, installer: bool) -> Result<(), String> {
+    if crate::update_exit::system_ending() {
+        return Err("Update deferred while Windows is shutting down".into());
+    }
+    stage_apply_mode(stage, installer, false)
+}
+fn stage_apply_mode(stage: &Path, installer: bool, restart: bool) -> Result<(), String> {
+    let _stage_guard = stage_guard(stage)?;
     let exe = std::env::current_exe().map_err(error)?;
     let target = exe
         .parent()
@@ -143,12 +199,13 @@ pub fn stage_apply(stage: &Path, installer: bool) -> Result<(), String> {
         parent: std::process::id(),
         installer,
         created: chrono::Utc::now().timestamp(),
+        restart,
     };
-    std::fs::write(
-        stage.join("plan.json"),
-        serde_json::to_vec(&plan).map_err(error)?,
-    )
-    .map_err(error)?;
+    let plan_bytes = serde_json::to_vec(&plan).map_err(error)?;
+    publish_file(&stage.join("plan.json"), |output| {
+        std::io::Write::write_all(output, &plan_bytes)
+    })?;
+    let _ = std::fs::remove_file(stage.join("deferred.txt"));
     hidden(
         Command::new(&helper)
             .arg("--apply-update")
@@ -349,15 +406,12 @@ fn remove_owned_file(path: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// A durable journal is retained beside the update until installation succeeds.
-/// Only signed package paths are touched; unknown files and user data are kept.
-fn replace(
+fn backup_package(
     target: &Path,
-    source: &Path,
     stage: &Path,
     manifest: &Manifest,
-    envelope: &[u8],
-) -> Result<(), String> {
+    installer: bool,
+) -> Result<Vec<(String, bool)>, String> {
     let backup = stage.join("previous");
     std::fs::create_dir(&backup).map_err(error)?;
     let mut paths: Vec<String> = manifest.files.iter().map(|f| f.path.clone()).collect();
@@ -375,6 +429,13 @@ fn replace(
                 {
                     paths.push(file.path);
                 }
+            }
+        }
+    }
+    if installer {
+        for name in ["unins000.exe", "unins000.dat"] {
+            if target.join(name).is_file() {
+                paths.push(name.into());
             }
         }
     }
@@ -398,6 +459,19 @@ fn replace(
     publish_file(&stage.join("rollback.json"), |output| {
         std::io::Write::write_all(output, &journal_bytes)
     })?;
+    Ok(journal)
+}
+
+/// A durable journal is retained beside the update until installation succeeds.
+/// Only signed package paths are touched; unknown files and user data are kept.
+fn replace(
+    target: &Path,
+    source: &Path,
+    stage: &Path,
+    manifest: &Manifest,
+    envelope: &[u8],
+) -> Result<(), String> {
+    let journal = backup_package(target, stage, manifest, false)?;
     let outcome = (|| {
         for file in &manifest.files {
             let destination = target.join(&file.path);
@@ -431,6 +505,13 @@ fn replace(
     Ok(())
 }
 fn rollback(target: &Path, stage: &Path, journal: &[(String, bool)]) -> Result<(), String> {
+    let mut seen = std::collections::HashSet::new();
+    if journal
+        .iter()
+        .any(|(path, _)| !metadata::relative(path) || !seen.insert(path.to_ascii_lowercase()))
+    {
+        return Err("Unsafe or duplicate recovery journal entry".into());
+    }
     // Validate the complete journal before touching anything. Then attempt every
     // restore, so one locked file cannot leave all earlier files unrestored.
     if journal.iter().any(|(path, _)| !metadata::relative(path)) {
@@ -473,6 +554,16 @@ fn apply(plan_path: &Path) -> Result<(), String> {
         .canonicalize()
         .map_err(error)?;
     no_links(&stage)?;
+    let stage_deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    let _stage_guard = loop {
+        match stage_guard(&stage) {
+            Ok(guard) => break guard,
+            Err(_) if std::time::Instant::now() < stage_deadline => {
+                std::thread::sleep(std::time::Duration::from_millis(50))
+            }
+            Err(error) => return Err(error),
+        }
+    };
     let plan: Plan =
         serde_json::from_slice(&std::fs::read(plan_path).map_err(error)?).map_err(error)?;
     if plan.parent == 0 || chrono::Utc::now().timestamp().abs_diff(plan.created) > 180 {
@@ -532,8 +623,23 @@ fn apply(plan_path: &Path) -> Result<(), String> {
     }
     // Keep a real process handle while waiting so a recycled PID cannot match.
     wait_parent(plan.parent)?;
-    let guard = installation_guard(&plan.target)?;
+    let wait_deadline = std::time::Instant::now()
+        + std::time::Duration::from_secs(if plan.restart { 0 } else { 30 });
+    let guard = loop {
+        match installation_guard(&plan.target) {
+            Ok(guard) => break guard,
+            Err(_) if !plan.restart && std::time::Instant::now() < wait_deadline => {
+                std::thread::sleep(std::time::Duration::from_millis(200))
+            }
+            Err(message) if !plan.restart => {
+                std::fs::write(stage.join("deferred.txt"), message).map_err(error)?;
+                return Ok(());
+            }
+            Err(error) => return Err(error),
+        }
+    };
     if plan.installer {
+        let journal = backup_package(&plan.target, &stage, &manifest, true)?;
         let status = hidden(
             Command::new(package)
                 .args(["/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/SP-"])
@@ -543,29 +649,50 @@ fn apply(plan_path: &Path) -> Result<(), String> {
                     shell_path(&stage.join("installer.log")).display()
                 )),
         )
-        .status()
-        .map_err(error)?;
-        if !status.success() {
+        .status();
+        if !status.is_ok_and(|status| status.success()) {
+            rollback(&plan.target, &stage, &journal)?;
             return Err(
-                "The installer could not finish. Its log is in the update recovery folder.".into(),
+                "The installer could not finish. Previous application files were restored; keep its log and recovery folder.".into(),
             );
         }
+        publish_file(&plan.target.join("installed-update.json"), |output| {
+            std::io::Write::write_all(output, &envelope)
+        })?;
     } else {
         let unpacked = match extract(&stage, &manifest) {
             Ok(unpacked) => unpacked,
             Err(cause) => {
                 drop(guard);
-                restart(&plan.target)?;
+                if plan.restart {
+                    restart(&plan.target)?;
+                }
                 return Err(cause);
             }
         };
         if let Err(cause) = replace(&plan.target, &unpacked, &stage, &manifest, &envelope) {
             drop(guard);
             if !stage.join("rollback.json").exists() || stage.join("rollback-complete").is_file() {
-                restart(&plan.target)?;
+                if plan.restart {
+                    restart(&plan.target)?;
+                }
             }
             return Err(cause);
         }
+    }
+    if let Err(cause) = verify_payload(&plan.target, &manifest) {
+        let journal: Vec<(String, bool)> =
+            serde_json::from_slice(&std::fs::read(stage.join("rollback.json")).map_err(error)?)
+                .map_err(error)?;
+        rollback(&plan.target, &stage, &journal)?;
+        return Err(cause);
+    }
+    if !plan.restart {
+        // Retain the plan/journal/backup until the user's next rendered launch.
+        // No GUI is opened just to acknowledge a background installation.
+        defer_health(&stage)?;
+        drop(guard);
+        return Ok(());
     }
     drop(guard);
     let launched = hidden(
@@ -606,6 +733,17 @@ fn apply(plan_path: &Path) -> Result<(), String> {
     std::fs::write(stage.join("complete"), b"ok").map_err(error)?;
     Ok(())
 }
+fn defer_health(stage: &Path) -> Result<(), String> {
+    publish_file(&stage.join("awaiting-health"), |output| {
+        std::io::Write::write_all(output, b"next launch")
+    })?;
+    let instructions = format!("AetherDesk was updated while closed. Backups remain here until its next successful launch.\nIf the application cannot start, close all AetherDesk windows and run:\n\"{}\" --recover-update \"{}\"\nKeep installer.log if an installed copy requires installer repair.\n", stage.join("AetherDesk-updater.exe").display(), stage.join("plan.json").display());
+    publish_file(&stage.join("RECOVERY.txt"), |output| {
+        std::io::Write::write_all(output, instructions.as_bytes())
+    })?;
+    Ok(())
+}
+
 fn restore_previous(plan: &Plan, stage: &Path) -> Result<(), String> {
     let guard = installation_guard(&plan.target)?;
     let journal: Vec<(String, bool)> =
@@ -613,7 +751,11 @@ fn restore_previous(plan: &Plan, stage: &Path) -> Result<(), String> {
             .map_err(error)?;
     rollback(&plan.target, stage, &journal)?;
     drop(guard);
-    restart(&plan.target)
+    if plan.restart {
+        restart(&plan.target)
+    } else {
+        Ok(())
+    }
 }
 fn restart(target: &Path) -> Result<(), String> {
     hidden(Command::new(target.join("AetherDesk.exe")).current_dir(target))
@@ -622,6 +764,63 @@ fn restart(target: &Path) -> Result<(), String> {
     Ok(())
 }
 pub fn mark_healthy(stage: &Path) -> Result<(), String> {
+    validate_health_target(stage)?;
+    let plan: Plan =
+        serde_json::from_slice(&std::fs::read(stage.join("plan.json")).map_err(error)?)
+            .map_err(error)?;
+    record_health(stage, plan.restart)
+}
+fn record_health(stage: &Path, restart: bool) -> Result<(), String> {
+    std::fs::write(stage.join("healthy"), b"rendered").map_err(error)?;
+    if !restart && stage.join("awaiting-health").is_file() {
+        publish_file(&stage.join("complete"), |output| {
+            std::io::Write::write_all(output, b"rendered")
+        })?;
+    }
+    Ok(())
+}
+
+pub fn pending_health() -> Result<Option<PathBuf>, String> {
+    let root = PathBuf::from(std::env::var_os("LOCALAPPDATA").ok_or("Missing update cache")?)
+        .join("AetherDesk/updates");
+    if !root.exists() {
+        return Ok(None);
+    }
+    no_links(&root)?;
+    let target = std::env::current_exe()
+        .map_err(error)?
+        .parent()
+        .ok_or("Missing application directory")?
+        .canonicalize()
+        .map_err(error)?;
+    let mut candidates = Vec::new();
+    for entry in std::fs::read_dir(&root).map_err(error)?.flatten() {
+        if !entry.file_type().map_err(error)?.is_dir()
+            || !entry.file_name().to_string_lossy().starts_with("update-")
+        {
+            continue;
+        }
+        let stage = entry.path();
+        if stage.join("complete").exists()
+            || stage.join("error.txt").exists()
+            || !stage.join("awaiting-health").is_file()
+        {
+            continue;
+        }
+        no_links(&stage)?;
+        let Ok(bytes) = std::fs::read(stage.join("plan.json")) else {
+            continue;
+        };
+        if let Ok(plan) = serde_json::from_slice::<Plan>(&bytes) {
+            if !plan.restart && plan.target == target {
+                candidates.push((plan.created, stage));
+            }
+        }
+    }
+    candidates.sort_by_key(|(created, _)| *created);
+    Ok(candidates.pop().map(|(_, path)| path))
+}
+pub fn validate_health_target(stage: &Path) -> Result<(), String> {
     let root = PathBuf::from(std::env::var_os("LOCALAPPDATA").ok_or("Missing cache directory")?)
         .join("AetherDesk/updates");
     no_links(stage)?;
@@ -642,30 +841,176 @@ pub fn mark_healthy(stage: &Path) -> Result<(), String> {
     {
         return Err("Update health target does not match this application".into());
     }
-    std::fs::write(stage.join("healthy"), b"rendered").map_err(error)
+    let manifest = metadata::verify(
+        &std::fs::read(stage.join("update.json")).map_err(error)?,
+        &metadata::config()?.public_key,
+        chrono::Utc::now().timestamp(),
+    )?;
+    if metadata::version(&manifest.version, manifest.build)? != metadata::current()? {
+        return Err("Update health version does not match this application".into());
+    }
+    Ok(())
 }
 pub fn entry(path: &Path) {
+    let background = std::fs::read(path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<Plan>(&bytes).ok())
+        .is_some_and(|plan| !plan.restart);
     if let Err(message) = apply(path) {
         if let Some(stage) = path.parent() {
             let _ = std::fs::write(stage.join("error.txt"), &message);
         }
         #[cfg(windows)]
-        unsafe {
-            use windows_sys::Win32::UI::WindowsAndMessaging::MessageBoxW;
-            let wide = |s: &str| s.encode_utf16().chain(Some(0)).collect::<Vec<_>>();
-            MessageBoxW(
-                std::ptr::null_mut(),
-                wide(&message).as_ptr(),
-                wide("AetherDesk update").as_ptr(),
-                0x10,
-            );
+        if !background {
+            unsafe {
+                use windows_sys::Win32::UI::WindowsAndMessaging::MessageBoxW;
+                let wide = |s: &str| s.encode_utf16().chain(Some(0)).collect::<Vec<_>>();
+                MessageBoxW(
+                    std::ptr::null_mut(),
+                    wide(&message).as_ptr(),
+                    wide("AetherDesk update").as_ptr(),
+                    0x10,
+                );
+            }
         }
+    }
+}
+
+/// Explicit user-invoked recovery. Never opens the GUI or installs a package.
+pub fn recover_entry(path: &Path) {
+    let result = (|| -> Result<(), String> {
+        let stage = path
+            .parent()
+            .ok_or("Missing recovery directory")?
+            .canonicalize()
+            .map_err(error)?;
+        no_links(&stage)?;
+        let own = std::env::current_exe()
+            .map_err(error)?
+            .parent()
+            .ok_or("Missing updater directory")?
+            .canonicalize()
+            .map_err(error)?;
+        if stage != own {
+            return Err("Recovery must run from its original updater directory".into());
+        }
+        let mut plan: Plan =
+            serde_json::from_slice(&std::fs::read(path).map_err(error)?).map_err(error)?;
+        no_links(&plan.target)?;
+        if !plan.target.is_absolute()
+            || plan.target.starts_with(&stage)
+            || stage.starts_with(&plan.target)
+        {
+            return Err("Invalid recovery target".into());
+        }
+        let root = PathBuf::from(std::env::var_os("LOCALAPPDATA").ok_or("Missing update cache")?)
+            .join("AetherDesk/updates");
+        if stage.parent() != Some(root.canonicalize().map_err(error)?.as_path()) {
+            return Err("Invalid recovery stage".into());
+        }
+        let _guard = stage_guard(&stage)?;
+        let envelope = std::fs::read(stage.join("update.json")).map_err(error)?;
+        metadata::verify(&envelope, &metadata::config()?.public_key, plan.created)?;
+        plan.restart = false;
+        restore_previous(&plan, &stage)?;
+        std::fs::write(stage.join("error.txt"), "Previous application files were restored by explicit recovery. Installed copies may require installer repair.").map_err(error)?;
+        Ok(())
+    })();
+    let message = match result {
+        Ok(()) => "Previous application files restored. You can open AetherDesk again.".into(),
+        Err(error) => error,
+    };
+    #[cfg(windows)]
+    unsafe {
+        let wide = |s: &str| s.encode_utf16().chain(Some(0)).collect::<Vec<_>>();
+        windows_sys::Win32::UI::WindowsAndMessaging::MessageBoxW(
+            std::ptr::null_mut(),
+            wide(&message).as_ptr(),
+            wide("AetherDesk recovery").as_ptr(),
+            0x40,
+        );
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn background_update_plans_stay_closed_and_keep_backups_until_next_rendered_launch() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir(root.path().join("previous")).unwrap();
+        std::fs::write(
+            root.path().join("previous/AetherDesk.exe"),
+            b"old executable",
+        )
+        .unwrap();
+        let legacy:Plan=serde_json::from_value(serde_json::json!({"target":"C:/Apps/AetherDesk","parent":42,"installer":false,"created":1})).unwrap();
+        assert!(legacy.restart, "old restart-now plans changed behavior");
+        let background:Plan=serde_json::from_value(serde_json::json!({"target":"C:/Apps/AetherDesk","parent":42,"installer":false,"created":1,"restart":false})).unwrap();
+        assert!(!background.restart);
+        defer_health(root.path()).unwrap();
+        assert!(!root.path().join("complete").exists());
+        assert!(!root.path().join("healthy").exists());
+        assert!(root.path().join("RECOVERY.txt").is_file());
+        record_health(root.path(), background.restart).unwrap();
+        assert!(root.path().join("complete").is_file());
+        assert_eq!(
+            std::fs::read(root.path().join("previous/AetherDesk.exe")).unwrap(),
+            b"old executable"
+        );
+        let restart = tempfile::tempdir().unwrap();
+        record_health(restart.path(), true).unwrap();
+        assert!(restart.path().join("healthy").exists());
+        assert!(
+            !restart.path().join("complete").exists(),
+            "restart helper must retain ownership of completion"
+        );
+    }
+    #[test]
+    fn installer_recovery_preserves_application_and_uninstaller_files_and_rejects_bad_inventory() {
+        let root = tempfile::tempdir().unwrap();
+        let target = root.path().join("application");
+        let stage = root.path().join("stage");
+        std::fs::create_dir(&target).unwrap();
+        std::fs::create_dir(&stage).unwrap();
+        for name in ["AetherDesk.exe", "unins000.exe", "unins000.dat"] {
+            std::fs::write(target.join(name), b"previous").unwrap();
+        }
+        std::fs::write(target.join("user.txt"), b"keep").unwrap();
+        let manifest = Manifest {
+            schema: 1,
+            product: "AetherDesk".into(),
+            target: "windows-x64".into(),
+            version: "0.1.3".into(),
+            build: 99,
+            published: 0,
+            expires: i64::MAX,
+            notes: String::new(),
+            portable: metadata::Asset {
+                name: "update.zip".into(),
+                bytes: 1,
+                sha256: "0".repeat(64),
+            },
+            installer: None,
+            files: vec![metadata::File {
+                path: "AetherDesk.exe".into(),
+                bytes: 8,
+                sha256: metadata::file_hash(&target.join("AetherDesk.exe")).unwrap(),
+            }],
+        };
+        verify_payload(&target, &manifest).unwrap();
+        let journal = backup_package(&target, &stage, &manifest, true).unwrap();
+        for name in ["AetherDesk.exe", "unins000.exe", "unins000.dat"] {
+            std::fs::write(target.join(name), b"new").unwrap();
+        }
+        assert!(verify_payload(&target, &manifest).is_err());
+        rollback(&target, &stage, &journal).unwrap();
+        for name in ["AetherDesk.exe", "unins000.exe", "unins000.dat"] {
+            assert_eq!(std::fs::read(target.join(name)).unwrap(), b"previous");
+        }
+        assert_eq!(std::fs::read(target.join("user.txt")).unwrap(), b"keep");
+        assert!(rollback(&target, &stage, &[("../outside".into(), true)]).is_err());
+    }
     fn read_only(path: &Path, value: bool) {
         let mut permissions = std::fs::metadata(path).unwrap().permissions();
         permissions.set_readonly(value);
