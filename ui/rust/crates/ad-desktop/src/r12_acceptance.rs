@@ -251,7 +251,7 @@ async fn live_desktop_resize_detach_reconnect_and_end() {
                 geometry.push(json!({"width":frame.width,"height":frame.height,"sequence":frame.sequence}));
             }
             // Persist only our isolated empty test desktop, not the user's screen.
-            let mut rgba=first.pixels.as_ref().clone();
+            let mut rgba=first.pixels.to_vec();
             for pixel in rgba.chunks_exact_mut(4) { pixel.swap(0,2); }
             let image=image::RgbaImage::from_raw(first.width,first.height,rgba).ok_or("Invalid screen capture")?;
             image.save(PathBuf::from(value["reportDirectory"].as_str().unwrap()).join("test-desktop.png")).map_err(|e|e.to_string())?;

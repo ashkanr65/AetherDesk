@@ -42,7 +42,6 @@ impl RemoteView {
     }
     fn toggle_resolution(&mut self) {
         self.resolution_settings = !self.resolution_settings;
-        self.display_settings = false;
         self.release();
         self.keyboard_paused = true;
     }
@@ -81,6 +80,12 @@ impl RemoteView {
                 }
                 ui.separator();
                 ui.add(egui::Label::new("All-monitor mode preserves the monitor arrangement. Your Windows display settings stay unchanged.").wrap());
+                ui.collapsing("Monitor information", |ui| {
+                    for monitor in &self.monitor_properties {
+                        ui.add(egui::Label::new(format!("{}: {} DPI, {} × {} mm, {} Hz",monitor.name,monitor.dpi,monitor.width_mm,monitor.height_mm,monitor.refresh_millihz/1000)).wrap());
+                    }
+                    ui.add(egui::Label::new("Use the Linux desktop's appearance preferences to change icon and font sizes.").wrap());
+                });
             });
         if selected != self.resolution_scale {
             self.apply_resolution(selected);
@@ -114,44 +119,6 @@ impl RemoteView {
         {
             self.toggle_resolution();
         }
-        if button(
-            ui,
-            Icon::Settings,
-            "Remote display settings",
-            self.display_settings,
-        )
-        .clicked()
-        {
-            self.display_settings = !self.display_settings;
-            self.resolution_settings = false;
-            self.release();
-            self.keyboard_paused = true;
-        }
-    }
-    fn display_preferences(&mut self, ctx: &egui::Context) {
-        if !self.display_settings {
-            return;
-        }
-        let mut open = self.display_settings;
-        egui::Window::new("Remote display settings").open(&mut open).default_width(480.0).show(ctx,|ui| {
-            ui.label("Detected client monitors are exposed as virtual monitors to this remote desktop only.");
-            for monitor in &self.monitor_properties {
-                ui.label(format!("{}: {} DPI, {} x {} mm, {} Hz",monitor.name,monitor.dpi,monitor.width_mm,monitor.height_mm,monitor.refresh_millihz/1000));
-            }
-            ui.separator();
-            ui.label("Virtual desktop resolution (100% matches the monitor pixels)");
-            let before=self.resolution_scale;
-            egui::ComboBox::from_id_salt(("remote-resolution",self.id)).selected_text(format!("{}%",(self.resolution_scale*100.0).round())).show_ui(ui,|ui| {
-                for scale in [0.5_f32,0.75,1.0,1.25,1.5,2.0] {
-                    let supported=self.layout_for(scale).is_ok();
-                    ui.add_enabled_ui(supported,|ui| {ui.selectable_value(&mut self.resolution_scale,scale,format!("{}%",(scale*100.0).round()));});
-                }
-            });
-            ui.label("Lower resolutions make desktop items larger; higher resolutions show more workspace. This changes the virtual session, not the Windows monitors.");
-            ui.label("Use the Linux desktop's appearance and desktop preferences to change icon and font sizes. AetherDesk does not overwrite those preferences.");
-            if before!=self.resolution_scale {self.pending_layout=None;self.resize_due=None;ctx.request_repaint();}
-        });
-        self.display_settings = open;
     }
     fn refresh_monitors(&mut self) {
         if self.monitor_tick.elapsed() > Duration::from_millis(500) {
@@ -170,7 +137,6 @@ impl RemoteView {
         }
         self.refresh_monitors();
         self.surface(ui);
-        self.display_preferences(ui.ctx());
         self.resolution_preferences(ui.ctx());
     }
     /// Register presentation windows once per root pass, including connections
@@ -241,7 +207,6 @@ impl RemoteView {
             egui::CentralPanel::default()
                 .frame(egui::Frame::NONE)
                 .show(ctx, |ui| self.surface(ui));
-            self.display_preferences(ctx);
             self.resolution_preferences(ctx);
             if self.mode != Mode::Tab {
                 self.toolbar(ctx);

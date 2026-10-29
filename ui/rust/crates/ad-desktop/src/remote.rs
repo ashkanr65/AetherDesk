@@ -41,7 +41,7 @@ pub struct Image {
     pub width: u32,
     pub height: u32,
     pub sequence: u64,
-    pub pixels: Arc<Vec<u8>>,
+    pub pixels: Arc<ad_stream_protocol::pixels::PixelBuffer>,
     pub damage: Option<ImageDamage>,
 }
 struct FrameSlot {
@@ -108,6 +108,16 @@ impl RemoteClient {
         ctx: egui::Context,
         cancel: &tokio_util::sync::CancellationToken,
     ) -> Result<Arc<Self>, String> {
+        Self::start_with_startup(ssh, desktop_environment, session_id, None, ctx, cancel).await
+    }
+    pub async fn start_with_startup(
+        ssh: Arc<ad_ssh::SshSession>,
+        desktop_environment: String,
+        session_id: Uuid,
+        startup: Option<ad_ssh::StartupScript>,
+        ctx: egui::Context,
+        cancel: &tokio_util::sync::CancellationToken,
+    ) -> Result<Arc<Self>, String> {
         let executable = std::env::current_exe().map_err(|e| e.to_string())?;
         let base = executable.parent().ok_or("Application directory missing")?;
         // Configure only the bundled decoder. Never depend on an end-user SDK.
@@ -145,8 +155,10 @@ impl RemoteClient {
             target_fps: 30,
             target_bitrate_kbps: 8000,
         };
-        let mut lifecycle =
-            RemoteSessionLifecycle::new(Arc::new(SshAgentHost::new(ssh.clone())), session_id);
+        let mut lifecycle = RemoteSessionLifecycle::new(
+            Arc::new(SshAgentHost::new(ssh.clone()).with_startup(startup)),
+            session_id,
+        );
         lifecycle.enable_lossless_tiles(std::env::var_os("AETHERDESK_DESKTOP_VIDEO").is_none());
         lifecycle.enable_cursor_shapes(true);
         let host = ssh.clone();
@@ -209,7 +221,7 @@ impl RemoteClient {
             )
             .await;
             if let Err(error) = result {
-                tracing::warn!(%session_id, error = %error, "remote desktop stream failed; retaining server desktop");
+                tracing::warn!(%session_id, error = %error, "remote desktop stream failed; checking server desktop");
                 log_agent_failure(&host, session_id, "stream").await;
                 let _ = tokio::time::timeout(
                     Duration::from_secs(3),
@@ -505,7 +517,7 @@ fn desktop_heartbeat_at(start: tokio::time::Instant) -> tokio::time::Interval {
 fn agent_diagnostic_command(session: Uuid) -> String {
     // Fixed command and parsed UUID only; never read another account's home,
     // application files, endpoint credentials or full unbounded logs.
-    format!("tail -c 8192 -- \"$HOME/.aetherdesk/sessions/{session}/agent.log\" 2>/dev/null")
+    format!("tail -c 8192 -- \"$HOME/.aetherdesk/sessions/{session}/agent.log\" 2>/dev/null; if [ -f \"$HOME/.aetherdesk/sessions/{session}/agent-exit\" ]; then printf '\\n'; head -c 512 -- \"$HOME/.aetherdesk/sessions/{session}/agent-exit\"; fi")
 }
 async fn log_agent_failure(ssh: &ad_ssh::SshSession, session: Uuid, phase: &str) {
     if ssh.is_closed() {
@@ -644,7 +656,7 @@ async fn run_display(
                 }
             };
             if changed {
-                let (width, height, pixels) = framebuffer.snapshot();
+                let (width, height, pixels) = framebuffer.snapshot_shared();
                 let sequence = {
                     let mut state = status.lock();
                     state.width = width;

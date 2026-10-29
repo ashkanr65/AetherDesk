@@ -6,6 +6,41 @@
   "inventoryMeaning": "Mechanical source coverage plus behavior catalog. Pending entries are not ported; implementation is not live verification.",
   "features": [
     {
+      "id": "display.shared_lossless_tiles",
+      "area": "Remote desktop",
+      "behavior": "Native shared lossless tile snapshots, exact-colour conversion and partial uploads across skipped frames, bounded capture pacing and cached terminal discovery",
+      "references": [],
+      "status": "implemented_unverified",
+      "implementation": [
+        "core/rust/crates/ad-stream-protocol/src/pixels.rs",
+        "core/rust/crates/ad-display-decoder/src/framebuffer.rs",
+        "core/rust/crates/agent-wayland/src/compositor.rs",
+        "core/rust/crates/agent-wayland/src/terminal_flow_control.rs",
+        "core/rust/crates/agent-supervisor/src/lossless.rs",
+        "ui/rust/crates/ad-desktop/src/remote_frames.rs",
+        "ui/rust/crates/ad-desktop/src/remote_view.rs"
+      ],
+      "acceptance": "Native snapshot, decoder, skipped-frame, input and resize regressions cover the shared tile path. Compare the rebuilt client and fresh bundled host agent at matching resolution and lossless quality; microbenchmarks do not establish end-to-end latency."
+    },
+    {
+      "id": "connection.startup",
+      "area": "Connections",
+      "behavior": "Opt-in per-connection Bash startup commands with bounded execution, inherited exports and directory, retained-session reuse and process-exit diagnostics",
+      "references": [],
+      "status": "implemented_unverified",
+      "implementation": [
+        "ui/rust/crates/ad-desktop-model/src/profiles.rs",
+        "ui/rust/crates/ad-desktop/src/session_form.rs",
+        "ui/rust/crates/ad-desktop/src/connection.rs",
+        "core/rust/crates/ad-ssh/src/startup.rs",
+        "core/rust/crates/ad-ssh/src/session_startup.sh",
+        "core/rust/crates/ad-remote-session/src/ssh_host.rs",
+        "core/rust/crates/agent-supervisor/src/main.rs",
+        "core/rust/crates/agent-supervisor/src/endpoint.rs"
+      ],
+      "acceptance": "Native fixtures cover opt-in persistence, quoted scripts, exports, working directory, timeout/failure policies and independent watcher exit records. Verify a fresh SSH/desktop startup and retained-desktop reconnect with the rebuilt package."
+    },
+    {
       "id": "profiles.schema",
       "area": "Profiles",
       "behavior": "Schema v2, old enum fallbacks, consent flags, optional key/VPN paths, invalid date handling",

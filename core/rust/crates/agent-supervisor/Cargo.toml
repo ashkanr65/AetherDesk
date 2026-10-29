@@ -23,6 +23,7 @@ tokio-util.workspace = true
 uuid.workspace = true
 ring.workspace = true
 subtle.workspace = true
+libc = "0.2"
 
 [dev-dependencies]
 ad-display-decoder = { path = "../ad-display-decoder" }

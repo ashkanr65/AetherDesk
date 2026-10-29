@@ -69,18 +69,14 @@ fn alias(vk: u32) -> Option<egui::Key> {
     })
 }
 fn fallback_evdev(vk: u32, scan: u32, extended: bool) -> Option<u32> {
-    evdev(vk, scan, extended).or_else(|| match vk {
-        // Preserve the physical key and its original modifier snapshot before
-        // egui-winit replaces the press with Copy/Cut/Paste (or drops an empty
-        // paste). This observer never suppresses or injects Windows input.
-        0x43 | 0x56 | 0x58 if !extended && (1..=0x58).contains(&scan) => Some(scan),
-        0x2d if extended => Some(110),
-        0x2e if extended => Some(111),
-        _ => None,
-    })
+    // Keep physical identity even for keys egui cannot represent (ISO <>,
+    // AltGr), and preserve modifier/key ordering during native-hook recovery.
+    // Ordinary modifiers still use the existing reconciled snapshot path.
+    crate::remote_keyboard::evdev(scan, extended, vk)
+        .filter(|code| !matches!(code, 29 | 42 | 54 | 56 | 58 | 69 | 70 | 97 | 125 | 126))
 }
-pub(crate) fn take_gui(events: &mut Vec<KeypadEvent>, event: &egui::Event) -> Option<KeypadEvent> {
-    let index = events.iter().position(|e| match event {
+fn matching(events: &[KeypadEvent], event: &egui::Event) -> Option<usize> {
+    events.iter().position(|e| match event {
         egui::Event::Key {
             key,
             physical_key,
@@ -90,16 +86,35 @@ pub(crate) fn take_gui(events: &mut Vec<KeypadEvent>, event: &egui::Event) -> Op
             e.pressed == *pressed
                 && e.alias
                     .is_some_and(|alias| alias == *key || Some(alias) == *physical_key)
+                || (e.pressed == *pressed
+                    && crate::remote_view::scan_code(physical_key.unwrap_or(*key))
+                        == Some(e.scan_code))
         }
-        egui::Event::Text(text) => e.pressed && e.scan_code == 55 && text == "*",
+        egui::Event::Text(text) => {
+            e.pressed
+                && ((e.scan_code == 55 && text == "*")
+                    || (e.scan_code == 86 && matches!(text.as_str(), "<" | ">" | "|")))
+        }
         egui::Event::Copy => e.pressed && matches!(e.alias, Some(egui::Key::C | egui::Key::Insert)),
         egui::Event::Cut => e.pressed && matches!(e.alias, Some(egui::Key::X | egui::Key::Delete)),
         egui::Event::Paste(_) => {
             e.pressed && matches!(e.alias, Some(egui::Key::V | egui::Key::Insert))
         }
         _ => false,
-    })?;
+    })
+}
+#[cfg(test)]
+pub(crate) fn take_gui(events: &mut Vec<KeypadEvent>, event: &egui::Event) -> Option<KeypadEvent> {
+    let index = matching(events, event)?;
     Some(events.remove(index))
+}
+pub(crate) fn take_gui_ordered(
+    events: &mut Vec<KeypadEvent>,
+    event: &egui::Event,
+) -> Vec<KeypadEvent> {
+    matching(events, event)
+        .map(|index| events.drain(..=index).collect())
+        .unwrap_or_default()
 }
 #[derive(Default)]
 pub(crate) struct Batch {
@@ -195,6 +210,7 @@ mod windows {
                             {
                                 use ad_stream_protocol::*;
                                 let down = |vk| GetKeyState(vk) & (0x8000u16 as i16) != 0;
+                                let altgr = down(VK_RMENU as i32);
                                 let modifiers = MODIFIER_LOCK_STATE_VALID
                                     | if GetKeyState(VK_NUMLOCK as i32) & 1 != 0 {
                                         MODIFIER_NUM_LOCK
@@ -207,8 +223,11 @@ mod windows {
                                         0
                                     }
                                     | u16::from(down(VK_SHIFT as i32))
-                                    | (u16::from(down(VK_CONTROL as i32)) << 1)
-                                    | (u16::from(down(VK_MENU as i32)) << 2)
+                                    | (u16::from(
+                                        down(VK_RCONTROL as i32)
+                                            || (down(VK_LCONTROL as i32) && !altgr),
+                                    ) << 1)
+                                    | (u16::from(down(VK_LMENU as i32)) << 2)
                                     | (u16::from(down(VK_LWIN as i32) || down(VK_RWIN as i32))
                                         << 3);
                                 if state.events.len() >= 128 {
@@ -277,6 +296,44 @@ mod windows {
 mod tests {
     use super::*;
     #[test]
+    fn altgr_and_iso_keys_keep_order_and_do_not_become_left_alt_shortcuts() {
+        let event = |scan_code, pressed| KeypadEvent {
+            scan_code,
+            pressed,
+            repeat: false,
+            modifiers: 0,
+            alias: None,
+        };
+        let mut pending = vec![
+            event(100, true),
+            event(2, true),
+            event(2, false),
+            event(100, false),
+        ];
+        let press = egui::Event::Key {
+            key: egui::Key::Num1,
+            physical_key: Some(egui::Key::Num1),
+            pressed: true,
+            repeat: false,
+            modifiers: Default::default(),
+        };
+        let ordered = take_gui_ordered(&mut pending, &press);
+        assert_eq!(
+            ordered
+                .iter()
+                .map(|e| (e.scan_code, e.pressed))
+                .collect::<Vec<_>>(),
+            [(100, true), (2, true)]
+        );
+        assert_eq!(pending.len(), 2);
+        let mut iso = vec![event(86, true), event(86, false)];
+        assert_eq!(
+            take_gui_ordered(&mut iso, &egui::Event::Text("<".into()))[0].scan_code,
+            86
+        );
+        assert_eq!(iso.len(), 1);
+    }
+    #[test]
     fn clipboard_keys_survive_semantic_conversion_without_duplicate_edges_or_lost_modifiers() {
         for (vk, scan, event) in [
             (0x43, 46, egui::Event::Copy),
@@ -335,7 +392,10 @@ mod tests {
         // A host using the same non-US layout needs the original scan, not
         // the US physical position of the shortcut's logical C.
         assert_eq!(fallback_evdev(0x43, 23, false), Some(23));
-        assert_eq!(fallback_evdev(0x41, 30, false), None);
+        assert_eq!(fallback_evdev(0x41, 30, false), Some(30));
+        assert_eq!(fallback_evdev(0xe2, 0x56, false), Some(86));
+        assert_eq!(fallback_evdev(0xa5, 0x38, true), Some(100));
+        assert_eq!(fallback_evdev(0x10, 0x2a, false), None);
     }
     #[test]
     fn keypad_operators_keep_physical_identity_and_gui_aliases_are_consumed_once() {

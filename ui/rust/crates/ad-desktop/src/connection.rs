@@ -155,6 +155,14 @@ impl Connections {
         let config = connection_config(profile, credentials)?;
         let kind = profile.connection_type;
         let environment = profile.desktop_environment.clone();
+        let startup = profile.startup_enabled.then(|| ad_ssh::StartupScript {
+            commands: profile.startup_commands.clone(),
+            timeout_seconds: profile.startup_timeout,
+            continue_on_error: profile.startup_continue_on_error,
+        });
+        if let Some(script) = &startup {
+            script.validate()?;
+        }
         let (send, receive) = mpsc::channel(64);
         let (events, output) = mpsc::channel(128);
         let cancel = self.cancel.child_token();
@@ -175,6 +183,7 @@ impl Connections {
                     kind,
                     environment,
                     desktop_id,
+                    startup,
                     receive,
                     EventSink {
                         sender: events,
@@ -309,6 +318,7 @@ async fn run(
     kind: ConnectionType,
     desktop_environment: String,
     desktop_id: uuid::Uuid,
+    startup: Option<ad_ssh::StartupScript>,
     mut commands: mpsc::Receiver<Command>,
     events: EventSink,
     cancel: CancellationToken,
@@ -345,13 +355,7 @@ async fn run(
         } else {
             client.connect().await
         };
-        let mut session = result.map_err(|e| e.to_string())?;
-        if shell {
-            if let Err(error) = session.open_shell_with_bootstrap(SHELL_INTEGRATION).await {
-                let _ = session.close().await;
-                return Err(error.to_string());
-            }
-        }
+        let session = result.map_err(|e| e.to_string())?;
         Ok::<_, String>(session)
     };
     let result = tokio::select! {
@@ -362,7 +366,7 @@ async fn run(
         },
         result = tokio::time::timeout(Duration::from_secs(crate::preferences::current().connect_timeout), connect) => result.unwrap_or_else(|_| Err("SSH authentication or setup timed out".into())),
     };
-    let session = match result {
+    let mut session = match result {
         Ok(value) => value,
         Err(error) => {
             if let Some(server) = &mut x11 {
@@ -377,11 +381,42 @@ async fn run(
         }
     };
     drop(client); // Authentication data does not survive the connection attempt.
+    let prepare = async {
+        let prefix = if kind != ConnectionType::RemoteDesktop {
+            if let Some(script) = &startup {
+                session.prepare_startup(script, shell).await?
+            } else {
+                String::new()
+            }
+        } else {
+            String::new()
+        };
+        if shell {
+            session
+                .open_shell_with_bootstrap(&format!("{prefix}{SHELL_INTEGRATION}"))
+                .await
+                .map_err(|e| e.to_string())?;
+        }
+        Ok::<(), String>(())
+    };
+    let prepared = tokio::select! {
+        _ = cancel.cancelled() => Err("Connection cancelled".into()),
+        result = prepare => result,
+    };
+    if let Err(error) = prepared {
+        let _ = session.close().await;
+        if let Some(server) = &mut x11 {
+            server.stop().await;
+        }
+        events.send(Event::Failed(error));
+        return;
+    }
     let mut desktop = if kind == ConnectionType::RemoteDesktop {
-        let result = crate::remote::RemoteClient::start(
+        let result = crate::remote::RemoteClient::start_with_startup(
             Arc::new(session.clone()),
             desktop_environment,
             desktop_id,
+            startup,
             events.ctx.clone(),
             &cancel,
         )

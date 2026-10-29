@@ -188,6 +188,7 @@ impl Applications {
         }
     }
     fn sync_modifiers(&mut self, next: egui::Modifiers) {
+        let next = crate::remote_keyboard::without_altgr_shortcut(next, self.keys.contains(&100));
         for (before, after, evdev) in [
             (self.modifiers.ctrl, next.ctrl, 29),
             (self.modifiers.shift, next.shift, 42),

@@ -7,6 +7,7 @@
 pub mod framing;
 pub mod lossless;
 pub mod messages;
+pub mod pixels;
 pub mod pointer;
 pub mod transport;
 pub mod window_stream;

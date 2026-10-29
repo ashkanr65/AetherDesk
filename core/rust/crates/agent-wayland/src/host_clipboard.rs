@@ -27,6 +27,7 @@ const FORMATS: [&str; 6] = [
 
 enum DesktopCommand {
     Clipboard(ClipboardSelection),
+    Wheel(i32, i32),
     Monitors(
         u32,
         u32,
@@ -72,6 +73,11 @@ impl HostClipboard {
     pub(crate) fn set(&self, selection: ClipboardSelection) {
         let _ = self.0.send(DesktopCommand::Clipboard(selection));
     }
+    pub(crate) fn wheel(&self, horizontal: i32, vertical: i32) -> bool {
+        self.0
+            .send(DesktopCommand::Wheel(horizontal, vertical))
+            .is_ok()
+    }
 }
 
 struct Transfer {
@@ -101,6 +107,7 @@ struct Bridge {
     pending_monitors: Option<(u32, u32, Vec<ad_stream_protocol::Rectangle>, Instant)>,
     pending_windows: Option<(Vec<ad_stream_protocol::Rectangle>, Instant)>,
     output: tokio::sync::mpsc::Sender<CapturedClipboard>,
+    wheel: [i32; 2],
 }
 
 impl Bridge {
@@ -148,6 +155,7 @@ impl Bridge {
             .check()?;
         let clipboard = atom("CLIPBOARD")?;
         xfixes::query_version(&connection, 5, 0)?.reply()?;
+        x11rb::protocol::xtest::get_version(&connection, 2, 2)?.reply()?;
         xfixes::select_selection_input(
             &connection,
             window,
@@ -190,6 +198,7 @@ impl Bridge {
             pending_monitors: None,
             pending_windows: None,
             output,
+            wheel: [0; 2],
         };
         bridge.connection.flush()?;
         loop {
@@ -200,6 +209,43 @@ impl Bridge {
                     bridge
                         .connection
                         .set_selection_owner(bridge.window, bridge.clipboard, 0u32)?;
+                }
+                Ok(DesktopCommand::Wheel(horizontal, vertical)) => {
+                    // Rootful Xwayland switches between its absolute and relative
+                    // pointer devices for Wayland motion/axis events. GTK resets
+                    // its smooth-scroll baseline on that switch. Send real X11
+                    // wheel buttons once, as the independent-window path does.
+                    use x11rb::protocol::xtest;
+                    for (index, value, positive, negative) in
+                        [(0, horizontal, 7, 6), (1, vertical, 4, 5)]
+                    {
+                        let steps =
+                            crate::window_mirror::wheel_steps(&mut bridge.wheel[index], value);
+                        let button = if steps > 0 { positive } else { negative };
+                        for _ in 0..steps.unsigned_abs() {
+                            xtest::fake_input(
+                                &bridge.connection,
+                                BUTTON_PRESS_EVENT,
+                                button,
+                                0,
+                                root,
+                                0,
+                                0,
+                                0,
+                            )?;
+                            xtest::fake_input(
+                                &bridge.connection,
+                                BUTTON_RELEASE_EVENT,
+                                button,
+                                0,
+                                root,
+                                0,
+                                0,
+                                0,
+                            )?;
+                        }
+                    }
+                    bridge.connection.flush()?;
                 }
                 Ok(DesktopCommand::Monitors(width, height, monitors, properties)) => {
                     bridge.monitor_properties = properties;

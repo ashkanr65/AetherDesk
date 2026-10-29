@@ -406,8 +406,23 @@ impl Applications {
             (x.saturating_add(offset.0), y.saturating_add(offset.1))
         };
         for event in ui.input(|i| i.events.clone()) {
-            if let Some(key) = crate::remote_keypad::take_gui(&mut keypad.events, &event) {
-                self.application_keypad(&key);
+            if keyboard_focus
+                && matches!(&event, egui::Event::Key { key: egui::Key::Escape, pressed: true, modifiers, .. } if modifiers.ctrl && modifiers.alt)
+                && !self.keys.contains(&100)
+                && !keypad
+                    .events
+                    .iter()
+                    .any(|key| key.scan_code == 100 && key.pressed)
+            {
+                self.release();
+                response.surrender_focus();
+                return false;
+            }
+            let keys = crate::remote_keypad::take_gui_ordered(&mut keypad.events, &event);
+            if !keys.is_empty() {
+                for key in &keys {
+                    self.application_keypad(key);
+                }
                 continue;
             }
             match event {
@@ -462,8 +477,9 @@ impl Applications {
                     pos,
                     button,
                     pressed,
-                    ..
+                    modifiers,
                 } if image.contains(pos) || !self.buttons.is_empty() => {
+                    self.sync_modifiers(modifiers);
                     let (x, y) = point(pos);
                     motion = None;
                     let button = crate::remote_mouse::gui_button(button);
@@ -479,7 +495,12 @@ impl Applications {
                         y,
                     });
                 }
-                egui::Event::MouseWheel { unit, delta, .. } if scrolling => {
+                egui::Event::MouseWheel {
+                    unit,
+                    delta,
+                    modifiers,
+                } if scrolling => {
+                    self.sync_modifiers(modifiers);
                     if let Some(ad_stream_protocol::InputMessage::PointerWheel {
                         horizontal,
                         vertical,

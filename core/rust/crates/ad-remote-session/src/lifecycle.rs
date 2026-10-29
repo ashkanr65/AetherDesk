@@ -34,6 +34,9 @@ pub struct AgentEndpoint {
 
 #[async_trait]
 pub trait AgentConnection: RemoteAgentHost {
+    fn launch_timeout(&self) -> Duration {
+        Duration::from_secs(65)
+    }
     async fn launch_agent(
         &self,
         deployment: &AgentDeployment,
@@ -238,7 +241,7 @@ impl<C: AgentConnection> RemoteSessionLifecycle<C> {
             return Err(LifecycleError::Cancelled);
         }
         let endpoint = timeout(
-            Duration::from_secs(65),
+            self.connection.launch_timeout(),
             self.connection
                 .launch_agent(&deployment, self.session_id, Some(parameters)),
         )

@@ -6,6 +6,8 @@ pub mod auth;
 pub mod client;
 pub mod known_hosts;
 mod shell;
+pub mod startup;
+pub use startup::StartupScript;
 
 pub use auth::AuthMethod;
 pub use client::{

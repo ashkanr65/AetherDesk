@@ -73,6 +73,31 @@ fn build(
                 continue;
             }
             let row_bytes = region.width as usize * 4;
+            let tile_index = (y / TILE_EDGE) as usize * frame.width.div_ceil(TILE_EDGE) as usize
+                + (x / TILE_EDGE) as usize;
+            if let (Some(current), Some(old)) = (
+                frame.pixels_bgra.tiles(),
+                previous.and_then(|p| p.pixels_bgra.tiles()),
+            ) {
+                if Arc::ptr_eq(&current.tiles[tile_index], &old.tiles[tile_index]) {
+                    continue;
+                }
+            }
+            // Tiled snapshots retain the complete last-sent baseline across
+            // skipped captures. No full-frame materialization or comparison.
+            if let Some(snapshot) = frame.pixels_bgra.tiles() {
+                let pixels = &snapshot.tiles[tile_index].bytes;
+                if previous
+                    .and_then(|p| p.pixels_bgra.tiles())
+                    .is_some_and(|p| p.tiles[tile_index].bytes == *pixels)
+                {
+                    continue;
+                }
+                let tile = LosslessTile::encode(region, pixels.clone())?;
+                bytes += tile.data.len();
+                tiles.push(tile);
+                continue;
+            }
             if previous.is_some_and(|p| {
                 (0..region.height as usize).all(|row| {
                     let a = (y as usize + row) * frame.stride + x as usize * 4;
@@ -116,7 +141,6 @@ pub(crate) async fn serve(
     let mut force_full = true;
     let mut previous: Option<Arc<CapturedFrame>> = None;
     let mut sequence = 0_u64;
-    let mut next_frame = tokio::time::Instant::now();
     let mut report_at = Instant::now();
     let (mut report_frames, mut report_tiles, mut report_bytes, mut preparation_us, mut write_us) =
         (0_u64, 0_u64, 0_u64, 0_u128, 0_u128);
@@ -146,11 +170,10 @@ pub(crate) async fn serve(
         tokio::time::timeout(Duration::from_secs(15), delivery.wait_ready())
             .await
             .map_err(|_| protocol_error("Lossless presentation acknowledgement timed out"))?;
-        tokio::time::sleep_until(next_frame).await;
-        // Fixed upper cadence, with congestion controlling frequency only. Exact
-        // pixel values never change when delivery slows down.
-        let fps = source.rate.borrow().1.clamp(1, 240);
-        next_frame = tokio::time::Instant::now() + Duration::from_secs_f64(1.0 / fps as f64);
+        // The compositor already applies this rate (including congestion
+        // updates). A second independent sleep delays ready frames without
+        // improving the bound. Delivery credits still cap in-flight work.
+        source.rate.borrow_and_update();
         let frame = source.frames.borrow_and_update().clone();
         let Some(frame) = frame else {
             source
@@ -257,7 +280,9 @@ mod tests {
             width,
             height,
             stride: width as usize * 4,
-            pixels_bgra: [7, 21, 240, 255].repeat(width as usize * height as usize),
+            pixels_bgra: [7, 21, 240, 255]
+                .repeat(width as usize * height as usize)
+                .into(),
             damage: vec![],
         }
     }
@@ -312,6 +337,67 @@ mod tests {
     }
 
     #[test]
+    fn shared_capture_tiles_compare_the_sent_base_after_skipped_captures() {
+        use ad_stream_protocol::pixels::PixelBuffer;
+        let mut raw = [7, 21, 240, 255].repeat(1024 * 512);
+        let mut first = frame(1024, 512);
+        first.pixels_bgra = PixelBuffer::capture(1024, 512, 4096, &raw, &[], None).unwrap();
+        raw[..4].copy_from_slice(&[1, 2, 3, 255]);
+        let mut skipped = first.clone();
+        skipped.pixels_bgra = PixelBuffer::capture(
+            1024,
+            512,
+            4096,
+            &raw,
+            &[Rectangle {
+                x: 0,
+                y: 0,
+                width: 1,
+                height: 1,
+            }],
+            Some(&first.pixels_bgra),
+        )
+        .unwrap();
+        raw[768 * 4..768 * 4 + 4].copy_from_slice(&[4, 5, 6, 255]);
+        let mut last = skipped.clone();
+        last.pixels_bgra = PixelBuffer::capture(
+            1024,
+            512,
+            4096,
+            &raw,
+            &[Rectangle {
+                x: 768,
+                y: 0,
+                width: 1,
+                height: 1,
+            }],
+            Some(&skipped.pixels_bgra),
+        )
+        .unwrap();
+        let monitors = [Rectangle {
+            x: 0,
+            y: 0,
+            width: 1024,
+            height: 512,
+        }];
+        let batch = build(&last, Some(&first), &monitors).unwrap();
+        assert_eq!(batch.tiles.len(), 2);
+        assert_eq!(
+            &batch.tiles[0].clone().decode().unwrap()[..4],
+            &[1, 2, 3, 255]
+        );
+        assert_eq!(
+            &batch.tiles[1].clone().decode().unwrap()[..4],
+            &[4, 5, 6, 255]
+        );
+        assert!(build(&last, Some(&last), &monitors)
+            .unwrap()
+            .tiles
+            .is_empty());
+        assert_eq!(build(&last, None, &monitors).unwrap().tiles.len(), 8);
+    }
+
+    #[test]
     fn lossless_monitor_gaps_overlaps_padded_rows_and_large_canvases_are_bounded() {
         let large = frame(4800, 1800);
         let monitors = [
@@ -348,7 +434,7 @@ mod tests {
         assert_eq!(build(&small, None, &overlapping).unwrap().tiles.len(), 1);
         let mut padded = small.clone();
         padded.stride += 16;
-        padded.pixels_bgra = Vec::with_capacity(padded.stride * padded.height as usize);
+        padded.pixels_bgra = Vec::with_capacity(padded.stride * padded.height as usize).into();
         for row in small.pixels_bgra.chunks_exact(small.stride) {
             padded.pixels_bgra.extend_from_slice(row);
             padded.pixels_bgra.extend_from_slice(&[19; 16]);

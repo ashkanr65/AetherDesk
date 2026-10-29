@@ -30,6 +30,7 @@ struct Options {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Mode {
     Launch,
+    Watch,
     Serve,
 }
 
@@ -53,6 +54,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let options = parse_options(std::env::args_os().skip(1))?;
     match options.mode {
         Mode::Launch => launch(options).await?,
+        Mode::Watch => watch(options).await?,
         Mode::Serve => serve(options).await?,
     }
     Ok(())
@@ -97,7 +99,7 @@ async fn launch(options: Options) -> Result<(), Box<dyn std::error::Error>> {
 
     // A closed listener can leave old discovery files after an abrupt exit.
     // Do not let those files race the next broker's atomic ready publication.
-    for name in ["endpoint", "health"] {
+    for name in ["endpoint", "health", "agent-exit"] {
         match tokio::fs::remove_file(session_directory.join(name)).await {
             Ok(()) => {}
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
@@ -120,7 +122,7 @@ async fn launch(options: Options) -> Result<(), Box<dyn std::error::Error>> {
     let stderr = stdout.try_clone()?;
     let mut command = Command::new(executable);
     command
-        .arg("--serve")
+        .arg("--watch")
         .arg("--session-id")
         .arg(options.session_id.to_string())
         .arg("--desktop")
@@ -138,20 +140,45 @@ async fn launch(options: Options) -> Result<(), Box<dyn std::error::Error>> {
         .stdin(Stdio::null())
         .stdout(stdout)
         .stderr(stderr);
-    std::os::unix::process::CommandExt::process_group(&mut command, 0);
-    command.spawn()?;
+    // A separate session, rather than just a process group, survives the SSH
+    // command's logout/HUP. Its small watcher also survives a broker crash.
+    detach_from_login(&mut command);
+    let mut child = command.spawn()?;
 
-    let deadline = Instant::now() + START_TIMEOUT;
+    let startup_timeout = std::env::var("AETHERDESK_STARTUP_TIMEOUT")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .filter(|v| (1..=600).contains(v))
+        .unwrap_or(0);
+    let deadline = Instant::now() + START_TIMEOUT + Duration::from_secs(startup_timeout + 2);
     loop {
         if let Some(endpoint) = read_live_endpoint(&endpoint_path).await? {
             println!("AETHERDESK_AGENT_CREATED_V1");
             println!("{endpoint}");
             return Ok(());
         }
+        if let Some(status) = child.try_wait()? {
+            return Err(format!(
+                "agent startup stopped ({status}); inspect {}",
+                log_path.display()
+            )
+            .into());
+        }
         if Instant::now() >= deadline {
             return Err(format!("agent startup timed out; inspect {}", log_path.display()).into());
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
+fn detach_from_login(command: &mut Command) {
+    unsafe {
+        std::os::unix::process::CommandExt::pre_exec(command, || {
+            if libc::setsid() < 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
     }
 }
 
@@ -193,6 +220,59 @@ async fn serve(options: Options) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+async fn watch(options: Options) -> Result<(), Box<dyn std::error::Error>> {
+    use std::os::unix::process::ExitStatusExt;
+    let executable = std::env::current_exe()?;
+    let startup = std::env::var("AETHERDESK_STARTUP_COMMANDS")
+        .ok()
+        .is_some_and(|s| !s.trim().is_empty());
+    let mut command = if startup {
+        let mut command = tokio::process::Command::new("bash");
+        command
+            .args([
+                "-c",
+                include_str!("../../ad-ssh/src/session_startup.sh"),
+                "aetherdesk-startup",
+                "exec",
+            ])
+            .arg(&executable);
+        command
+    } else {
+        tokio::process::Command::new(&executable)
+    };
+    command.args(std::env::args_os().skip(1).map(|value| {
+        if value == "--watch" {
+            OsString::from("--serve")
+        } else {
+            value
+        }
+    }));
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit());
+    let mut child = command.spawn()?;
+    let pid = child.id().unwrap_or(0);
+    let status = child.wait().await?;
+    let directory = session_directory(options.session_id)?;
+    // Orderly end-session removes this directory. Never recreate ended sessions.
+    if directory.is_dir() {
+        let record = format!(
+            "AETHERDESK_AGENT_EXIT_V1 pid={pid} code={:?} signal={:?} core_dump={}\n",
+            status.code(),
+            status.signal(),
+            status.core_dumped()
+        );
+        let recorded = agent_supervisor::endpoint::record_process_exit(&directory, &record).await;
+        // A full or size-limited agent.log must not panic the watcher before
+        // its independent exit record has been written.
+        use std::io::Write;
+        let _ = writeln!(std::io::stderr(), "{}", record.trim_end());
+        recorded?;
+    }
+    Ok(())
+}
+
 fn parse_options(mut arguments: impl Iterator<Item = OsString>) -> Result<Options, String> {
     let mode = match arguments
         .next()
@@ -200,6 +280,7 @@ fn parse_options(mut arguments: impl Iterator<Item = OsString>) -> Result<Option
         .as_deref()
     {
         Some("--launch") => Mode::Launch,
+        Some("--watch") => Mode::Watch,
         Some("--serve") => Mode::Serve,
         _ => return Err("usage: ad-agent (--launch|--serve) --session-id UUID [options]".into()),
     };
@@ -312,6 +393,22 @@ fn codec_name(codec: VideoCodec) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn watcher_has_a_separate_login_session_and_its_exit_signal_is_observable() {
+        use std::os::unix::process::ExitStatusExt;
+        let mut command = Command::new("/bin/sleep");
+        command.arg("10");
+        detach_from_login(&mut command);
+        let mut child = command.spawn().unwrap();
+        let pid = child.id() as i32;
+        let session = unsafe { libc::getsid(pid) };
+        let parent = unsafe { libc::getsid(0) };
+        let _ = child.kill();
+        let status = child.wait().unwrap();
+        assert_eq!(session, pid);
+        assert_ne!(session, parent);
+        assert_eq!(status.signal(), Some(libc::SIGKILL));
+    }
 
     #[test]
     fn requires_a_session_identifier() {

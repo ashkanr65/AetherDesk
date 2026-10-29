@@ -54,7 +54,7 @@ pub struct Mirror {
     popups: std::collections::BTreeMap<u32, PopupCapture>,
 }
 
-fn wheel_steps(remainder: &mut i32, value: i32) -> i32 {
+pub(crate) fn wheel_steps(remainder: &mut i32, value: i32) -> i32 {
     let total = i64::from(*remainder) + i64::from(value);
     *remainder = (total % 120) as i32;
     // X11 exposes whole wheel buttons. Preserve small movements, retain the
@@ -671,7 +671,9 @@ impl Mirror {
                     .filter(|v| (8..=255).contains(v))
                     .ok_or("Unsupported application key")? as u8;
                 if pressed {
-                    self.keys.insert(code);
+                    if !self.keys.insert(code) {
+                        return Ok(wire::Reply::Ack);
+                    }
                 } else if !self.keys.contains(&code) {
                     return Ok(wire::Reply::Ack);
                 }

@@ -2805,7 +2805,7 @@ mod tests {
             width: 2,
             height: 1,
             sequence: 7,
-            pixels: std::sync::Arc::new(vec![0, 0, 255, 255, 255, 0, 0, 255]),
+            pixels: std::sync::Arc::new(vec![0, 0, 255, 255, 255, 0, 0, 255].into()),
         };
         let (uri, image) = encode_screen(frame.clone()).unwrap();
         let (again, _) = encode_screen(frame.clone()).unwrap();
@@ -2826,7 +2826,7 @@ mod tests {
             damage: None,
             width: 1,
             height: 1,
-            pixels: std::sync::Arc::new(vec![0; 5]),
+            pixels: std::sync::Arc::new(vec![0; 5].into()),
             ..frame.clone()
         })
         .is_err());
@@ -2834,7 +2834,7 @@ mod tests {
             damage: None,
             width: 3200,
             height: 1,
-            pixels: std::sync::Arc::new(vec![0; 12800]),
+            pixels: std::sync::Arc::new(vec![0; 12800].into()),
             ..frame
         })
         .unwrap();
@@ -2844,7 +2844,7 @@ mod tests {
             width: 1,
             height: 3200,
             sequence: 8,
-            pixels: std::sync::Arc::new(vec![0; 12800]),
+            pixels: std::sync::Arc::new(vec![0; 12800].into()),
         })
         .unwrap();
         assert!(portrait.height() <= 1600);

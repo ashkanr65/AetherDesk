@@ -28,6 +28,7 @@ pub struct RemoteView {
     input_focus: bool,
     pub client: Arc<RemoteClient>,
     texture: Option<egui::TextureHandle>,
+    uploaded: Option<crate::remote_frames::PreparedFrame>,
     sequence: u64,
     size: (u32, u32),
     pending_layout: Option<crate::remote_geometry::Layout>,
@@ -43,7 +44,6 @@ pub struct RemoteView {
     resolution_scale: f32,
     tab_target: (u32, u32),
     resolution_settings: bool,
-    display_settings: bool,
     placement: crate::remote_toolbar::Placement,
     placement_valid: bool,
     toolbar_rect: Option<egui::Rect>,
@@ -111,6 +111,7 @@ impl RemoteView {
             input_focus: false,
             client,
             texture: None,
+            uploaded: None,
             sequence: 0,
             size: (1280, 720),
             pending_layout: None,
@@ -126,7 +127,6 @@ impl RemoteView {
             resolution_scale: 1.0,
             tab_target: (1280, 720),
             resolution_settings: false,
-            display_settings: false,
             placement: saved.unwrap_or_default(),
             placement_valid,
             toolbar_rect: None,
@@ -217,6 +217,7 @@ impl RemoteView {
         self.sync_modifiers(egui::Modifiers::default());
     }
     fn sync_modifiers(&mut self, m: egui::Modifiers) {
+        let m = crate::remote_keyboard::without_altgr_shortcut(m, self.keys.contains(&100));
         let new = u16::from(m.shift)
             | (u16::from(m.ctrl) << 1)
             | (u16::from(m.alt) << 2)
@@ -246,21 +247,23 @@ impl RemoteView {
             .texture
             .as_ref()
             .is_some_and(|texture| texture.size() == [image.width as usize, image.height as usize]);
-        let (position, pixels) = image.upload_after(self.sequence, same_size);
-        let color = egui::ImageData::Color(pixels);
-        if let Some(texture) = self.texture.as_mut().filter(|_| same_size) {
-            if let Some(position) = position {
-                texture.set_partial(position, color, egui::TextureOptions::LINEAR);
+        for (position, pixels) in image.uploads_after(self.uploaded.as_ref(), same_size) {
+            let color = egui::ImageData::Color(pixels);
+            if let Some(texture) = self.texture.as_mut().filter(|_| same_size) {
+                if let Some(position) = position {
+                    texture.set_partial(position, color, egui::TextureOptions::LINEAR);
+                } else {
+                    texture.set(color, egui::TextureOptions::LINEAR);
+                }
             } else {
-                texture.set(color, egui::TextureOptions::LINEAR);
+                self.texture = Some(ctx.load_texture(
+                    format!("remote-{:?}", self.id),
+                    color,
+                    egui::TextureOptions::LINEAR,
+                ));
             }
-        } else {
-            self.texture = Some(ctx.load_texture(
-                format!("remote-{:?}", self.id),
-                color,
-                egui::TextureOptions::LINEAR,
-            ));
         }
+        self.uploaded = Some(image.clone());
         self.sequence = image.sequence;
         self.size = (image.width, image.height);
     }
@@ -405,7 +408,7 @@ impl RemoteView {
                 egui::Color32::WHITE,
             );
         }
-        if self.display_settings || self.resolution_settings {
+        if self.resolution_settings {
             self.release();
             self.keyboard_paused = true;
             response.surrender_focus();
@@ -512,9 +515,30 @@ impl RemoteView {
                 let _ = crate::remote_keypad::take(self.id, window);
             }
             for event in ui.input(|i| i.events.clone()) {
-                if let Some(key) = crate::remote_keypad::take_gui(&mut keypad.events, &event) {
-                    self.keypad_event(&key);
-                    continue;
+                if !self.raw_active
+                    && matches!(&event, egui::Event::Key { key: egui::Key::Escape, pressed: true, modifiers, .. } if modifiers.ctrl && modifiers.alt)
+                    && !self.keys.contains(&100)
+                    && !keypad
+                        .events
+                        .iter()
+                        .any(|key| key.scan_code == 100 && key.pressed)
+                {
+                    self.release();
+                    self.keyboard_paused = true;
+                    response.surrender_focus();
+                    if self.mode != Mode::Tab {
+                        self.set_mode(Mode::Tab);
+                    }
+                    break;
+                }
+                if !self.raw_active {
+                    let keys = crate::remote_keypad::take_gui_ordered(&mut keypad.events, &event);
+                    if !keys.is_empty() {
+                        for key in &keys {
+                            self.keypad_event(key);
+                        }
+                        continue;
+                    }
                 }
                 match event {
                     ref event
@@ -573,13 +597,14 @@ impl RemoteView {
                         pos,
                         button,
                         pressed,
-                        ..
+                        modifiers,
                     } if !self.raw_active
                         && ((!toolbar_blocked
                             && response.hovered()
                             && image_rect.contains(pos))
                             || !self.buttons.is_empty()) =>
                     {
+                        self.sync_modifiers(modifiers);
                         let (x, y) = point(pos, image_rect, self.size);
                         self.last_pointer = (x, y);
                         let button = crate::remote_mouse::gui_button(button);
@@ -595,12 +620,21 @@ impl RemoteView {
                             y,
                         });
                     }
-                    egui::Event::MouseWheel { unit, delta, .. } if scrolling => {
+                    egui::Event::MouseWheel {
+                        unit,
+                        delta,
+                        modifiers,
+                    } if scrolling => {
+                        if !self.raw_active {
+                            self.sync_modifiers(modifiers);
+                        }
                         if let Some(event) = self.wheel.convert(unit, delta) {
                             if let Some(pos) = ui.input(|i| i.pointer.hover_pos()) {
                                 let (x, y) = point(pos, image_rect, self.size);
-                                self.last_pointer = (x, y);
-                                self.input(InputMessage::PointerMove { x, y, monitor: 0 });
+                                if self.last_pointer != (x, y) {
+                                    self.last_pointer = (x, y);
+                                    self.input(InputMessage::PointerMove { x, y, monitor: 0 });
+                                }
                             }
                             self.input(event);
                         }
@@ -608,7 +642,7 @@ impl RemoteView {
                     _ => {}
                 }
             }
-            if !self.keyboard_paused {
+            if !self.raw_active && !self.keyboard_paused {
                 for key in &keypad.events {
                     self.keypad_event(key);
                 }

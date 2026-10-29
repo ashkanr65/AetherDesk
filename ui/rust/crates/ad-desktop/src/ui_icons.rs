@@ -22,6 +22,9 @@ pub enum Icon {
     Attach,
     Filter,
     Folder,
+    Go,
+    ParentFolder,
+    NewFolder,
     File,
     Settings,
     Refresh,
@@ -180,7 +183,9 @@ pub fn file_entry(
         .max(ui.spacing().interact_size.y);
     let response = ui.add_sized(
         [ui.available_width(), height],
-        egui::Button::new("").selected(selected),
+        egui::Button::new("")
+            .selected(selected)
+            .sense(egui::Sense::click_and_drag()),
     );
     let color = if selected {
         ui.visuals().selection.stroke.color
@@ -337,7 +342,17 @@ pub fn draw(p: &egui::Painter, rect: Rect, icon: Icon, color: Color32) {
             line((0.5, 0.3), (0.5, 0.52));
             line((0.5, 0.52), (0.66, 0.6));
         }
-        Icon::Folder => {
+        Icon::Go => {
+            line((0.12, 0.5), (0.88, 0.5));
+            line((0.55, 0.17), (0.88, 0.5));
+            line((0.55, 0.83), (0.88, 0.5));
+        }
+        Icon::ParentFolder => {
+            line((0.5, 0.9), (0.5, 0.1));
+            line((0.16, 0.44), (0.5, 0.1));
+            line((0.84, 0.44), (0.5, 0.1));
+        }
+        Icon::Folder | Icon::NewFolder => {
             p.add(egui::Shape::closed_line(
                 vec![
                     at(0.05, 0.22),
@@ -349,6 +364,10 @@ pub fn draw(p: &egui::Painter, rect: Rect, icon: Icon, color: Color32) {
                 ],
                 stroke,
             ));
+            if matches!(icon, Icon::NewFolder) {
+                line((0.68, 0.44), (0.68, 0.76));
+                line((0.52, 0.6), (0.84, 0.6));
+            }
         }
         Icon::File => {
             p.add(egui::Shape::closed_line(
@@ -464,15 +483,27 @@ pub fn draw(p: &egui::Painter, rect: Rect, icon: Icon, color: Color32) {
             p.rect_filled(rect.shrink(rect.width() * 0.2), 1, color);
         }
         Icon::Refresh => {
-            let points = (0..=20)
+            let start = -std::f32::consts::FRAC_PI_2 + 0.45;
+            let end = start + std::f32::consts::TAU - 0.9;
+            let points = (0..=32)
                 .map(|i| {
-                    let angle = -0.8 + i as f32 * 4.9 / 20.0;
-                    rect.center() + egui::Vec2::angled(angle) * rect.width() * 0.33
+                    let angle = start + (end - start) * i as f32 / 32.0;
+                    rect.center() + egui::Vec2::angled(angle) * rect.width() * 0.35
                 })
                 .collect();
             p.add(egui::Shape::line(points, stroke));
-            line((0.76, 0.13), (0.76, 0.39));
-            line((0.76, 0.39), (0.5, 0.39));
+            let tip = rect.center() + egui::Vec2::angled(end) * rect.width() * 0.35;
+            let tangent = egui::vec2(-end.sin(), end.cos());
+            let normal = egui::vec2(-tangent.y, tangent.x);
+            for side in [-1.0_f32, 1.0] {
+                p.line_segment(
+                    [
+                        tip - tangent * rect.width() * 0.19 + normal * rect.width() * 0.12 * side,
+                        tip,
+                    ],
+                    stroke,
+                );
+            }
         }
         Icon::Settings => {
             p.circle_stroke(rect.center(), rect.width() * 0.26, stroke);

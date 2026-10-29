@@ -12,9 +12,10 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 const CHECK_INTERVAL: Duration = Duration::from_millis(500);
+const DISCOVERY_INTERVAL: Duration = Duration::from_secs(2);
 
 struct DesktopScope {
     display: Vec<u8>,
@@ -69,11 +70,12 @@ impl TerminalFlowControl {
         let worker = thread::Builder::new()
             .name("aetherdesk-terminal-flow".into())
             .spawn(move || {
+                let mut terminals = TerminalCache::default();
                 while !stopping.load(Ordering::Acquire) {
                     // Process inspection and terminal ioctls stay off the
                     // compositor/input/render thread. Catch newly opened PTYs
                     // and shells that restore IXON after a foreground program.
-                    if let Err(error) = update_terminals(&scope, &stopping) {
+                    if let Err(error) = terminals.update(&scope, &stopping) {
                         tracing::warn!(%error, "desktop terminal flow-control policy unavailable");
                         break;
                     }
@@ -146,36 +148,58 @@ fn session_terminal(process: &Path, scope: &DesktopScope) -> io::Result<Option<F
     Ok(Some(terminal))
 }
 
-fn update_terminals(scope: &DesktopScope, stop: &AtomicBool) -> io::Result<()> {
-    let mut visited = HashSet::new();
-    for process in fs::read_dir("/proc")? {
-        if stop.load(Ordering::Acquire) {
-            break;
-        }
-        let Ok(process) = process else { continue };
-        if !process
-            .file_name()
-            .as_bytes()
-            .iter()
-            .all(u8::is_ascii_digit)
-        {
-            continue;
-        }
-        // Processes can exit at every step and procfs may hide other processes.
-        // Fail closed: no matching identity/environment/input means no changes.
-        let Ok(Some(terminal)) = session_terminal(&process.path(), scope) else {
-            continue;
+#[derive(Default)]
+struct TerminalCache {
+    processes: Vec<PathBuf>,
+    discover_at: Option<Instant>,
+}
+impl TerminalCache {
+    fn update(&mut self, scope: &DesktopScope, stop: &AtomicBool) -> io::Result<()> {
+        self.update_at(scope, stop, Instant::now())
+    }
+
+    fn update_at(
+        &mut self,
+        scope: &DesktopScope,
+        stop: &AtomicBool,
+        now: Instant,
+    ) -> io::Result<()> {
+        let discovery = self.discover_at.is_none_or(|at| now >= at);
+        let candidates = if discovery {
+            self.discover_at = Some(now + DISCOVERY_INTERVAL);
+            fs::read_dir("/proc")?
+                .filter_map(Result::ok)
+                .filter(|p| p.file_name().as_bytes().iter().all(u8::is_ascii_digit))
+                .map(|p| p.path())
+                .collect::<Vec<_>>()
+        } else {
+            std::mem::take(&mut self.processes)
         };
-        let Ok(metadata) = terminal.metadata() else {
-            continue;
-        };
-        if visited.insert((metadata.dev(), metadata.ino(), metadata.rdev())) {
-            if let Err(error) = prevent_output_pausing(&terminal) {
-                tracing::debug!(%error, "could not update a desktop terminal's flow control");
+        self.processes.clear();
+        let mut visited = HashSet::new();
+        for process in candidates {
+            if stop.load(Ordering::Acquire) {
+                break;
+            }
+            // Processes can exit at every step and procfs may hide other processes.
+            // Fail closed: no matching identity/environment/input means no changes.
+            // Revalidate identity, environment and fd even on a cached path: PID
+            // reuse, exec or a redirected stdin must never affect another session.
+            let Ok(Some(terminal)) = session_terminal(&process, scope) else {
+                continue;
+            };
+            let Ok(metadata) = terminal.metadata() else {
+                continue;
+            };
+            self.processes.push(process);
+            if visited.insert((metadata.dev(), metadata.ino(), metadata.rdev())) {
+                if let Err(error) = prevent_output_pausing(&terminal) {
+                    tracing::debug!(%error, "could not update a desktop terminal's flow control");
+                }
             }
         }
+        Ok(())
     }
-    Ok(())
 }
 
 fn prevent_output_pausing(terminal: &File) -> io::Result<()> {
@@ -334,7 +358,7 @@ mod tests {
     }
 
     fn terminal_child(slave: &File, display: u32, authority: &Path) -> TerminalChild {
-        TerminalChild(
+        let mut child = TerminalChild(
             Command::new("/bin/sleep")
                 .arg("30")
                 .env("DISPLAY", format!(":{display}"))
@@ -344,7 +368,29 @@ mod tests {
                 .stderr(Stdio::null())
                 .spawn()
                 .unwrap(),
-        )
+        );
+        // spawn() returning does not guarantee that procfs already exposes the
+        // child's post-exec environment and descriptors. Wait for this fixture
+        // to be observable before asserting the cache's discovery behaviour.
+        // Probe only: do not change the terminal policy or consume any input.
+        let process = PathBuf::from(format!("/proc/{}", child.0.id()));
+        let scope = DesktopScope::new(display, authority);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let observed = session_terminal(&process, &scope);
+            if matches!(observed, Ok(Some(_))) {
+                return child;
+            }
+            assert!(
+                child.0.try_wait().unwrap().is_none(),
+                "terminal fixture exited before becoming observable"
+            );
+            assert!(
+                Instant::now() < deadline,
+                "terminal fixture did not become observable: {observed:?}"
+            );
+            thread::sleep(Duration::from_millis(1));
+        }
     }
 
     #[test]
@@ -391,6 +437,72 @@ mod tests {
             "worker survived its session guard"
         );
         assert_ne!(attributes(&unrelated).c_iflag & libc::IXON, 0);
+    }
+
+    #[test]
+    fn terminal_discovery_is_cached_while_known_terminals_are_revalidated() {
+        let directory = tempfile::tempdir().unwrap();
+        let authority = directory.path().join("cache.Xauthority");
+        let scope = DesktopScope::new(60996, &authority);
+        let (_master, owned) = pty();
+        let mut child = terminal_child(&owned, 60996, &authority);
+        let mut cache = TerminalCache::default();
+        let stop = AtomicBool::new(false);
+        // Advance the cache's clock explicitly: scheduler delays on a busy
+        // build machine must not accidentally expire the discovery interval.
+        let now = Instant::now();
+        cache.update_at(&scope, &stop, now).unwrap();
+        assert_eq!(cache.processes.len(), 1);
+        let scheduled = cache.discover_at;
+        let mut value = attributes(&owned);
+        value.c_iflag |= libc::IXON;
+        set_attributes(&owned, &value);
+        cache
+            .update_at(&scope, &stop, now + CHECK_INTERVAL)
+            .unwrap();
+        assert_eq!(
+            cache.discover_at, scheduled,
+            "known PTYs caused another full discovery scan"
+        );
+        assert_eq!(attributes(&owned).c_iflag & libc::IXON, 0);
+        child.0.kill().unwrap();
+        child.0.wait().unwrap();
+        let (_new_master, new_terminal) = pty();
+        let _new_child = terminal_child(&new_terminal, 60996, &authority);
+        let mut new_attributes = attributes(&new_terminal);
+        new_attributes.c_iflag |= libc::IXON;
+        set_attributes(&new_terminal, &new_attributes);
+        let mut value = attributes(&owned);
+        value.c_iflag |= libc::IXON;
+        set_attributes(&owned, &value);
+        cache
+            .update_at(&scope, &stop, now + CHECK_INTERVAL * 2)
+            .unwrap();
+        assert!(cache.processes.is_empty());
+        assert_ne!(
+            attributes(&owned).c_iflag & libc::IXON,
+            0,
+            "cached process path outlived its identity"
+        );
+        assert_ne!(
+            attributes(&new_terminal).c_iflag & libc::IXON,
+            0,
+            "a cached update unexpectedly discovered a new terminal"
+        );
+        cache
+            .update_at(&scope, &stop, now + DISCOVERY_INTERVAL)
+            .unwrap();
+        assert_eq!(cache.processes.len(), 1);
+        assert_eq!(
+            attributes(&new_terminal).c_iflag & libc::IXON,
+            0,
+            "scheduled discovery missed a new terminal"
+        );
+        assert_ne!(
+            attributes(&owned).c_iflag & libc::IXON,
+            0,
+            "rediscovery changed an exited process's terminal"
+        );
     }
 
     #[test]

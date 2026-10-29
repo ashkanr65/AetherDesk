@@ -1178,15 +1178,13 @@ impl eframe::App for RustDesktop {
                 egui::ScrollArea::vertical()
                     .id_salt("navigation-rail-scroll")
                     .show(ui, |ui| {
-                        let indices = [1, 9, 10, 7, 3, 2, 6, 7];
-                        for (section, index) in Sidebar::ALL
+                        for section in Sidebar::ALL
                             .into_iter()
-                            .zip(indices)
-                            .filter(|(section, _)| *section != Sidebar::Logs)
+                            .filter(|section| *section != Sidebar::Logs)
                         {
                             if theme::rail_button(
                                 ui,
-                                index,
+                                theme::sidebar_icon(section),
                                 section.label(),
                                 self.workspace.sidebar_visible && self.workspace.sidebar == section,
                                 self.dark,

@@ -4,6 +4,102 @@
   "meaning": "Native behavioral baselines and original-suite mapping. Registration is not a passing test; all live acceptance remains R12.",
   "features": [
     {
+      "id": "display.shared_lossless_tiles",
+      "checks": [
+        {
+          "phase": "windows",
+          "package": "ad-stream-protocol",
+          "source": "core/rust/crates/ad-stream-protocol/src/pixels.rs",
+          "test": "shared_tiles_preserve_skipped_changes_and_materialize_only_on_demand"
+        },
+        {
+          "phase": "windows",
+          "package": "ad-stream-protocol",
+          "source": "core/rust/crates/ad-stream-protocol/src/pixels.rs",
+          "test": "resize_invalid_damage_and_padded_rows_fall_back_safely"
+        },
+        {
+          "phase": "windows",
+          "package": "ad-display-decoder",
+          "source": "core/rust/crates/ad-display-decoder/src/framebuffer.rs",
+          "test": "lossless_snapshots_share_unchanged_tiles_and_validate_before_mutation"
+        },
+        {
+          "phase": "windows",
+          "package": "ad-desktop",
+          "source": "ui/rust/crates/ad-desktop/src/remote_frames.rs",
+          "test": "tiled_preparation_and_skipped_uploads_keep_exact_colours_without_full_images"
+        },
+        {
+          "phase": "linux",
+          "package": "agent-supervisor",
+          "source": "core/rust/crates/agent-supervisor/src/lossless.rs",
+          "test": "shared_capture_tiles_compare_the_sent_base_after_skipped_captures"
+        },
+        {
+          "phase": "linux",
+          "package": "agent-wayland",
+          "source": "core/rust/crates/agent-wayland/src/terminal_flow_control.rs",
+          "test": "terminal_discovery_is_cached_while_known_terminals_are_revalidated"
+        }
+      ],
+      "liveAcceptance": "Rebuild both client and bundled agent. Compare matched resolution and lossless colour settings with typing, scrolling, monitor changes and skipped-frame recovery; microbenchmarks are not end-to-end input latency."
+    },
+    {
+      "id": "connection.startup",
+      "checks": [
+        {
+          "phase": "windows",
+          "package": "ad-desktop-model",
+          "source": "ui/rust/crates/ad-desktop-model/src/profiles.rs",
+          "test": "startup_commands_are_opt_in_bounded_and_round_trip_with_the_connection"
+        },
+        {
+          "phase": "windows",
+          "package": "ad-desktop",
+          "source": "ui/rust/crates/ad-desktop/src/session_form.rs",
+          "test": "startup_editor_enter_adds_a_line_and_save_buttons_stay_visible"
+        },
+        {
+          "phase": "windows",
+          "package": "ad-desktop",
+          "source": "ui/rust/crates/ad-desktop/src/session_form.rs",
+          "test": "wireguard_controls_and_connection_actions_are_aligned_and_bounded"
+        },
+        {
+          "phase": "linux",
+          "package": "ad-ssh",
+          "source": "core/rust/crates/ad-ssh/src/startup.rs",
+          "test": "startup_script_is_quoted_data_with_bounded_execution"
+        },
+        {
+          "phase": "linux",
+          "package": "ad-ssh",
+          "source": "core/rust/crates/ad-ssh/src/startup.rs",
+          "test": "startup_exports_and_directory_survive_and_failure_timeout_policies_are_scoped"
+        },
+        {
+          "phase": "linux",
+          "package": "agent-supervisor",
+          "source": "core/rust/crates/agent-supervisor/src/endpoint.rs",
+          "test": "reaped_broker_exit_is_recorded_and_invalidates_stale_ready_health"
+        },
+        {
+          "phase": "linux",
+          "package": "agent-supervisor",
+          "source": "core/rust/crates/agent-supervisor/src/main.rs",
+          "test": "watcher_has_a_separate_login_session_and_its_exit_signal_is_observable"
+        },
+        {
+          "phase": "windows",
+          "package": "ad-desktop",
+          "source": "ui/rust/crates/ad-desktop/src/remote_keypad.rs",
+          "test": "altgr_and_iso_keys_keep_order_and_do_not_become_left_alt_shortcuts"
+        }
+      ],
+      "liveAcceptance": "Verify enabled startup exports and working directory in a fresh SSH/desktop session, retained-desktop reconnect skips startup, and physical Spanish AltGr/ISO keys on the user's keyboard."
+    },
+    {
       "id": "profiles.schema",
       "checks": [
         {
@@ -1706,6 +1802,18 @@
           "phase": "windows",
           "package": "ad-desktop",
           "source": "ui/rust/crates/ad-desktop/src/session.rs",
+          "test": "file_drag_between_panes_opens_transfer_confirmation_in_both_directions"
+        },
+        {
+          "phase": "windows",
+          "package": "ad-desktop",
+          "source": "ui/rust/crates/ad-desktop/src/session.rs",
+          "test": "refreshing_each_folder_only_reloads_that_pane_without_terminal_navigation"
+        },
+        {
+          "phase": "windows",
+          "package": "ad-desktop",
+          "source": "ui/rust/crates/ad-desktop/src/session.rs",
           "test": "files_popup_does_not_shrink_or_disconnect_the_desktop_or_terminal"
         },
         {
@@ -1744,6 +1852,36 @@
     {
       "id": "sftp.transfers",
       "checks": [
+        {
+          "phase": "windows",
+          "package": "ad-desktop",
+          "source": "ui/rust/crates/ad-desktop/src/transfers.rs",
+          "test": "folder_progress_counts_files_and_bytes_without_double_counting_file_transitions"
+        },
+        {
+          "phase": "windows",
+          "package": "ad-desktop",
+          "source": "ui/rust/crates/ad-desktop/src/transfers.rs",
+          "test": "folder_link_warnings_survive_resume_without_changing_old_plan_format"
+        },
+        {
+          "phase": "windows",
+          "package": "ad-desktop",
+          "source": "ui/rust/crates/ad-desktop/src/transfers.rs",
+          "test": "transfer_actions_have_equal_sizes_and_align_when_wrapping"
+        },
+        {
+          "phase": "windows",
+          "package": "ad-desktop",
+          "source": "ui/rust/crates/ad-desktop/src/transfers.rs",
+          "test": "transfer_progress_keeps_old_queues_readable_and_retains_paused_counts"
+        },
+        {
+          "phase": "windows",
+          "package": "ad-desktop",
+          "source": "ui/rust/crates/ad-desktop/src/transfers.rs",
+          "test": "transfer_bars_stay_visible_below_file_panes_when_resized"
+        },
         {
           "phase": "windows",
           "package": "ad-desktop",
@@ -3748,6 +3886,12 @@
     {
       "id": "desktop.toolbar",
       "checks": [
+        {
+          "phase": "windows",
+          "package": "ad-desktop",
+          "source": "ui/rust/crates/ad-desktop/src/session.rs",
+          "test": "connection_toolbar_stays_at_top_and_preserves_desktop_and_ssh_surfaces"
+        },
         {
           "phase": "windows",
           "package": "ad-desktop",

@@ -57,6 +57,17 @@ impl Draft {
     }
     fn validate(&self) -> Result<(), String> {
         crate::profile_store::validate(&self.profile)?;
+        if self.profile.startup_enabled {
+            ad_ssh::StartupScript {
+                commands: self.profile.startup_commands.clone(),
+                timeout_seconds: self.profile.startup_timeout,
+                continue_on_error: self.profile.startup_continue_on_error,
+            }
+            .validate()?;
+            if self.profile.startup_commands.trim().is_empty() {
+                return Err("Enter startup commands or disable them".into());
+            }
+        }
         if self.profile.remember_password {
             if self.profile.username.trim().is_empty() {
                 return Err("Enter the username for the saved credential".into());
@@ -141,11 +152,14 @@ impl Draft {
             window = window.open(&mut open);
         }
         window.show(ctx, |ui| {
-            let enter = !busy && crate::dialog::primary(ui);
-            egui::ScrollArea::both().max_height(size.y).max_width(size.x).auto_shrink([false, false]).show(ui, |ui| {
-                ui.set_width(510.0);
+            let label_width = ui.fonts_mut(|fonts| fonts.layout_no_wrap("WireGuard (this session)".into(),egui::TextStyle::Body.resolve(ui.style()),ui.visuals().text_color()).size().x);
+            let startup_editor = egui::Id::new(("connection-startup", &self.profile.id));
+            let editing_script = ui.memory(|m| m.focused() == Some(startup_editor));
+            let enter = !busy && !editing_script && crate::dialog::primary(ui);
+            let body_height = (ui.available_height() - ui.spacing().interact_size.y - 2.0 * ui.spacing().item_spacing.y).max(1.0);
+            egui::ScrollArea::vertical().max_height(body_height).auto_shrink([false, false]).show(ui, |ui| {
                 ui.add_enabled_ui(!busy, |ui| {
-                    egui::Grid::new("connection-fields").num_columns(2).spacing([14.0, 10.0]).show(ui, |ui| {
+                    egui::Grid::new("connection-fields").num_columns(2).min_col_width(label_width).min_row_height(28.0).spacing([14.0, 10.0]).show(ui, |ui| {
                         let p = &mut self.profile;
                         ui.label("Name"); let response = ui.text_edit_singleline(&mut p.name);
                         crate::dialog::focus_on_open(ui, &response); ui.end_row();
@@ -169,26 +183,26 @@ impl Draft {
                         ui.label(if p.authentication == "sshKey" { "Key passphrase" } else { "Password" });
                         ui.add(egui::TextEdit::singleline(&mut *self.secret).password(true).hint_text(if self.existing_credential { "Saved (leave blank to keep)" } else { "Enter password / passphrase" })); ui.end_row();
                         ui.label("WireGuard (this session)");
-                        ui.horizontal(|ui| {
-                            if ui.add(egui::TextEdit::singleline(p.wireguard_config_path.get_or_insert_with(String::new)).hint_text("Optional .conf file").desired_width(230.0)).changed() {
+                        let row_width=ui.available_width();
+                        ui.allocate_ui_with_layout(egui::vec2(row_width,28.0),egui::Layout::left_to_right(egui::Align::Center),|ui| {
+                            let browse_width=ui.fonts_mut(|fonts| fonts.layout_no_wrap("Browse".into(),egui::TextStyle::Button.resolve(ui.style()),ui.visuals().text_color()).size().x)+2.0*ui.spacing().button_padding.x;
+                            let path_width=(ui.available_width()-browse_width-28.0-2.0*ui.spacing().item_spacing.x).max(40.0);
+                            if ui.add_sized([path_width,ui.spacing().interact_size.y],egui::TextEdit::singleline(p.wireguard_config_path.get_or_insert_with(String::new)).hint_text("Optional .conf file").desired_width(path_width)).changed() {
                                 p.wireguard_enabled=p.wireguard_config_path.as_ref().is_some_and(|p|!p.trim().is_empty());
                             }
-                            if ui.button("Browse").clicked() {
+                            if ui.add_sized([browse_width,28.0],egui::Button::new("Browse")).clicked() {
                                 let (sender,receiver)=mpsc::channel(1);self.picker=Some(receiver);
                                 let context=ctx.clone();
                                 std::thread::spawn(move|| {let _=sender.blocking_send(crate::file_picker::wireguard());context.request_repaint();});
                             }
+                            if ui.add_enabled_ui(p.wireguard_config_path.as_ref().is_some_and(|p|!p.trim().is_empty()),|ui| crate::ui_icons::button(ui,crate::ui_icons::Icon::Remove,"Remove WireGuard configuration",false)).inner.clicked() {
+                                p.wireguard_config_path=None;p.wireguard_enabled=false;
+                            }
                         }); ui.end_row();
                         if p.wireguard_config_path.as_ref().is_some_and(|p|!p.trim().is_empty()) {
-                            // Separate grid row: align the path with the label,
-                            // then put enable/remove directly beneath that path.
                             ui.label("");
-                            ui.horizontal(|ui| {
                                 ui.checkbox(&mut p.wireguard_enabled,"Enable for this session only");
-                                if crate::ui_icons::button(ui,crate::ui_icons::Icon::Remove,"Remove WireGuard configuration",false).clicked() {
-                                    p.wireguard_config_path=None; p.wireguard_enabled=false;
-                                }
-                            }); ui.end_row();
+                            ui.end_row();
                         }
                         if p.connection_type == ConnectionType::RemoteDesktop {
                             ui.label("Desktop");
@@ -200,6 +214,22 @@ impl Draft {
                         }
                     });
                     ui.separator();
+                    ui.checkbox(&mut self.profile.startup_enabled, "Run startup commands");
+                    ui.add_enabled_ui(self.profile.startup_enabled, |ui| {
+                        egui::ScrollArea::vertical().id_salt("startup-script-scroll").max_height(130.0).show(ui, |ui| {
+                            ui.add(egui::TextEdit::multiline(&mut self.profile.startup_commands)
+                                .id(startup_editor).code_editor().desired_rows(6).desired_width(ui.available_width())
+                                .hint_text("export TOOL_HOME=/opt/tools\ncd ~/work"));
+                        });
+                        egui::Grid::new("startup-timeout-fields").num_columns(2).min_col_width(label_width).min_row_height(28.0).spacing([14.0,10.0]).show(ui,|ui| {
+                            ui.label("Timeout (seconds)");
+                            ui.add(egui::DragValue::new(&mut self.profile.startup_timeout).range(1..=600));
+                            ui.end_row();
+                        });
+                        ui.checkbox(&mut self.profile.startup_continue_on_error, "Continue connecting if commands fail");
+                    });
+                    ui.add(egui::Label::new("Runs Bash on this host for each new connection. A retained remote desktop runs it only when first created. Exports and the working directory are inherited. Commands are saved with this connection.").wrap());
+                    ui.separator();
                     ui.checkbox(&mut self.profile.remember_username, "Remember username");
                     ui.checkbox(&mut self.profile.remember_password, "Save password / key passphrase securely");
                     if self.profile.remember_password {
@@ -210,14 +240,17 @@ impl Draft {
                         }
                     } else { self.profile.master_password_protected = false; }
                     ui.label("Saved passwords are encrypted for your Windows account, outside the session file.");
-                    ui.horizontal(|ui| {
-                        if ui.add_enabled(can_save, egui::Button::new("Save connection")).clicked() || (enter && can_save) { action = Some(Action::Save); }
-                        if ui.add_enabled(can_save, egui::Button::new("Save and open")).clicked() { action = Some(Action::Open); }
-                        if ui.button("Cancel").clicked() { action = Some(Action::Cancel); }
-                    });
                 });
                 if busy { ui.horizontal(|ui| { ui.spinner(); ui.label("Saving encrypted credential…"); }); }
                 if let Some(error) = &self.error { ui.colored_label(ui.visuals().error_fg_color, error); }
+            });
+            ui.separator();
+            ui.add_enabled_ui(!busy, |ui| {
+                ui.horizontal(|ui| {ui.with_layout(egui::Layout::right_to_left(egui::Align::Center),|ui| {
+                    if ui.add_enabled(can_save, egui::Button::new("Save and open")).clicked() { action = Some(Action::Open); }
+                    if ui.add_enabled(can_save, egui::Button::new("Save connection")).clicked() || (enter && can_save) { action = Some(Action::Save); }
+                    if ui.button("Cancel").clicked() { action = Some(Action::Cancel); }
+                });});
             });
         });
         if !open {
@@ -263,6 +296,131 @@ impl Draft {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn wireguard_controls_and_connection_actions_are_aligned_and_bounded() {
+        let mut p = crate::profile_store::new_profile();
+        p.host = "example.test".into();
+        p.username = "user".into();
+        p.wireguard_config_path = Some("C:/fixture/tunnel.conf".into());
+        let mut draft = Draft::from(p);
+        let ctx = egui::Context::default();
+        let mut output = None;
+        for _ in 0..4 {
+            output = Some(ctx.run(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(900.0, 900.0),
+                    )),
+                    ..Default::default()
+                },
+                |ctx| {
+                    draft.ui(ctx, None, true);
+                },
+            ));
+        }
+        let output = output.unwrap();
+        let mut texts = std::collections::HashMap::new();
+        for clipped in &output.shapes {
+            if let egui::Shape::Text(t) = &clipped.shape {
+                let rect = egui::Rect::from_min_size(t.pos, t.galley.size());
+                texts.insert(t.galley.job.text.clone(), rect);
+                if ["Browse", "Save connection", "Save and open", "Cancel"]
+                    .contains(&t.galley.job.text.as_str())
+                {
+                    assert!(
+                        clipped.clip_rect.expand(1.0).contains_rect(rect),
+                        "Clipped {}: {:?} / {:?}",
+                        t.galley.job.text,
+                        rect,
+                        clipped.clip_rect
+                    );
+                }
+            }
+        }
+        let label = texts["WireGuard (this session)"];
+        let browse = texts["Browse"];
+        let path = texts["C:/fixture/tunnel.conf"];
+        assert!(
+            (label.center().y - browse.center().y).abs() < 1.0,
+            "Label/Browse misaligned: {label:?} / {browse:?}"
+        );
+        assert!((path.center().y - browse.center().y).abs() < 1.0);
+        assert!(texts["Enable for this session only"].top() > browse.bottom());
+        let cancel = texts["Cancel"];
+        let save = texts["Save connection"];
+        let open = texts["Save and open"];
+        assert!(cancel.right() < save.left() && save.right() < open.left());
+        assert!((cancel.center().y - open.center().y).abs() < 1.0);
+    }
+    #[test]
+    fn startup_editor_enter_adds_a_line_and_save_buttons_stay_visible() {
+        let mut profile = crate::profile_store::new_profile();
+        profile.name = "fixture".into();
+        profile.host = "example.test".into();
+        profile.username = "user".into();
+        profile.startup_enabled = true;
+        profile.startup_commands = "export TOOL_HOME=/opt/tool".into();
+        let id = egui::Id::new(("connection-startup", &profile.id));
+        let mut draft = Draft::from(profile);
+        let ctx = egui::Context::default();
+        let mut action = None;
+        for _ in 0..3 {
+            let _ = ctx.run(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(900.0, 800.0),
+                    )),
+                    ..Default::default()
+                },
+                |ctx| {
+                    action = draft.ui(ctx, None, true);
+                },
+            );
+        }
+        ctx.memory_mut(|m| m.request_focus(id));
+        let output = ctx.run(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(900.0, 800.0),
+                )),
+                events: vec![egui::Event::Key {
+                    key: egui::Key::Enter,
+                    physical_key: Some(egui::Key::Enter),
+                    pressed: true,
+                    repeat: false,
+                    modifiers: Default::default(),
+                }],
+                ..Default::default()
+            },
+            |ctx| {
+                action = draft.ui(ctx, None, true);
+            },
+        );
+        assert!(
+            action.is_none(),
+            "Editing a script submitted the connection form"
+        );
+        assert!(draft.profile.startup_commands.contains('\n'));
+        let mut buttons = 0;
+        for clipped in output.shapes {
+            if let egui::epaint::Shape::Text(text) = clipped.shape {
+                if ["Save connection", "Save and open", "Cancel"]
+                    .contains(&text.galley.job.text.as_str())
+                {
+                    let bounds = egui::Rect::from_min_size(text.pos, text.galley.size());
+                    assert!(
+                        clipped.clip_rect.expand(1.0).contains_rect(bounds),
+                        "Connection action was clipped"
+                    );
+                    buttons += 1;
+                }
+            }
+        }
+        assert_eq!(buttons, 3);
+    }
     #[test]
     fn save_and_open_waits_for_credential_completion_and_keeps_its_action() {
         let mut draft = Draft::from(crate::profile_store::new_profile());

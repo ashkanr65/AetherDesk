@@ -47,6 +47,10 @@ pub struct SavedSession {
     pub key_path: Option<String>,
     pub wireguard_config_path: Option<String>,
     pub wireguard_enabled: bool,
+    pub startup_enabled: bool,
+    pub startup_commands: String,
+    pub startup_timeout: u64,
+    pub startup_continue_on_error: bool,
     pub remember_username: bool,
     pub remember_password: bool,
     pub master_password_protected: bool,
@@ -103,6 +107,17 @@ impl SavedSession {
         let wireguard_config_path =
             optional_text(map, "wireguardConfigPath")?.filter(|p| !p.trim().is_empty());
         let wireguard_enabled = boolean(map, "wireguardEnabled", wireguard_config_path.is_some())?;
+        let startup_commands = optional_text(map, "startupCommands")?.unwrap_or_default();
+        let startup_timeout = match map.get("startupTimeout") {
+            None | Some(Value::Null) => 30,
+            Some(value) => value
+                .as_u64()
+                .filter(|v| (1..=600).contains(v))
+                .ok_or("Invalid startup timeout")?,
+        };
+        if startup_commands.len() > 64 * 1024 || startup_commands.contains('\0') {
+            return Err("Invalid startup commands".into());
+        }
         Ok(Self {
             id: text(map, "id")?,
             name: text(map, "name")?,
@@ -128,6 +143,10 @@ impl SavedSession {
             key_path: optional_text(map, "keyPath")?,
             wireguard_config_path,
             wireguard_enabled,
+            startup_enabled: boolean(map, "startupEnabled", false)?,
+            startup_commands,
+            startup_timeout,
+            startup_continue_on_error: boolean(map, "startupContinueOnError", false)?,
             remember_password: boolean(map, "rememberPassword", false)?,
             master_password_protected: boolean(map, "masterPasswordProtected", false)?,
             favorite: boolean(map, "favorite", false)?,
@@ -147,6 +166,8 @@ impl SavedSession {
             "rememberUsername":self.remember_username,"rememberPassword":self.remember_password,
             "masterPasswordProtected":self.remember_password && self.master_password_protected,
             "favorite":self.favorite,"deletedAt":self.deleted_at,
+            "startupEnabled":self.startup_enabled,"startupCommands":self.startup_commands,
+            "startupTimeout":self.startup_timeout,"startupContinueOnError":self.startup_continue_on_error,
         });
         if let Some(key) = self.key_path.as_ref().filter(|s| !s.is_empty()) {
             value["keyPath"] = json!(key);
@@ -173,6 +194,23 @@ pub fn decode_sessions(bytes: &[u8]) -> Result<Vec<SavedSession>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn startup_commands_are_opt_in_bounded_and_round_trip_with_the_connection() {
+        let mut session = SavedSession::from_json(
+            &json!({"id":"test", "name":"test", "host":"example.test", "username":"user"}),
+        )
+        .unwrap();
+        assert!(!session.startup_enabled);
+        assert_eq!(session.startup_timeout, 30);
+        session.startup_enabled = true;
+        session.startup_commands = "export TOOL_HOME=/opt/tool\ncd ~/work".into();
+        let restored = SavedSession::from_json(&session.to_json()).unwrap();
+        assert!(restored.startup_enabled);
+        assert_eq!(restored.startup_commands, session.startup_commands);
+        let mut invalid = session.to_json();
+        invalid["startupTimeout"] = json!(601);
+        assert!(SavedSession::from_json(&invalid).is_err());
+    }
     #[test]
     fn wireguard_enablement_is_per_profile_and_disabled_files_survive_reload() {
         let enabled=SavedSession::from_json(&json!({"id":"one","name":"VPN","host":"server","wireguardConfigPath":"C:/vpn/peer.conf"})).unwrap();

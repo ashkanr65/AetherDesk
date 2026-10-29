@@ -307,7 +307,11 @@ mod tests {
                 &CreateWindowAux::new()
                     .background_pixel(0xff0000)
                     .event_mask(
-                        EventMask::KEY_PRESS | EventMask::KEY_RELEASE | EventMask::STRUCTURE_NOTIFY,
+                        EventMask::KEY_PRESS
+                            | EventMask::KEY_RELEASE
+                            | EventMask::STRUCTURE_NOTIFY
+                            | EventMask::BUTTON_PRESS
+                            | EventMask::BUTTON_RELEASE,
                     ),
             )
             .unwrap()
@@ -419,30 +423,68 @@ mod tests {
                 })
                 .unwrap();
         }
-        for pressed in [true, false] {
+        for (pressed, repeat) in [(true, false), (true, true), (true, false), (false, false)] {
             compositor
                 .inject_input(InputMessage::Keyboard {
                     scan_code: 30,
                     pressed,
                     modifiers: 0,
-                    repeat: false,
+                    repeat,
+                })
+                .unwrap();
+        }
+        let mut wheel_buttons = vec![];
+        let mut key_presses = 0;
+        let mut key_released = false;
+        for (horizontal, vertical) in [(0, 30), (0, 30), (0, 60), (0, -120), (120, 0)] {
+            compositor
+                .inject_input(InputMessage::PointerMove {
+                    x: i32::from(location.dst_x) + 20,
+                    y: i32::from(location.dst_y) + 30,
+                    monitor: 0,
+                })
+                .unwrap();
+            compositor
+                .inject_input(InputMessage::PointerWheel {
+                    horizontal,
+                    vertical,
                 })
                 .unwrap();
         }
         let deadline = Instant::now() + Duration::from_secs(3);
-        loop {
-            if let Some(smithay::reexports::x11rb::protocol::Event::KeyPress(event)) =
-                connection.poll_for_event().unwrap()
-            {
-                assert_eq!(event.detail, 38);
-                break;
+        while wheel_buttons.len() < 3 || key_presses == 0 || !key_released {
+            match connection.poll_for_event().unwrap() {
+                Some(smithay::reexports::x11rb::protocol::Event::ButtonPress(event))
+                    if (4..=7).contains(&event.detail) =>
+                {
+                    wheel_buttons.push(event.detail)
+                }
+                Some(smithay::reexports::x11rb::protocol::Event::KeyPress(event)) => {
+                    assert_eq!(event.detail, 38);
+                    key_presses += 1;
+                    assert_eq!(
+                        key_presses, 1,
+                        "Windows repeats or duplicate presses reached the X11 app"
+                    );
+                }
+                Some(smithay::reexports::x11rb::protocol::Event::KeyRelease(event))
+                    if event.detail == 38 =>
+                {
+                    key_released = true
+                }
+                _ => {}
             }
             assert!(
                 Instant::now() < deadline,
-                "keyboard did not reach the host-managed application"
+                "Wheel buttons did not reach the host-managed application"
             );
-            std::thread::sleep(Duration::from_millis(10));
+            std::thread::sleep(Duration::from_millis(5));
         }
+        assert_eq!(
+            wheel_buttons,
+            [4, 5, 7],
+            "Wheel fractions, direction or axes changed"
+        );
         // The actual host WM receives title-bar drags, rather than AetherDesk
         // drawing a header and interpreting its buttons.
         let start = connection

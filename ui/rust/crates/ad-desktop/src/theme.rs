@@ -381,6 +381,19 @@ pub fn mode_toggle(ui: &mut egui::Ui, dark: bool) -> bool {
         })
         .clicked()
 }
+pub fn sidebar_icon(sidebar: ad_desktop_model::state::Sidebar) -> usize {
+    use ad_desktop_model::state::Sidebar;
+    match sidebar {
+        Sidebar::Sessions => 1,
+        Sidebar::Bookmarks => 9,
+        Sidebar::Macros => 10,
+        Sidebar::Tools => 11,
+        Sidebar::Connections => 3,
+        Sidebar::Monitoring => 2,
+        Sidebar::Logs => 6,
+        Sidebar::Assistant => 7,
+    }
+}
 pub fn rail_button(
     ui: &mut egui::Ui,
     index: usize,
@@ -416,6 +429,33 @@ pub fn icon(p: &egui::Painter, rect: Rect, index: usize, color: Color32) {
         p.line_segment([point(a.0, a.1), point(b.0, b.1)], stroke);
     };
     match index {
+        11 => {
+            // An open wrench head and diagonal handle, distinct from AI sparkle.
+            p.add(egui::Shape::line(
+                vec![
+                    point(0.8, 0.05),
+                    point(0.58, 0.28),
+                    point(0.72, 0.42),
+                    point(0.95, 0.2),
+                ],
+                stroke,
+            ));
+            p.add(egui::Shape::line(
+                vec![
+                    point(0.95, 0.2),
+                    point(0.96, 0.43),
+                    point(0.76, 0.58),
+                    point(0.58, 0.55),
+                    point(0.21, 0.95),
+                    point(0.04, 0.78),
+                    point(0.43, 0.4),
+                    point(0.4, 0.22),
+                    point(0.56, 0.03),
+                    point(0.8, 0.05),
+                ],
+                stroke,
+            ));
+        }
         0 | 5 => {
             p.rect_stroke(rect, 1, stroke, egui::StrokeKind::Inside);
             line((0.2, 0.3), (0.4, 0.5));
@@ -688,6 +728,10 @@ mod tests {
     }
     #[test]
     fn solid_themes_keep_welcome_controls_and_product_icon() {
+        assert_ne!(
+            sidebar_icon(ad_desktop_model::state::Sidebar::Tools),
+            sidebar_icon(ad_desktop_model::state::Sidebar::Assistant)
+        );
         let ctx = egui::Context::default();
         ctx.set_fonts(font_definitions());
         let theme = Theme;

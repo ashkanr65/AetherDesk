@@ -462,6 +462,7 @@ dependencies = [
  "agent-encoder",
  "agent-input",
  "agent-wayland",
+ "libc",
  "ring",
  "subtle",
  "tempfile",

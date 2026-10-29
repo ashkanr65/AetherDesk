@@ -20,11 +20,19 @@ const ENDPOINT_PREFIX: &str = "AETHERDESK_AGENT_V1";
 
 pub struct SshAgentHost {
     session: Arc<SshSession>,
+    startup: Option<ad_ssh::StartupScript>,
 }
 
 impl SshAgentHost {
     pub fn new(session: Arc<SshSession>) -> Self {
-        Self { session }
+        Self {
+            session,
+            startup: None,
+        }
+    }
+    pub fn with_startup(mut self, startup: Option<ad_ssh::StartupScript>) -> Self {
+        self.startup = startup;
+        self
     }
 
     pub fn ssh_session(&self) -> &Arc<SshSession> {
@@ -68,6 +76,11 @@ impl RemoteAgentHost for SshAgentHost {
 
 #[async_trait]
 impl AgentConnection for SshAgentHost {
+    fn launch_timeout(&self) -> Duration {
+        self.startup.as_ref().map_or(Duration::from_secs(65), |s| {
+            LAUNCH_TIMEOUT + s.timeout() + Duration::from_secs(5)
+        })
+    }
     async fn session_ended(&self, session_id: Uuid) -> Result<bool, LifecycleError> {
         // Old agents remove this directory only after shutting down their
         // compositor. Read-only verification preserves already-running sessions.
@@ -106,9 +119,24 @@ impl AgentConnection for SshAgentHost {
         } else {
             format!("{executable} --launch --session-id {session_id}{session_options}")
         };
+        let command = if let Some(startup) = &self.startup {
+            format!(
+                "{}{}",
+                startup
+                    .environment_prefix()
+                    .map_err(LifecycleError::Launch)?,
+                command
+            )
+        } else {
+            command
+        };
+        let launch_timeout = self
+            .startup
+            .as_ref()
+            .map_or(LAUNCH_TIMEOUT, |s| LAUNCH_TIMEOUT + s.timeout());
         let output = self
             .session
-            .execute_command_output(&command, LAUNCH_TIMEOUT)
+            .execute_command_output(&command, launch_timeout)
             .await
             .map_err(|error| LifecycleError::Launch(error.to_string()))?;
         if output.exit_status != 0 {

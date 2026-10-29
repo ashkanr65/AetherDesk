@@ -225,6 +225,7 @@ pub struct HeadlessCompositor {
     cursors: watch::Receiver<Option<Arc<crate::host_cursor::CursorImage>>>,
     socket_name: OsString,
     commands: std_mpsc::Sender<CompositorCommand>,
+    wakeup: smithay::reexports::calloop::LoopSignal,
     frames: watch::Receiver<Option<Arc<CapturedFrame>>>,
     clipboards: mpsc::Receiver<CapturedClipboard>,
     surfaces: Arc<RwLock<Vec<SurfaceSnapshot>>>,
@@ -259,7 +260,7 @@ impl HeadlessCompositor {
                     tracing::error!(error = %message, "headless compositor stopped");
                 }
             })?;
-        let socket_name = match ready_rx.recv_timeout(Duration::from_secs(10)) {
+        let (socket_name, wakeup) = match ready_rx.recv_timeout(Duration::from_secs(10)) {
             Ok(result) => result?,
             Err(std_mpsc::RecvTimeoutError::Timeout) => {
                 return Err(CompositorError::StartupTimeout);
@@ -272,6 +273,7 @@ impl HeadlessCompositor {
             cursors,
             socket_name,
             commands,
+            wakeup,
             frames,
             clipboards,
             surfaces,
@@ -285,20 +287,27 @@ impl HeadlessCompositor {
         self.cursors.clone()
     }
 
+    fn send(
+        &self,
+        command: CompositorCommand,
+    ) -> Result<(), std_mpsc::SendError<CompositorCommand>> {
+        self.commands.send(command)?;
+        self.wakeup.wakeup();
+        Ok(())
+    }
+
     pub fn socket_name(&self) -> &OsStr {
         &self.socket_name
     }
 
     pub fn launch(&self, application: ApplicationSpec) -> Result<(), CompositorError> {
         application.validate()?;
-        self.commands
-            .send(CompositorCommand::Launch(application))
+        self.send(CompositorCommand::Launch(application))
             .map_err(|_| CompositorError::Stopped)
     }
 
     pub fn set_capture_rate(&self, fps: u32) -> Result<(), CompositorError> {
-        self.commands
-            .send(CompositorCommand::CaptureRate(fps.clamp(1, 240)))
+        self.send(CompositorCommand::CaptureRate(fps.clamp(1, 240)))
             .map_err(|_| CompositorError::Stopped)
     }
 
@@ -308,14 +317,12 @@ impl HeadlessCompositor {
                 "headless output dimensions are invalid",
             ));
         }
-        self.commands
-            .send(CompositorCommand::Resize { width, height })
+        self.send(CompositorCommand::Resize { width, height })
             .map_err(|_| CompositorError::Stopped)
     }
 
     pub fn inject_input(&self, input: InputMessage) -> Result<(), CompositorError> {
-        self.commands
-            .send(CompositorCommand::Input(input))
+        self.send(CompositorCommand::Input(input))
             .map_err(|_| CompositorError::Stopped)
     }
 
@@ -327,8 +334,7 @@ impl HeadlessCompositor {
         if !ad_stream_protocol::valid_keyboard_layout(&layout, &variant) {
             return Err(CompositorError::Input("invalid keyboard layout"));
         }
-        self.commands
-            .send(CompositorCommand::KeyboardLayout { layout, variant })
+        self.send(CompositorCommand::KeyboardLayout { layout, variant })
             .map_err(|_| CompositorError::Stopped)
     }
 
@@ -352,19 +358,17 @@ impl HeadlessCompositor {
         {
             return Err(CompositorError::Input("invalid monitor layout"));
         }
-        self.commands
-            .send(CompositorCommand::MonitorLayout {
-                properties,
-                width,
-                height,
-                monitors,
-            })
-            .map_err(|_| CompositorError::Stopped)
+        self.send(CompositorCommand::MonitorLayout {
+            properties,
+            width,
+            height,
+            monitors,
+        })
+        .map_err(|_| CompositorError::Stopped)
     }
 
     pub fn set_clipboard(&self, selection: ClipboardSelection) -> Result<(), CompositorError> {
-        self.commands
-            .send(CompositorCommand::Clipboard(selection))
+        self.send(CompositorCommand::Clipboard(selection))
             .map_err(|_| CompositorError::Stopped)
     }
 
@@ -402,7 +406,7 @@ impl HeadlessCompositor {
     }
 
     pub fn shutdown(&mut self) {
-        let _ = self.commands.send(CompositorCommand::Stop);
+        let _ = self.send(CompositorCommand::Stop);
         if let Some(thread) = self.thread.take() {
             let _ = thread.join();
         }
@@ -468,7 +472,9 @@ fn run_compositor(
     clipboard_tx: mpsc::Sender<CapturedClipboard>,
     cursor_tx: watch::Sender<Option<Arc<crate::host_cursor::CursorImage>>>,
     surface_output: Arc<RwLock<Vec<SurfaceSnapshot>>>,
-    ready_tx: &std_mpsc::SyncSender<Result<OsString, CompositorError>>,
+    ready_tx: &std_mpsc::SyncSender<
+        Result<(OsString, smithay::reexports::calloop::LoopSignal), CompositorError>,
+    >,
 ) -> Result<(), CompositorError> {
     std::env::set_var("XDG_RUNTIME_DIR", &config.runtime_dir);
     let mut event_loop: EventLoop<'static, AgentCompositorState> = EventLoop::try_new()?;
@@ -492,11 +498,16 @@ fn run_compositor(
             state.start_xwayland()?;
         }
     }
-    let _ = ready_tx.send(Ok(socket_name));
+    let _ = ready_tx.send(Ok((socket_name, event_loop.get_signal())));
 
     let mut next_frame = Instant::now();
     while state.running {
-        event_loop.dispatch(Some(Duration::from_millis(4)), &mut state)?;
+        // Wayland socket events and explicit command wakeups interrupt this
+        // wait. Do not wake 250 times/s merely to poll an otherwise idle desktop.
+        event_loop.dispatch(
+            Some(next_frame.saturating_duration_since(Instant::now())),
+            &mut state,
+        )?;
         state.process_commands()?;
         if Instant::now() >= next_frame {
             state.render_frame()?;
@@ -765,8 +776,13 @@ impl AgentCompositorState {
                 scan_code,
                 pressed,
                 modifiers,
-                repeat: _,
+                repeat,
             } => {
+                // Xwayland owns key repeat. Forwarding Windows auto-repeat too
+                // produces extra characters/Enter, especially after a stall.
+                if repeat && pressed {
+                    return Ok(());
+                }
                 let snapshot_edge = ad_stream_protocol::modifier_snapshot_already_applied(
                     scan_code,
                     pressed,
@@ -791,9 +807,7 @@ impl AgentCompositorState {
                     .into();
                 // Native and GUI routes can hand over while a modifier is held.
                 // Reapplying its press to XKB can leave it latched after release.
-                if matches!(scan_code, 42 | 54 | 29 | 97 | 56 | 100 | 125 | 126)
-                    && keyboard.pressed_keys().contains(&keycode) == pressed
-                {
+                if keyboard.pressed_keys().contains(&keycode) == pressed {
                     return Ok(());
                 }
                 let state = if pressed {
@@ -874,6 +888,14 @@ impl AgentCompositorState {
                 horizontal,
                 vertical,
             } => {
+                if self
+                    .host_desktop
+                    .as_ref()
+                    .and_then(|d| d.clipboard.as_ref())
+                    .is_some_and(|bridge| bridge.wheel(horizontal, vertical))
+                {
+                    return Ok(());
+                }
                 let pointer = self
                     ._seat
                     .get_pointer()
@@ -1055,7 +1077,7 @@ impl AgentCompositorState {
         if damage.is_empty() {
             return Ok(());
         }
-        let damage = damage
+        let damage: Vec<_> = damage
             .iter()
             .filter_map(|region| {
                 let x = u32::try_from(region.loc.x).ok()?;
@@ -1074,8 +1096,17 @@ impl AgentCompositorState {
         let length = stride.saturating_mul(self.target.height());
         // Pixman owns this image on the compositor thread. No client or other
         // thread can mutate the target while this copy is performed.
-        let pixels =
-            unsafe { std::slice::from_raw_parts(self.target.data().cast::<u8>(), length).to_vec() };
+        let source = unsafe { std::slice::from_raw_parts(self.target.data().cast::<u8>(), length) };
+        let previous = self.frame_tx.borrow().clone();
+        let pixels = ad_stream_protocol::pixels::PixelBuffer::capture(
+            self.width,
+            self.height,
+            stride,
+            source,
+            &damage,
+            previous.as_ref().map(|f| &f.pixels_bgra),
+        )
+        .map_err(CompositorError::Input)?;
         self.frame_id = self.frame_id.wrapping_add(1);
         let frame = CapturedFrame {
             frame_id: self.frame_id,

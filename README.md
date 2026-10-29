@@ -31,6 +31,42 @@ colour pickers, hexadecimal values, import/export, contrast warnings and reset.
 Changes stay in the preview until **Apply and save**. See
 [Preferences](PREFERENCES.md) for usage and storage details.
 
+## Connection startup and transfers
+
+Edit a saved connection and enable **Run startup commands** to prepare that
+host with a Bash script. The editor accepts multiple lines; Enter adds a line.
+Choose a timeout and whether connection setup should continue after failure.
+Exported variables and the working directory carry into the terminal or new
+remote desktop. Reconnecting to a retained desktop does not run the script
+again. Commands are saved in the connection profile; imported automation stays
+disabled until explicitly enabled on this installation.
+
+File and folder uploads and downloads show progress below the SFTP panes,
+including transferred size, percentage and folder file counts. Scanning and
+verification remain visible, and Pause, Resume and Cancel stay available.
+Disconnect and End remote session are grouped on the right of the connection
+toolbar, separately from file, terminal and display controls.
+
+If the Linux desktop agent exits unexpectedly, its independent supervisor
+records the exit code or signal in the private session's `agent-exit` file and
+invalidates stale ready status. Client failure diagnostics collect that record
+alongside the bounded agent log; this cannot recover unsaved work from a crashed
+host application.
+
+## Remote desktop performance
+
+The lossless desktop path preserves exact BGRA colours. Captures, decoded
+surfaces and prepared textures share unchanged tiles, so small updates do not
+copy or convert an entire multi-monitor desktop. Each snapshot remains complete:
+skipped captures or GUI updates retain earlier changes. Resizing, reconnecting
+and texture recreation still rebuild the required image safely.
+
+Capture controls the frame rate and reacts to command wakeups; transmission
+uses delivery credits instead of adding a second frame-rate wait. The terminal
+flow-control worker caches discovery while continuing to validate active PTYs
+and prevent Ctrl+S output freezing. These are local processing changes and do
+not require a different wire protocol or lossy compression.
+
 ## Build and release
 
 Windows application source is under `ui/rust` and its backend is under

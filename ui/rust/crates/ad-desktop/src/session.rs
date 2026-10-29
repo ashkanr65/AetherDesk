@@ -69,6 +69,7 @@ pub struct SessionTab {
     replace_transfers: bool,
     transfer_generation: u64,
     explorer_hover: Option<egui::Pos2>,
+    file_drag: Option<FileDrag>,
     navigation_generation: Option<u64>,
     sync_generation: Option<u64>,
 }
@@ -152,6 +153,7 @@ impl SessionTab {
             replace_transfers: false,
             transfer_generation: 0,
             explorer_hover: None,
+            file_drag: None,
             navigation_generation: None,
             sync_generation: None,
         }
@@ -495,6 +497,21 @@ impl SessionTab {
             self.local_path.clone(),
             runtime.list_local(PathBuf::from(&self.local_path), ctx.clone()),
         ));
+    }
+    fn refresh_folder(&mut self, local: bool, runtime: &Connections, ctx: &egui::Context) {
+        // Refresh the folders being displayed, not unsubmitted address edits.
+        if local {
+            if !self.local_loaded_path.is_empty() {
+                self.local_path = self.local_loaded_path.clone();
+            }
+            self.refresh_local(runtime, ctx);
+        } else {
+            if !self.remote_loaded_path.is_empty() {
+                self.remote_path = self.remote_loaded_path.clone();
+            }
+            self.navigation_generation = None;
+            self.refresh_remote();
+        }
     }
     fn refresh_remote(&mut self) {
         self.sync_generation = None;
@@ -913,93 +930,115 @@ impl SessionTab {
                 }
             }
         }
-        egui::ScrollArea::horizontal()
-            .id_salt(("session-controls", self.tab_id))
-            .show(ui, |ui| {
-                ui.horizontal(|ui| {
-                    if !self.connected && !self.connecting && ui.button("Connect…").clicked() {
-                        self.open_credentials();
-                    }
-                    if (self.connected || self.connecting)
-                        && crate::ui_icons::button(
-                            ui,
-                            crate::ui_icons::Icon::Disconnect,
-                            if self.connecting {
-                                "Cancel connection"
-                            } else if self.profile.connection_type == ConnectionType::RemoteDesktop
+        let mut disconnect = false;
+        let mut end_session = false;
+        // A layout change alone inherits the whole remaining session height.
+        // Bound the row before centering controls so the terminal/desktop keeps
+        // the space below it, and the right-hand actions stay at the top.
+        let toolbar_height = 28.0_f32
+            .max(ui.spacing().interact_size.y)
+            .max(ui.text_style_height(&egui::TextStyle::Body));
+        ui.allocate_ui_with_layout(
+            egui::vec2(ui.available_width(), toolbar_height),
+            egui::Layout::right_to_left(egui::Align::Center),
+            |ui| {
+                if self.connected && self.profile.connection_type == ConnectionType::RemoteDesktop {
+                    end_session = crate::ui_icons::button(
+                        ui,
+                        crate::ui_icons::Icon::EndSession,
+                        "End remote session",
+                        false,
+                    )
+                    .clicked();
+                }
+                if (self.connected || self.connecting)
+                    && crate::ui_icons::button(
+                        ui,
+                        crate::ui_icons::Icon::Disconnect,
+                        if self.connecting {
+                            "Cancel connection"
+                        } else if self.profile.connection_type == ConnectionType::RemoteDesktop {
+                            "Disconnect (keep remote desktop session)"
+                        } else {
+                            "Disconnect"
+                        },
+                        false,
+                    )
+                    .clicked()
+                {
+                    disconnect = true;
+                }
+                if self.connected || self.connecting {
+                    ui.separator();
+                }
+                egui::ScrollArea::horizontal()
+                    .id_salt(("session-controls", self.tab_id))
+                    .max_width(ui.available_width())
+                    .auto_shrink([false, true])
+                    .show(ui, |ui| {
+                        ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                            if !self.connected
+                                && !self.connecting
+                                && ui.button("Connect…").clicked()
                             {
-                                "Disconnect (keep remote desktop session)"
-                            } else {
-                                "Disconnect"
-                            },
-                            false,
-                        )
-                        .clicked()
-                    {
-                        self.disconnect();
-                    }
-                    if self.connected
-                        && self.profile.connection_type == ConnectionType::RemoteDesktop
-                    {
-                        if crate::ui_icons::button(
-                            ui,
-                            crate::ui_icons::Icon::EndSession,
-                            "End remote session",
-                            false,
-                        )
-                        .clicked()
-                        {
-                            self.end_desktop();
-                        }
-                    }
-                    if self.profile.connection_type != ConnectionType::SftpOnly {
-                        if crate::ui_icons::button(
-                            ui,
-                            crate::ui_icons::Icon::Folder,
-                            "Open or close file transfer",
-                            self.files_visible,
-                        )
-                        .clicked()
-                        {
-                            if self.files_visible {
-                                self.close_files();
-                            } else {
-                                self.files_visible = true;
+                                self.open_credentials();
                             }
-                        }
-                    }
-                    if matches!(
-                        self.profile.connection_type,
-                        ConnectionType::SshTerminal | ConnectionType::SshX11
-                    ) {
-                        if self.connected
-                            && self.profile.connection_type == ConnectionType::SshX11
-                            && self.x11_unavailable
-                        {
-                            ui.add_enabled_ui(!self.x11_restarting, |ui| {
+                            if self.profile.connection_type != ConnectionType::SftpOnly {
                                 if crate::ui_icons::button(
                                     ui,
-                                    crate::ui_icons::Icon::Refresh,
-                                    "Restart X11 display; keep terminal and files connected",
-                                    false,
+                                    crate::ui_icons::Icon::Folder,
+                                    "Open or close file transfer",
+                                    self.files_visible,
                                 )
                                 .clicked()
                                 {
-                                    self.x11_restarting = true;
-                                    self.status = "Connected · restarting X11…".into();
-                                    self.send(Command::RestartX11);
+                                    if self.files_visible {
+                                        self.close_files();
+                                    } else {
+                                        self.files_visible = true;
+                                    }
                                 }
-                            });
-                        }
-                        self.terminal.settings_button(ui);
-                    }
-                    if let Some(remote) = &mut self.remote {
-                        remote.controls(ui);
-                    }
-                    ui.add(egui::Label::new(&self.status).truncate())
-                        .on_hover_text(&self.status);
-                });
-            });
+                            }
+                            if matches!(
+                                self.profile.connection_type,
+                                ConnectionType::SshTerminal | ConnectionType::SshX11
+                            ) {
+                                if self.connected
+                                    && self.profile.connection_type == ConnectionType::SshX11
+                                    && self.x11_unavailable
+                                {
+                                    ui.add_enabled_ui(!self.x11_restarting, |ui| {
+                                        if crate::ui_icons::button(
+                                        ui,
+                                        crate::ui_icons::Icon::Refresh,
+                                        "Restart X11 display; keep terminal and files connected",
+                                        false,
+                                    )
+                                    .clicked()
+                                    {
+                                        self.x11_restarting = true;
+                                        self.status = "Connected · restarting X11…".into();
+                                        self.send(Command::RestartX11);
+                                    }
+                                    });
+                                }
+                                self.terminal.settings_button(ui);
+                            }
+                            if let Some(remote) = &mut self.remote {
+                                remote.controls(ui);
+                            }
+                            ui.add(egui::Label::new(&self.status).truncate())
+                                .on_hover_text(&self.status);
+                        });
+                    });
+            },
+        );
+        if disconnect {
+            self.disconnect();
+        }
+        if end_session {
+            self.end_desktop();
+        }
         if let Some(challenge) = self.challenge.clone() {
             egui::Window::new("Verify SSH host")
                 .id(egui::Id::new(("verify-host", self.tab_id)))
@@ -1158,6 +1197,7 @@ impl SessionTab {
     }
     fn close_files(&mut self) {
         self.files_visible = false;
+        self.file_drag = None;
         self.action = None;
         self.property_text = None;
     }
@@ -1228,9 +1268,17 @@ impl SessionTab {
     }
     fn files_ui(&mut self, ui: &mut egui::Ui, runtime: &Connections) {
         self.directory_sync_ui(ui);
+        if let Some(error) = crate::transfers::error() {
+            ui.add(
+                egui::Label::new(egui::RichText::new(&error).color(ui.visuals().error_fg_color))
+                    .truncate(),
+            )
+            .on_hover_text(error);
+        }
         let ctx = ui.ctx().clone();
         let mut local_go = false;
         let mut remote_go = false;
+        let mut refresh_side = None;
         let mut next_local = None;
         let mut next_remote = None;
         let mut new_action = None;
@@ -1253,6 +1301,17 @@ impl SessionTab {
         let available = ui.available_rect_before_wrap().intersect(ui.clip_rect());
         let bounds =
             egui::Rect::from_min_size(available.min, available.size().max(egui::Vec2::ZERO));
+        let (bounds, transfer_area) = crate::transfers::file_area(
+            bounds,
+            ui.spacing()
+                .interact_size
+                .y
+                .max(ui.text_style_height(&egui::TextStyle::Body)),
+            ui.spacing().item_spacing.y,
+            self.backend
+                .as_ref()
+                .is_some_and(|session| crate::transfers::has_jobs(session)),
+        );
         let rects = file_pane_rects(bounds, narrow, ui.spacing().item_spacing.x);
         let mut columns = [
             ui.new_child(
@@ -1282,13 +1341,33 @@ impl SessionTab {
                     .add_sized(path_size, egui::TextEdit::singleline(&mut self.local_path));
                 local_go |= crate::dialog::field_submit(&columns[0], &response);
                 columns[0].horizontal_wrapped(|ui| {
-                    local_go |= ui.button("Go").clicked();
-                    if ui.button("↑").clicked() {
+                    local_go |= crate::ui_icons::button(
+                        ui,
+                        crate::ui_icons::Icon::Go,
+                        "Go to local folder",
+                        false,
+                    )
+                    .clicked();
+                    if crate::ui_icons::button(
+                        ui,
+                        crate::ui_icons::Icon::ParentFolder,
+                        "Up to parent folder",
+                        false,
+                    )
+                    .clicked()
+                    {
                         next_local = PathBuf::from(&self.local_loaded_path)
                             .parent()
                             .map(|p| p.to_string_lossy().into_owned());
                     }
-                    if ui.button("New folder").clicked() {
+                    if crate::ui_icons::button(
+                        ui,
+                        crate::ui_icons::Icon::NewFolder,
+                        "New local folder",
+                        false,
+                    )
+                    .clicked()
+                    {
                         new_action = Some(FileAction {
                             operation: "local_mkdir".into(),
                             path: String::new(),
@@ -1298,6 +1377,16 @@ impl SessionTab {
                                 .to_string(),
                             directory: true,
                         });
+                    }
+                    if crate::ui_icons::button(
+                        ui,
+                        crate::ui_icons::Icon::Refresh,
+                        "Refresh local folder",
+                        false,
+                    )
+                    .clicked()
+                    {
+                        refresh_side = Some(true);
                     }
                 });
                 let row_height = (columns[0].text_style_height(&egui::TextStyle::Button)
@@ -1324,14 +1413,17 @@ impl SessionTab {
                                     &label,
                                     self.selected_local.as_deref() == entry.path.to_str(),
                                 );
-                                let response = response.interact(egui::Sense::click_and_drag());
-                                response.dnd_set_drag_payload(FileDrag {
+                                let payload = FileDrag {
                                     connection: self.identity(),
                                     local: true,
                                     path: entry.path.to_string_lossy().into_owned(),
                                     name: entry.name.clone(),
                                     directory: entry.directory,
-                                });
+                                };
+                                if response.drag_started() {
+                                    self.file_drag = Some(payload.clone());
+                                }
+                                response.dnd_set_drag_payload(payload);
                                 if response.clicked() {
                                     self.selected_local = Some(entry.path.display().to_string());
                                 }
@@ -1472,15 +1564,33 @@ impl SessionTab {
                     .add_sized(path_size, egui::TextEdit::singleline(&mut self.remote_path));
                 remote_go |= crate::dialog::field_submit(&columns[1], &response);
                 columns[1].horizontal_wrapped(|ui| {
-                    remote_go |= ui.button("Go").clicked();
-                    if ui.button("↑").clicked() {
+                    remote_go |= crate::ui_icons::button(
+                        ui,
+                        crate::ui_icons::Icon::Go,
+                        "Go to server folder",
+                        false,
+                    )
+                    .clicked();
+                    if crate::ui_icons::button(
+                        ui,
+                        crate::ui_icons::Icon::ParentFolder,
+                        "Up to parent folder",
+                        false,
+                    )
+                    .clicked()
+                    {
                         next_remote = Some(remote_parent(&self.remote_loaded_path));
                     }
                     if ui
-                        .add_enabled(
-                            !self.remote_loaded_path.is_empty(),
-                            egui::Button::new("New folder"),
-                        )
+                        .add_enabled_ui(!self.remote_loaded_path.is_empty(), |ui| {
+                            crate::ui_icons::button(
+                                ui,
+                                crate::ui_icons::Icon::NewFolder,
+                                "New server folder",
+                                false,
+                            )
+                        })
+                        .inner
                         .clicked()
                     {
                         new_action = Some(FileAction {
@@ -1489,6 +1599,16 @@ impl SessionTab {
                             value: join_remote(&self.remote_loaded_path, "new-folder"),
                             directory: true,
                         });
+                    }
+                    if crate::ui_icons::button(
+                        ui,
+                        crate::ui_icons::Icon::Refresh,
+                        "Refresh server folder",
+                        false,
+                    )
+                    .clicked()
+                    {
+                        refresh_side = Some(false);
                     }
                 });
                 let row_height = (columns[1].text_style_height(&egui::TextStyle::Button)
@@ -1517,14 +1637,15 @@ impl SessionTab {
                                     &entry.name,
                                     self.selected_remote.as_deref() == Some(entry.path.as_str()),
                                 );
-                                let response = response.interact(egui::Sense::click_and_drag());
-                                response.dnd_set_drag_payload(FileDrag {
+                                let payload = FileDrag {
                                     connection: self.identity(),
                                     local: false,
                                     path: entry.path.clone(),
                                     name: entry.name.clone(),
                                     directory,
-                                });
+                                };
+                                if response.drag_started() {self.file_drag = Some(payload.clone());}
+                                response.dnd_set_drag_payload(payload);
                                 if response.clicked() {
                                     self.selected_remote = Some(entry.path.clone());
                                 }
@@ -1669,16 +1790,26 @@ impl SessionTab {
                         },
                     );
             }
+            // The framework's global drag payload can be cleared by another
+            // viewport's end-pass. Retain this window's own gesture until its
+            // pointer release, and hit-test the clipped pane rather than a
+            // hover-only widget competing with its rows/background.
+            let drag = self.file_drag.clone().or_else(|| {
+                egui::DragAndDrop::payload::<FileDrag>(&ctx)
+                    .as_deref()
+                    .cloned()
+            });
+            let released = ctx.input(|i| i.pointer.button_released(egui::PointerButton::Primary));
+            let cancelled = drag.is_some()
+                && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
             for (column, local) in [(0, true), (1, false)] {
                 if (local && !show_local) || (!local && !show_remote) {
                     continue;
                 }
-                let drop = columns[column].interact(
-                    rects[column],
-                    egui::Id::new(("file-drop", local)),
-                    egui::Sense::hover(),
-                );
-                if let Some(payload) = drop.dnd_release_payload::<FileDrag>() {
+                if let Some(payload) = drag
+                    .as_ref()
+                    .filter(|_| !cancelled && columns[column].rect_contains_pointer(rects[column]))
+                {
                     if payload.local != local && (!local || payload.connection == self.identity()) {
                         let destination = if local {
                             PathBuf::from(&self.local_loaded_path)
@@ -1691,15 +1822,36 @@ impl SessionTab {
                         if (local && !self.local_loaded_path.is_empty())
                             || (!local && !self.remote_loaded_path.is_empty())
                         {
-                            new_action = Some(FileAction {
-                                operation: if local { "download" } else { "upload" }.into(),
-                                path: payload.path.clone(),
-                                value: destination,
-                                directory: payload.directory,
-                            });
+                            if !released {
+                                ctx.set_cursor_icon(egui::CursorIcon::Copy);
+                                columns[column].painter().rect_stroke(
+                                    rects[column].shrink(1.0),
+                                    0,
+                                    egui::Stroke::new(
+                                        2.0_f32,
+                                        columns[column].visuals().selection.stroke.color,
+                                    ),
+                                    egui::StrokeKind::Inside,
+                                );
+                            } else {
+                                new_action = Some(FileAction {
+                                    operation: if local { "download" } else { "upload" }.into(),
+                                    path: payload.path.clone(),
+                                    value: destination,
+                                    directory: payload.directory,
+                                });
+                            }
                         }
                     }
                 }
+            }
+            if drag.is_some()
+                && (released
+                    || cancelled
+                    || !ctx.input(|i| i.pointer.button_down(egui::PointerButton::Primary)))
+            {
+                self.file_drag = None;
+                egui::DragAndDrop::clear_payload(&ctx);
             }
             let hovered = ctx.input(|i| !i.raw.hovered_files.is_empty());
             if hovered {
@@ -1778,6 +1930,9 @@ impl SessionTab {
             self.refresh_remote();
             self.navigation_generation = Some(self.list_generation);
         }
+        if let Some(local) = refresh_side {
+            self.refresh_folder(local, runtime, &ctx);
+        }
         if let Some(action) = new_action {
             if action.operation == "stat" {
                 self.operation(request("stat", action.path));
@@ -1786,8 +1941,17 @@ impl SessionTab {
                 self.action = Some(action);
             }
         }
-        if let Some(session) = &self.backend {
-            crate::transfers::ui(ui, session, runtime);
+        if let (Some(session), Some(area)) = (&self.backend, transfer_area) {
+            let mut footer = ui.new_child(
+                egui::UiBuilder::new()
+                    .id_salt("file-transfer-progress")
+                    .max_rect(area)
+                    .layout(egui::Layout::top_down(egui::Align::Min)),
+            );
+            footer.set_clip_rect(area.intersect(ui.clip_rect()));
+            footer.separator();
+            crate::transfers::ui(&mut footer, session, runtime);
+            ui.allocate_rect(area, egui::Sense::hover());
         }
         for pending in self.pending.values() {
             if let Pending::Operation(progress) = pending {
@@ -1833,7 +1997,9 @@ impl SessionTab {
                         "Enter the other file's full path, or select it in a file pane first.",
                     );
                 }
-                if matches!(action.operation.as_str(),"upload"|"download"){ui.checkbox(&mut self.replace_transfers,"Replace existing files after checking their revisions");ui.label("Pause retains verified partial data. Resume requires this same host, account and verified key.");}
+                if matches!(action.operation.as_str(),"upload"|"download"){ui.checkbox(&mut self.replace_transfers,"Replace existing files after checking their revisions");ui.label("Pause retains verified partial data. Resume requires this same host, account and verified key.");
+                    if action.directory && action.operation == "download" {ui.add(egui::Label::new("Copies ordinary files and folders. Symbolic links are skipped and reported; their targets are not copied.").wrap());}
+                }
                 let response = ui.button("Confirm");
                 crate::dialog::focus_on_open(ui, &response);
                 if response.clicked() || enter {
@@ -2008,6 +2174,264 @@ fn file_pane_rects(bounds: egui::Rect, narrow: bool, gap: f32) -> [egui::Rect; 2
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn file_drag_between_panes_opens_transfer_confirmation_in_both_directions() {
+        let runtime = Connections::new().unwrap();
+        let directory = tempfile::tempdir().unwrap();
+        crate::storage::with_test_root(directory.path(), || {
+            for (download, blank) in [(true, true), (false, true), (true, false), (false, false)] {
+                let ctx = egui::Context::default();
+                let mut tab = SessionTab::diagnostic_files(directory.path());
+                tab.profile.connection_type = ConnectionType::RemoteDesktop;
+                tab.local_entries[0].directory = false;
+                tab.remote_entries[0].kind = "file".into();
+                let render = |tab: &mut SessionTab, events: Vec<egui::Event>| {
+                    ctx.run(
+                        egui::RawInput {
+                            screen_rect: Some(egui::Rect::from_min_size(
+                                egui::Pos2::ZERO,
+                                egui::vec2(1100.0, 600.0),
+                            )),
+                            events,
+                            focused: false,
+                            ..Default::default()
+                        },
+                        |ctx| {
+                            egui::CentralPanel::default()
+                                .show(ctx, |ui| tab.files_ui(ui, &runtime));
+                        },
+                    )
+                };
+                render(&mut tab, vec![]);
+                let output = render(&mut tab, vec![]);
+                let find = |name: &str| {
+                    output
+                        .shapes
+                        .iter()
+                        .find_map(|shape| match &shape.shape {
+                            egui::Shape::Text(text) if text.galley.job.text.starts_with(name) => {
+                                Some(
+                                    egui::Rect::from_min_size(text.pos, text.galley.size())
+                                        .center(),
+                                )
+                            }
+                            _ => None,
+                        })
+                        .unwrap()
+                };
+                let local = find("local-fixture");
+                let remote = find("server-fixture");
+                let (source, mut target) = if download {
+                    (remote, local)
+                } else {
+                    (local, remote)
+                };
+                if blank {
+                    target.y += 180.0;
+                }
+                let pointer = |pos, pressed| egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: egui::Modifiers::NONE,
+                };
+                render(
+                    &mut tab,
+                    vec![egui::Event::PointerMoved(source), pointer(source, true)],
+                );
+                render(
+                    &mut tab,
+                    vec![egui::Event::PointerMoved(source + egui::vec2(0.0, 12.0))],
+                );
+                assert!(
+                    egui::DragAndDrop::has_payload_of_type::<FileDrag>(&ctx),
+                    "file row failed to start dragging"
+                );
+                // A sibling native viewport can end a pass and clear the
+                // framework-global payload before this window handles release.
+                egui::DragAndDrop::clear_payload(&ctx);
+                let hovering = render(&mut tab, vec![egui::Event::PointerMoved(target)]);
+                assert_eq!(hovering.platform_output.cursor_icon, egui::CursorIcon::Copy);
+                render(&mut tab, vec![pointer(target, false)]);
+                let action = tab
+                    .action
+                    .as_ref()
+                    .expect("dropping a file did not open transfer confirmation");
+                assert_eq!(
+                    action.operation,
+                    if download { "download" } else { "upload" }
+                );
+                assert!(!egui::DragAndDrop::has_any_payload(&ctx));
+                assert!(tab.file_drag.is_none());
+            }
+        });
+    }
+
+    #[test]
+    fn refreshing_each_folder_only_reloads_that_pane_without_terminal_navigation() {
+        let runtime = Connections::new().unwrap();
+        let directory = tempfile::tempdir().unwrap();
+        crate::storage::with_test_root(directory.path(), || {
+            let mut tab = SessionTab::diagnostic_files(directory.path());
+            let added = directory.path().join("newly-arrived.txt");
+            std::fs::write(&added, b"refresh fixture").unwrap();
+            tab.local_path = directory
+                .path()
+                .join("unsubmitted-address")
+                .display()
+                .to_string();
+            tab.remote_path = "/unsubmitted-address".into();
+            tab.sync_directories = true;
+            tab.navigation_generation = Some(12);
+            let generation = tab.list_generation;
+            let ctx = egui::Context::default();
+            tab.refresh_folder(true, &runtime, &ctx);
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+            while tab.local_pending.is_some() {
+                tab.poll(&runtime, &ctx);
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "local refresh did not finish"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            assert!(tab.local_entries.iter().any(|entry| entry.path == added));
+            assert_eq!(tab.local_path, directory.path().display().to_string());
+            assert_eq!(tab.remote_path, "/unsubmitted-address");
+            assert_eq!(tab.list_generation, generation);
+            assert_eq!(tab.navigation_generation, Some(12));
+            tab.local_path = "unsubmitted-local-address".into();
+            tab.refresh_folder(false, &runtime, &ctx);
+            assert_eq!(tab.local_path, "unsubmitted-local-address");
+            assert!(tab.local_pending.is_none());
+            assert_eq!(tab.remote_path, "/fixture");
+            assert_eq!(tab.list_generation, generation + 1);
+            assert!(tab
+                .pending_terminal_navigation(tab.list_generation)
+                .unwrap()
+                .is_none());
+        });
+    }
+
+    #[test]
+    fn connection_toolbar_stays_at_top_and_preserves_desktop_and_ssh_surfaces() {
+        let runtime = Connections::new().unwrap();
+        let directory = tempfile::tempdir().unwrap();
+        crate::storage::with_test_root(directory.path(), || {
+            for kind in [
+                ConnectionType::RemoteDesktop,
+                ConnectionType::SshTerminal,
+                ConnectionType::SshX11,
+            ] {
+                for font in [13.0, 22.0, 30.0] {
+                    let ctx = egui::Context::default();
+                    ctx.style_mut(|style| {
+                        for key in [egui::TextStyle::Body, egui::TextStyle::Button] {
+                            style
+                                .text_styles
+                                .insert(key, egui::FontId::proportional(font));
+                        }
+                    });
+                    let mut profile = crate::profile_store::new_profile();
+                    profile.connection_type = kind;
+                    let mut tab = SessionTab::new(profile);
+                    tab.connected = true;
+                    tab.credentials_open = false;
+                    tab.status = "Connected".into();
+                    if kind == ConnectionType::RemoteDesktop {
+                        tab.remote = Some(crate::remote_view::RemoteView::new(
+                            crate::remote::RemoteClient::test_stub(ctx.clone()),
+                            uuid::Uuid::new_v4(),
+                        ));
+                    }
+                    for size in [
+                        egui::vec2(1400.0, 900.0),
+                        egui::vec2(560.0, 450.0),
+                        egui::vec2(360.0, 320.0),
+                    ] {
+                        for _ in 0..3 {
+                            let mut panel = egui::Rect::NOTHING;
+                            let mut toolbar_height = 0.0;
+                            let output = ctx.run(
+                                egui::RawInput {
+                                    screen_rect: Some(egui::Rect::from_min_size(
+                                        egui::Pos2::ZERO,
+                                        size,
+                                    )),
+                                    focused: false,
+                                    ..Default::default()
+                                },
+                                |ctx| {
+                                    egui::CentralPanel::default().show(ctx, |ui| {
+                                        panel = ui.available_rect_before_wrap();
+                                        toolbar_height = 28.0_f32
+                                            .max(ui.spacing().interact_size.y)
+                                            .max(ui.text_style_height(&egui::TextStyle::Body));
+                                        tab.ui(ui, &runtime);
+                                    });
+                                },
+                            );
+                            let mut icons = output
+                                .shapes
+                                .iter()
+                                .filter_map(|shape| {
+                                    if let egui::Shape::Rect(rect) = &shape.shape {
+                                        if (rect.rect.width() - 28.0).abs() < 0.1
+                                            && (rect.rect.height() - 28.0).abs() < 0.1
+                                            && shape.clip_rect.contains_rect(rect.rect)
+                                        {
+                                            return Some(rect.rect);
+                                        }
+                                    }
+                                    None
+                                })
+                                .collect::<Vec<_>>();
+                            assert!(
+                                icons.len() >= 3,
+                                "missing session controls at {size:?}, font {font}"
+                            );
+                            icons.sort_by(|a, b| a.left().total_cmp(&b.left()));
+                            for rect in &icons {
+                                assert!(rect.top()>=panel.top()-1.0 && rect.bottom()<=panel.top()+toolbar_height+1.0,
+                                    "toolbar consumed the session height at {size:?}, font {font}: {rect:?}, panel {panel:?}");
+                            }
+                            assert!(
+                                (icons[0].left() - panel.left()).abs() <= 1.0,
+                                "ordinary controls moved away from the left edge"
+                            );
+                            assert!(
+                                (icons.last().unwrap().right() - panel.right()).abs() <= 1.0,
+                                "session action moved away from the right edge"
+                            );
+                            let surface = output
+                                .shapes
+                                .iter()
+                                .filter_map(|shape| match &shape.shape {
+                                    egui::Shape::Rect(rect)
+                                        if rect.rect.width() > panel.width() * 0.8
+                                            && rect.rect.height() > panel.height() * 0.5 =>
+                                    {
+                                        Some(rect.rect)
+                                    }
+                                    _ => None,
+                                })
+                                .max_by(|a, b| a.area().total_cmp(&b.area()))
+                                .expect("terminal/remote desktop surface was pushed out of view");
+                            assert!(surface.top()<=panel.top()+toolbar_height+12.0 && surface.bottom()>=panel.bottom()-1.0,
+                                "session surface no longer fills the space below the toolbar: {surface:?}");
+                            if kind != ConnectionType::RemoteDesktop {
+                                assert!(
+                                    tab.terminal.size().1 >= 8,
+                                    "toolbar collapsed the SSH terminal rows"
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        });
+    }
+
     #[test]
     fn x11_failure_keeps_terminal_files_and_connection_state_available() {
         let mut profile = crate::profile_store::new_profile();

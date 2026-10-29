@@ -3,7 +3,7 @@
 use crate::remote::Image;
 use eframe::egui;
 use parking_lot::Mutex;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use tokio::sync::watch;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -18,10 +18,81 @@ pub(crate) struct PreparedFrame {
     pub sequence: u64,
     pub width: u32,
     pub height: u32,
-    pub image: Arc<egui::ColorImage>,
+    pub image: Arc<ColorSnapshot>,
+    #[cfg(test)]
     base_sequence: Option<u64>,
+    #[cfg(test)]
     damage: Option<Damage>,
     source: Image,
+}
+/// Only changed colour tiles are allocated. A complete image is assembled lazily
+/// for texture recreation, screenshots, or a consumer that skipped a base.
+pub(crate) struct ColorSnapshot {
+    width: usize,
+    height: usize,
+    tiles: Vec<Arc<egui::ColorImage>>,
+    full: OnceLock<Arc<egui::ColorImage>>,
+}
+const EDGE: usize = ad_stream_protocol::lossless::TILE_EDGE as usize;
+impl ColorSnapshot {
+    fn region(&self, index: usize) -> Damage {
+        let columns = self.width.div_ceil(EDGE);
+        let x = index % columns * EDGE;
+        let y = index / columns * EDGE;
+        Damage {
+            x,
+            y,
+            width: EDGE.min(self.width - x),
+            height: EDGE.min(self.height - y),
+        }
+    }
+    fn extract(&self, r: Damage) -> egui::ColorImage {
+        let mut pixels = vec![egui::Color32::BLACK; r.width * r.height];
+        for (index, tile) in self.tiles.iter().enumerate() {
+            let t = self.region(index);
+            let (left, top, right, bottom) = (
+                r.x.max(t.x),
+                r.y.max(t.y),
+                (r.x + r.width).min(t.x + t.width),
+                (r.y + r.height).min(t.y + t.height),
+            );
+            if right <= left || bottom <= top {
+                continue;
+            }
+            for y in top..bottom {
+                let source = (y - t.y) * t.width + left - t.x;
+                let target = (y - r.y) * r.width + left - r.x;
+                pixels[target..target + right - left]
+                    .copy_from_slice(&tile.pixels[source..source + right - left]);
+            }
+        }
+        egui::ColorImage::new([r.width, r.height], pixels)
+    }
+    fn full(&self) -> Arc<egui::ColorImage> {
+        self.full
+            .get_or_init(|| {
+                Arc::new(self.extract(Damage {
+                    x: 0,
+                    y: 0,
+                    width: self.width,
+                    height: self.height,
+                }))
+            })
+            .clone()
+    }
+}
+impl std::ops::Deref for ColorSnapshot {
+    type Target = egui::ColorImage;
+    fn deref(&self) -> &Self::Target {
+        self.full.get_or_init(|| {
+            Arc::new(self.extract(Damage {
+                x: 0,
+                y: 0,
+                width: self.width,
+                height: self.height,
+            }))
+        })
+    }
 }
 impl PreparedFrame {
     #[cfg(test)]
@@ -31,7 +102,11 @@ impl PreparedFrame {
                 width,
                 height,
                 sequence,
-                pixels: Arc::new([7, 21, 240, 255].repeat(width as usize * height as usize)),
+                pixels: Arc::new(
+                    [7, 21, 240, 255]
+                        .repeat(width as usize * height as usize)
+                        .into(),
+                ),
                 damage: None,
             },
             None,
@@ -41,6 +116,7 @@ impl PreparedFrame {
     }
     /// A skipped preparation invalidates the incremental base, never the image.
     /// Use the complete image after skipped frames, resize, or texture recreation.
+    #[cfg(test)]
     pub(crate) fn upload_after(
         &self,
         sequence: u64,
@@ -48,21 +124,65 @@ impl PreparedFrame {
     ) -> (Option<[usize; 2]>, Arc<egui::ColorImage>) {
         if has_texture && self.base_sequence == Some(sequence) {
             if let Some(damage) = self.damage {
-                let mut pixels = Vec::with_capacity(damage.width * damage.height);
-                for row in damage.y..damage.y + damage.height {
-                    let start = row * self.width as usize + damage.x;
-                    pixels.extend_from_slice(&self.image.pixels[start..start + damage.width]);
-                }
                 return (
                     Some([damage.x, damage.y]),
-                    Arc::new(egui::ColorImage::new([damage.width, damage.height], pixels)),
+                    Arc::new(self.image.extract(damage)),
                 );
             }
         }
-        (None, self.image.clone())
+        (None, self.image.full())
+    }
+    pub(crate) fn uploads_after(
+        &self,
+        previous: Option<&Self>,
+        has_texture: bool,
+    ) -> Vec<(Option<[usize; 2]>, Arc<egui::ColorImage>)> {
+        if let Some(previous) =
+            previous.filter(|p| has_texture && (p.width, p.height) == (self.width, self.height))
+        {
+            // Compare immutable tile identities, not sequence adjacency. The GUI
+            // can skip preparations without either losing damage or uploading
+            // a complete multi-monitor texture.
+            return self
+                .image
+                .tiles
+                .iter()
+                .enumerate()
+                .filter_map(|(index, tile)| {
+                    if Arc::ptr_eq(tile, &previous.image.tiles[index]) {
+                        None
+                    } else {
+                        let r = self.image.region(index);
+                        Some((Some([r.x, r.y]), tile.clone()))
+                    }
+                })
+                .collect();
+        }
+        vec![(None, self.image.full())]
     }
 }
 fn changed_region(before: &Image, after: &Image) -> Option<Damage> {
+    if let (Some(before), Some(after)) = (before.pixels.tiles(), after.pixels.tiles()) {
+        if (before.width, before.height) == (after.width, after.height) {
+            let (mut left, mut top, mut right, mut bottom) = (after.width, after.height, 0, 0);
+            for (a, b) in before.tiles.iter().zip(&after.tiles) {
+                if Arc::ptr_eq(a, b) {
+                    continue;
+                }
+                let r = b.region;
+                left = left.min(r.x);
+                top = top.min(r.y);
+                right = right.max(r.x + r.width);
+                bottom = bottom.max(r.y + r.height);
+            }
+            return (right > left).then_some(Damage {
+                x: left as usize,
+                y: top as usize,
+                width: right.saturating_sub(left) as usize,
+                height: bottom.saturating_sub(top) as usize,
+            });
+        }
+    }
     // Validated transaction damage avoids rescanning the entire multi-monitor
     // surface. Skipped preparations still compare the complete immutable images.
     if let Some(damage) = after
@@ -154,32 +274,60 @@ fn convert(
     } else {
         None
     };
-    let image = if let (Some(damage), Some(previous)) = (damage, previous) {
-        // One fast memory copy, then convert only the changed pixels. This avoids
-        // per-pixel colour work and full GPU uploads for small terminal/cursor updates.
-        let mut image = (*previous.image).clone();
-        for row in damage.y..damage.y + damage.height {
-            for col in damage.x..damage.x + damage.width {
-                let index = row * frame.width as usize + col;
-                let p = &frame.pixels[index * 4..index * 4 + 4];
-                image.pixels[index] = egui::Color32::from_rgb(p[2], p[1], p[0]);
+    let (width, height) = (frame.width as usize, frame.height as usize);
+    let mut tiles = Vec::new();
+    for y in (0..height).step_by(EDGE) {
+        for x in (0..width).step_by(EDGE) {
+            let (w, h) = (EDGE.min(width - x), EDGE.min(height - y));
+            let index = tiles.len();
+            let unchanged = previous.is_some_and(|previous| {
+                if let (Some(a), Some(b)) = (previous.source.pixels.tiles(), frame.pixels.tiles()) {
+                    Arc::ptr_eq(&a.tiles[index], &b.tiles[index])
+                } else {
+                    damage.is_some_and(|d| {
+                        x + w <= d.x || d.x + d.width <= x || y + h <= d.y || d.y + d.height <= y
+                    })
+                }
+            });
+            if unchanged {
+                tiles.push(previous.unwrap().image.tiles[index].clone());
+                continue;
             }
+            let mut pixels = Vec::with_capacity(w * h);
+            if let Some(source) = frame.pixels.tiles() {
+                pixels.extend(
+                    source.tiles[index]
+                        .bytes
+                        .chunks_exact(4)
+                        .map(|p| egui::Color32::from_rgb(p[2], p[1], p[0])),
+                );
+            } else {
+                for row in y..y + h {
+                    let start = (row * width + x) * 4;
+                    pixels.extend(
+                        frame.pixels[start..start + w * 4]
+                            .chunks_exact(4)
+                            .map(|p| egui::Color32::from_rgb(p[2], p[1], p[0])),
+                    );
+                }
+            }
+            tiles.push(Arc::new(egui::ColorImage::new([w, h], pixels)));
         }
-        image
-    } else {
-        let pixels = frame
-            .pixels
-            .chunks_exact(4)
-            .map(|p| egui::Color32::from_rgb(p[2], p[1], p[0]))
-            .collect();
-        egui::ColorImage::new([frame.width as usize, frame.height as usize], pixels)
+    }
+    let image = ColorSnapshot {
+        width,
+        height,
+        tiles,
+        full: OnceLock::new(),
     };
     Ok(Some(PreparedFrame {
         sequence: frame.sequence,
         width: frame.width,
         height: frame.height,
         image: Arc::new(image),
+        #[cfg(test)]
         base_sequence: previous.map(|p| p.sequence),
+        #[cfg(test)]
         damage,
         source: frame,
     }))
@@ -238,7 +386,7 @@ mod tests {
             width: 1,
             height: 1,
             sequence,
-            pixels: Arc::new(bytes.to_vec()),
+            pixels: Arc::new(bytes.to_vec().into()),
         }
     }
     #[test]
@@ -248,7 +396,7 @@ mod tests {
             width: 8,
             height: 4,
             sequence: 1,
-            pixels: Arc::new(vec![0; 8 * 4 * 4]),
+            pixels: Arc::new(vec![0; 8 * 4 * 4].into()),
         };
         let first = convert(initial.clone(), None).unwrap().unwrap();
         let mut second_source = initial.clone();
@@ -282,7 +430,7 @@ mod tests {
                 width: 1,
                 height: 1,
                 sequence: 4,
-                pixels: Arc::new(vec![4, 5, 6, 255]),
+                pixels: Arc::new(vec![4, 5, 6, 255].into()),
             },
             Some(&third),
         )
@@ -297,7 +445,7 @@ mod tests {
             width: 1024,
             height: 512,
             sequence: 1,
-            pixels: Arc::new([7, 21, 240, 255].repeat(1024 * 512)),
+            pixels: Arc::new([7, 21, 240, 255].repeat(1024 * 512).into()),
             damage: None,
         };
         let first = convert(initial.clone(), None).unwrap().unwrap();
@@ -353,7 +501,7 @@ mod tests {
             output.lock().as_ref().unwrap().image.pixels[0].to_array(),
             [240, 21, 7, 255]
         );
-        assert_eq!(&*original.pixels, &[7, 21, 240, 255]);
+        assert_eq!(&original.pixels[..], &[7, 21, 240, 255]);
         for sequence in 2..=100 {
             tx.send_replace(Some(frame(sequence, &[sequence as u8, 5, 9, 255])));
         }
@@ -366,5 +514,95 @@ mod tests {
         .unwrap();
         drop(tx);
         task.await.unwrap().unwrap();
+    }
+
+    #[test]
+    fn tiled_preparation_and_skipped_uploads_keep_exact_colours_without_full_images() {
+        use ad_stream_protocol::{pixels::PixelBuffer, Rectangle};
+        let (width, height) = (1024, 512);
+        let mut raw = [7, 21, 240, 255].repeat(width * height);
+        let pixels =
+            PixelBuffer::capture(width as u32, height as u32, width * 4, &raw, &[], None).unwrap();
+        let first = convert(
+            Image {
+                width: width as u32,
+                height: height as u32,
+                sequence: 1,
+                pixels: Arc::new(pixels),
+                damage: None,
+            },
+            None,
+        )
+        .unwrap()
+        .unwrap();
+        let mut next = first.source.clone();
+        next.sequence = 2;
+        raw[..4].copy_from_slice(&[11, 22, 33, 255]);
+        next.pixels = Arc::new(
+            PixelBuffer::capture(
+                width as u32,
+                height as u32,
+                width * 4,
+                &raw,
+                &[Rectangle {
+                    x: 0,
+                    y: 0,
+                    width: 1,
+                    height: 1,
+                }],
+                Some(&first.source.pixels),
+            )
+            .unwrap(),
+        );
+        let second = convert(next, Some(&first)).unwrap().unwrap();
+        let mut next = second.source.clone();
+        next.sequence = 3;
+        let offset = (300 * width + 900) * 4;
+        raw[offset..offset + 4].copy_from_slice(&[44, 55, 66, 255]);
+        next.pixels = Arc::new(
+            PixelBuffer::capture(
+                width as u32,
+                height as u32,
+                width * 4,
+                &raw,
+                &[Rectangle {
+                    x: 900,
+                    y: 300,
+                    width: 1,
+                    height: 1,
+                }],
+                Some(&second.source.pixels),
+            )
+            .unwrap(),
+        );
+        // Both conversion and UI can skip a different frame independently.
+        let third = convert(next.clone(), Some(&second)).unwrap().unwrap();
+        let skipped = convert(next, Some(&first)).unwrap().unwrap();
+        let patches = third.uploads_after(Some(&first), true);
+        assert_eq!(patches.len(), 2);
+        assert_eq!(patches[0].0, Some([0, 0]));
+        assert_eq!(patches[1].0, Some([768, 256]));
+        assert_eq!(patches[0].1.pixels[0].to_array(), [33, 22, 11, 255]);
+        assert_eq!(
+            patches[1].1.pixels[(300 - 256) * 256 + 900 - 768].to_array(),
+            [66, 55, 44, 255]
+        );
+        for image in [&first, &second, &third, &skipped] {
+            assert!(image.image.full.get().is_none());
+        }
+        for index in 1..7 {
+            assert!(Arc::ptr_eq(
+                &first.image.tiles[index],
+                &third.image.tiles[index]
+            ));
+        }
+        assert!(third.uploads_after(Some(&third), true).is_empty());
+        let full = skipped.uploads_after(Some(&first), false);
+        assert_eq!(full[0].0, None);
+        assert_eq!(full[0].1.pixels[0].to_array(), [33, 22, 11, 255]);
+        assert_eq!(
+            full[0].1.pixels[300 * width + 900].to_array(),
+            [66, 55, 44, 255]
+        );
     }
 }

@@ -81,6 +81,8 @@ pub fn import(path: &std::path::Path) -> Result<Vec<SavedSession>, String> {
     let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
     let mut profiles = decode_sessions(&bytes)?;
     for p in &mut profiles {
+        // Imported automation needs a deliberate opt-in on this installation.
+        p.startup_enabled = false;
         // Credentials belong to their original app and are never silently reused.
         p.id = uuid::Uuid::new_v4().to_string();
         p.remember_password = false;

@@ -23,7 +23,7 @@ pub struct CapturedFrame {
     pub width: u32,
     pub height: u32,
     pub stride: usize,
-    pub pixels_bgra: Vec<u8>,
+    pub pixels_bgra: ad_stream_protocol::pixels::PixelBuffer,
     pub damage: Vec<Rectangle>,
 }
 

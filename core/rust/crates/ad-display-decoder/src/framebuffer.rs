@@ -1,13 +1,14 @@
 //! CPU presentation surface for native texture hosts that own their GPU device.
 
 use crate::{CursorState, PresentationError, PresentationUpdate};
+use ad_stream_protocol::pixels::PixelBuffer;
 use std::sync::Arc;
 
 /// A bounded BGRA surface. Flutter's native texture host uploads snapshots.
 pub struct Framebuffer {
     width: u32,
     height: u32,
-    pixels: Arc<Vec<u8>>,
+    pixels: Arc<PixelBuffer>,
     cursor: CursorState,
 }
 
@@ -21,7 +22,7 @@ impl Framebuffer {
         Ok(Self {
             width,
             height,
-            pixels: Arc::new(pixels),
+            pixels: Arc::new(pixels.into()),
             cursor: CursorState::default(),
         })
     }
@@ -39,26 +40,30 @@ impl Framebuffer {
                 || r.height == 0
                 || r.x.checked_add(r.width).is_none_or(|n| n > update.width)
                 || r.y.checked_add(r.height).is_none_or(|n| n > update.height)
+                || !r.x.is_multiple_of(ad_stream_protocol::lossless::TILE_EDGE)
+                || !r.y.is_multiple_of(ad_stream_protocol::lossless::TILE_EDGE)
+                || r.width != ad_stream_protocol::lossless::TILE_EDGE.min(update.width - r.x)
+                || r.height != ad_stream_protocol::lossless::TILE_EDGE.min(update.height - r.y)
                 || patch.pixels_bgra.len() != r.width as usize * r.height as usize * 4
             {
                 return Err(PresentationError::DecodedFrame);
             }
         }
         if update.base_frame_id == 0 {
-            *self = Self::new(update.width, update.height)?;
+            self.width = update.width;
+            self.height = update.height;
+            self.pixels = Arc::new(
+                PixelBuffer::blank(update.width, update.height)
+                    .map_err(|_| PresentationError::Dimensions)?,
+            );
         } else if (self.width, self.height) != (update.width, update.height) {
             return Err(PresentationError::Dimensions);
         }
         for patch in update.patches {
             let r = patch.region;
-            self.patch(
-                r.x,
-                r.y,
-                r.width,
-                r.height,
-                r.width as usize * 4,
-                &patch.pixels_bgra,
-            )?;
+            Arc::make_mut(&mut self.pixels)
+                .replace_tile(update.width, update.height, r, patch.pixels_bgra)
+                .map_err(|_| PresentationError::DecodedFrame)?;
         }
         Ok(())
     }
@@ -70,7 +75,7 @@ impl Framebuffer {
             if frame.stride == frame.width as usize * 4 && frame.pixels_bgra.len() == len {
                 self.width = frame.width;
                 self.height = frame.height;
-                self.pixels = Arc::new(frame.pixels_bgra);
+                self.pixels = Arc::new(frame.pixels_bgra.into());
                 return Ok(true);
             }
             return self.apply(&PresentationUpdate::VideoLayer(frame));
@@ -189,7 +194,13 @@ impl Framebuffer {
                 }
             }
         }
-        (self.width, self.height, pixels)
+        (self.width, self.height, pixels.flat())
+    }
+
+    /// The display client renders its cursor separately. Sharing tiles avoids
+    /// copying the entire desktop on each lossless commit.
+    pub fn snapshot_shared(&self) -> (u32, u32, Arc<PixelBuffer>) {
+        (self.width, self.height, self.pixels.clone())
     }
 }
 
@@ -213,6 +224,64 @@ mod tests {
     use super::*;
     use crate::DecodedFrame;
     use ad_stream_protocol::Rectangle;
+
+    #[test]
+    fn lossless_snapshots_share_unchanged_tiles_and_validate_before_mutation() {
+        use crate::{LosslessPatch, LosslessUpdate};
+        let patch = |x, colour: [u8; 4]| LosslessPatch {
+            region: Rectangle {
+                x,
+                y: 0,
+                width: 256,
+                height: 64,
+            },
+            pixels_bgra: colour.repeat(256 * 64),
+        };
+        let mut buffer = Framebuffer::new(512, 64).unwrap();
+        buffer
+            .apply_lossless(LosslessUpdate {
+                frame_id: 1,
+                base_frame_id: 0,
+                width: 512,
+                height: 64,
+                patches: vec![patch(0, [1, 2, 3, 255]), patch(256, [4, 5, 6, 255])],
+            })
+            .unwrap();
+        let first = buffer.snapshot_shared().2;
+        buffer
+            .apply_lossless(LosslessUpdate {
+                frame_id: 2,
+                base_frame_id: 1,
+                width: 512,
+                height: 64,
+                patches: vec![patch(256, [11, 22, 33, 255])],
+            })
+            .unwrap();
+        let second = buffer.snapshot_shared().2;
+        assert!(Arc::ptr_eq(
+            &first.tiles().unwrap().tiles[0],
+            &second.tiles().unwrap().tiles[0]
+        ));
+        assert!(!Arc::ptr_eq(
+            &first.tiles().unwrap().tiles[1],
+            &second.tiles().unwrap().tiles[1]
+        ));
+        assert_eq!(&first[256 * 4..256 * 4 + 4], &[4, 5, 6, 255]);
+        assert_eq!(&second[256 * 4..256 * 4 + 4], &[11, 22, 33, 255]);
+        let mut invalid = patch(256, [99, 88, 77, 255]);
+        invalid.region.x = 257;
+        assert!(buffer
+            .apply_lossless(LosslessUpdate {
+                frame_id: 3,
+                base_frame_id: 2,
+                width: 512,
+                height: 64,
+                patches: vec![patch(0, [55, 66, 77, 255]), invalid]
+            })
+            .is_err());
+        assert!(Arc::ptr_eq(&second, &buffer.snapshot_shared().2));
+        assert_eq!(&buffer.snapshot().2[..4], &[1, 2, 3, 255]);
+    }
 
     #[test]
     fn padded_rows_and_patches_preserve_other_pixels() {

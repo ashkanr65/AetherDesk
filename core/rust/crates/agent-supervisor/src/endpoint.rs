@@ -79,6 +79,21 @@ pub async fn publish_ready(directory: &Path, endpoint: &AgentServerEndpoint) -> 
     publish(&directory.join("endpoint"), &endpoint_text(endpoint)).await
 }
 
+/// Called by the independent watcher after it has reaped the broker. A stale
+/// ready record must never claim a dead desktop can still be resumed.
+pub async fn record_process_exit(directory: &Path, record: &str) -> Result<(), Error> {
+    publish(&directory.join("agent-exit"), record).await?;
+    let endpoint = match tokio::fs::read_to_string(directory.join("endpoint")).await {
+        Ok(text) => parse(&text),
+        Err(error) if error.kind() == ErrorKind::NotFound => None,
+        Err(error) => return Err(error),
+    };
+    if let Some(endpoint) = endpoint {
+        publish_health(directory, &endpoint, true).await?;
+    }
+    Ok(())
+}
+
 // A legacy broker has no health record. Only explicit terminal failure from
 // the supervisor/compositor after its latest startup is grounds for recovery.
 // Missing evidence, arbitrary warnings, EOF and timeouts are not proof.
@@ -305,6 +320,27 @@ mod tests {
         assert!(!legacy_failed(
             " INFO application: the persistent agent has stopped"
         ));
+    }
+    #[tokio::test]
+    async fn reaped_broker_exit_is_recorded_and_invalidates_stale_ready_health() {
+        let root = tempfile::tempdir().unwrap();
+        let endpoint = AgentServerEndpoint {
+            port: 12345,
+            token: [7; 32],
+        };
+        publish_ready(root.path(), &endpoint).await.unwrap();
+        record_process_exit(root.path(), "AETHERDESK_AGENT_EXIT_V1 signal=Some(15)\n")
+            .await
+            .unwrap();
+        assert!(tokio::fs::read_to_string(root.path().join("agent-exit"))
+            .await
+            .unwrap()
+            .contains("signal=Some(15)"));
+        assert!(tokio::fs::read_to_string(root.path().join("health"))
+            .await
+            .unwrap()
+            .trim()
+            .ends_with("failed"));
     }
 
     #[tokio::test]

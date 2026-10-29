@@ -130,7 +130,9 @@ pub(crate) fn current_modifiers(_fallback: eframe::egui::Modifiers) -> eframe::e
         eframe::egui::Modifiers {
             shift: down(VK_LSHIFT) || down(VK_RSHIFT),
             ctrl: down(VK_RCONTROL) || (down(VK_LCONTROL) && !altgr),
-            alt: down(VK_LMENU) || altgr,
+            // Right Alt is forwarded as its own physical key on the fallback
+            // route. Treating it as left Alt loses Spanish AltGr characters.
+            alt: down(VK_LMENU),
             mac_cmd: down(VK_LWIN) || down(VK_RWIN),
             command: down(VK_RCONTROL) || (down(VK_LCONTROL) && !altgr),
         }
@@ -139,6 +141,19 @@ pub(crate) fn current_modifiers(_fallback: eframe::egui::Modifiers) -> eframe::e
     {
         _fallback
     }
+}
+pub(crate) fn without_altgr_shortcut(
+    mut modifiers: eframe::egui::Modifiers,
+    altgr: bool,
+) -> eframe::egui::Modifiers {
+    if altgr && modifiers.alt {
+        // winit groups AltGr with Ctrl+Alt; its physical right-Alt edge has
+        // already been preserved, so do not synthesize a left-side shortcut.
+        modifiers.alt = false;
+        modifiers.ctrl = false;
+        modifiers.command = false;
+    }
+    modifiers
 }
 /// Never wait in a low-level hook, and drop route ownership before calling any
 /// downstream hook (which may reenter the GUI or pump another input event).

@@ -1,4 +1,36 @@
-# AetherDesk 0.1.3 - build 5
+# AetherDesk 0.1.3 - build 6
+
+AetherDesk 0.1.3 build 6 improves remote-desktop rendering, keyboard and wheel handling, SFTP transfers and connection setup.
+
+## Changes in build 6
+
+- **Remote-desktop performance:** share unchanged image tiles between capture, decoding and display, and update only changed texture regions. Changes are compared with the last delivered or displayed image so skipped frames do not lose earlier updates. Lossless colour data is preserved; these changes do not introduce lossy image compression or establish a particular speed improvement on every system.
+- **Host responsiveness:** wake the compositor for incoming commands, remove a redundant lossless frame-rate delay, and reduce repeated process discovery for terminal flow control while continuing to revalidate known terminals.
+- **Keyboard and wheel handling:** avoid duplicate key presses caused by overlapping repeat handling, preserve the order of physical AltGr and ISO keyboard events, and improve routing for discrete and high-resolution wheel input in X11 applications inside the remote desktop. The client and host keyboard layouts must still be configured appropriately.
+- **Connection startup commands:** optionally run saved Bash commands on the selected connection, with a timeout and a configurable failure policy. Successful exports and the working directory carry into the new session. Retained remote desktops run startup commands only when first created. Startup commands are saved in the connection profile; do not put passwords or API keys in them.
+- **SFTP transfers:** restore drag-and-drop between local and server panes, show persistent byte/file progress and queue errors, and retain verified partial data for resume. Transfer action buttons have consistent sizes. Queue progress remains compatible with older saved transfer records.
+- **Folder downloads:** copy ordinary files and folders while skipping and reporting symbolic links, including links to targets outside the selected folder. Link targets are not copied. Unsupported filenames and special files are still reported rather than guessed or silently rewritten.
+- **File navigation:** each pane has its own refresh control, with a circular-arrow icon. Refreshing one pane does not navigate or refresh the other pane. Go, parent-folder and new-folder controls use icons.
+- **Connection controls:** keep the toolbar compact above the remote desktop or SSH terminal, with disconnect and end-session controls on the right. Remove the duplicate remote display-settings icon and keep monitor information under the resolution control.
+- **Connection form:** align WireGuard path, Browse and Remove controls on one row, with its enable option below. Align the startup timeout field and place the actions at the bottom right in the order Cancel, Save connection, Save and open.
+- **Interface details:** distinguish Tools from AI Assistant, use consistent Ready indicators, and retain Bookmarks as a quick-access list for favourite saved connections.
+- **Diagnostics and regression coverage:** record retained-agent exit evidence and strengthen checks for frame preservation, input routing, transfer progress, pane refresh and layout bounds. Terminal-cache tests wait for observable child processes and use a controlled clock to avoid build-machine timing races.
+
+## Validation and known limitations
+
+All seven stages of the completed Windows x64 build passed, including Windows/Linux regression checks, bundled X11 verification, portable packaging and installer compilation. The source fingerprint and package version are verified separately before publication. These build results do not establish a real installed-client upgrade/restart test or complete EDA application acceptance.
+
+Independent application windows remain experimental. Application menus, mixed-DPI movement, clipboard integration and application-specific input still require wider live validation. The reported intermittent idle hangs and server-stream disconnections are not claimed to be completely resolved.
+
+Existing retained remote desktops keep their running Linux agent. To use the new host-side changes, save remote work, end the old remote session and start a new one; disconnecting alone preserves the existing session and agent.
+
+## Downloads and updates
+
+Use the Windows x64 installer or extract the complete portable ZIP. Existing users can open **Updates** and choose **Check now** after this release is published. Update packages are checked against signed metadata. Save work before installing; updating the Windows client does not itself close remote applications.
+
+## Earlier release notes (historical)
+
+## AetherDesk 0.1.3 - build 5
 
 AetherDesk 0.1.3 build 5 adds installation of downloaded updates after normal close, stronger SSH+X11 failure isolation, and recovery of Windows crash evidence at the next startup.
 
