@@ -41,6 +41,7 @@ ENV PATH=/root/.cargo/bin:$PATH
 WORKDIR /src
 COPY core/rust /src/core/rust
 COPY tools/x11-icons.py /src/tools/x11-icons.py
+COPY tools/rust-build-kit/test_host_cleanup.py /src/tools/rust-build-kit/test_host_cleanup.py
 # Keep compilation in its own cached layer. UI-only regression/catalog/tooling
 # changes below must still rerun every test, but need not rebuild the Rust graph.
 RUN cargo build --locked --release --manifest-path core/rust/Cargo.toml \

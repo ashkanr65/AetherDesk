@@ -208,6 +208,7 @@ fn stage_apply_mode(stage: &Path, installer: bool, restart: bool) -> Result<(), 
     let _ = std::fs::remove_file(stage.join("deferred.txt"));
     hidden(
         Command::new(&helper)
+            .env_remove(HEALTH_GRACE_ENV)
             .arg("--apply-update")
             .arg(stage.join("plan.json"))
             .current_dir(stage),
@@ -697,6 +698,7 @@ fn apply(plan_path: &Path) -> Result<(), String> {
     drop(guard);
     let launched = hidden(
         Command::new(plan.target.join("AetherDesk.exe"))
+            .env(HEALTH_GRACE_ENV, "1")
             .arg("--update-health")
             .arg(&stage)
             .current_dir(&plan.target),
@@ -717,27 +719,65 @@ fn apply(plan_path: &Path) -> Result<(), String> {
                     .into(),
             ),
         };
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(45);
-    while !stage.join("healthy").is_file() {
-        if child.try_wait().map_err(error)?.is_some() || std::time::Instant::now() >= deadline {
-            let _ = child.kill();
-            let _ = child.wait();
-            if !plan.installer {
-                restore_previous(&plan, &stage)?;
-                return Err("The updated application did not open successfully. The previous portable version was restored.".into());
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
+    loop {
+        let exit = child
+            .try_wait()
+            .map_err(error)?
+            .map(|status| status.success());
+        match launch_state(
+            stage.join("healthy").is_file(),
+            exit,
+            std::time::Instant::now() >= deadline,
+        ) {
+            LaunchState::Healthy => break,
+            LaunchState::Closed => {
+                // Closing normally during the grace period is not a failed
+                // installation. Keep recovery and confirm on the next launch.
+                defer_health(&stage)?;
+                return Ok(());
             }
-            return Err("The installer finished, but AetherDesk did not confirm a successful start. Keep the update folder and installer log for recovery.".into());
+            LaunchState::Failed => {
+                let _ = child.kill();
+                let _ = child.wait();
+                if !plan.installer {
+                    restore_previous(&plan, &stage)?;
+                    return Err("The updated application did not open successfully. The previous portable version was restored.".into());
+                }
+                return Err("The installer finished, but AetherDesk did not confirm a successful start. Keep the update folder and installer log for recovery.".into());
+            }
+            LaunchState::Waiting => {}
         }
         std::thread::sleep(std::time::Duration::from_millis(200));
     }
     std::fs::write(stage.join("complete"), b"ok").map_err(error)?;
     Ok(())
 }
+#[derive(Debug, PartialEq)]
+enum LaunchState {
+    Waiting,
+    Healthy,
+    Closed,
+    Failed,
+}
+fn launch_state(healthy: bool, exit: Option<bool>, expired: bool) -> LaunchState {
+    if exit == Some(false) {
+        LaunchState::Failed
+    } else if healthy {
+        LaunchState::Healthy
+    } else if exit == Some(true) {
+        LaunchState::Closed
+    } else if expired {
+        LaunchState::Failed
+    } else {
+        LaunchState::Waiting
+    }
+}
 fn defer_health(stage: &Path) -> Result<(), String> {
     publish_file(&stage.join("awaiting-health"), |output| {
         std::io::Write::write_all(output, b"next launch")
     })?;
-    let instructions = format!("AetherDesk was updated while closed. Backups remain here until its next successful launch.\nIf the application cannot start, close all AetherDesk windows and run:\n\"{}\" --recover-update \"{}\"\nKeep installer.log if an installed copy requires installer repair.\n", stage.join("AetherDesk-updater.exe").display(), stage.join("plan.json").display());
+    let instructions = format!("AetherDesk is waiting to confirm its next successful launch. Backups remain here until then.\nIf the application cannot start, close all AetherDesk windows and run:\n\"{}\" --recover-update \"{}\"\nKeep installer.log if an installed copy requires installer repair.\n", stage.join("AetherDesk-updater.exe").display(), stage.join("plan.json").display());
     publish_file(&stage.join("RECOVERY.txt"), |output| {
         std::io::Write::write_all(output, instructions.as_bytes())
     })?;
@@ -758,21 +798,25 @@ fn restore_previous(plan: &Plan, stage: &Path) -> Result<(), String> {
     }
 }
 fn restart(target: &Path) -> Result<(), String> {
-    hidden(Command::new(target.join("AetherDesk.exe")).current_dir(target))
-        .spawn()
-        .map_err(|e| file_error("restart the restored application", target, e))?;
+    hidden(
+        Command::new(target.join("AetherDesk.exe"))
+            .env_remove(HEALTH_GRACE_ENV)
+            .current_dir(target),
+    )
+    .spawn()
+    .map_err(|e| file_error("restart the restored application", target, e))?;
     Ok(())
 }
+/// Set only by helpers with the longer startup deadline. Older helpers must
+/// retain first-frame acknowledgement when upgrading to this client.
+pub(crate) const HEALTH_GRACE_ENV: &str = "AETHERDESK_UPDATE_HEALTH_GRACE_V1";
 pub fn mark_healthy(stage: &Path) -> Result<(), String> {
     validate_health_target(stage)?;
-    let plan: Plan =
-        serde_json::from_slice(&std::fs::read(stage.join("plan.json")).map_err(error)?)
-            .map_err(error)?;
-    record_health(stage, plan.restart)
+    record_health(stage)
 }
-fn record_health(stage: &Path, restart: bool) -> Result<(), String> {
+fn record_health(stage: &Path) -> Result<(), String> {
     std::fs::write(stage.join("healthy"), b"rendered").map_err(error)?;
-    if !restart && stage.join("awaiting-health").is_file() {
+    if stage.join("awaiting-health").is_file() {
         publish_file(&stage.join("complete"), |output| {
             std::io::Write::write_all(output, b"rendered")
         })?;
@@ -812,7 +856,7 @@ pub fn pending_health() -> Result<Option<PathBuf>, String> {
             continue;
         };
         if let Ok(plan) = serde_json::from_slice::<Plan>(&bytes) {
-            if !plan.restart && plan.target == target {
+            if plan.target == target {
                 candidates.push((plan.created, stage));
             }
         }
@@ -936,6 +980,16 @@ pub fn recover_entry(path: &Path) {
 mod tests {
     use super::*;
     #[test]
+    fn first_launch_distinguishes_normal_close_crash_timeout_and_health() {
+        assert_eq!(launch_state(false, None, false), LaunchState::Waiting);
+        assert_eq!(launch_state(true, None, false), LaunchState::Healthy);
+        assert_eq!(launch_state(false, Some(true), false), LaunchState::Closed);
+        assert_eq!(launch_state(false, Some(false), false), LaunchState::Failed);
+        assert_eq!(launch_state(false, None, true), LaunchState::Failed);
+        assert_eq!(launch_state(true, Some(false), false), LaunchState::Failed);
+        assert_eq!(launch_state(true, Some(true), false), LaunchState::Healthy);
+    }
+    #[test]
     fn background_update_plans_stay_closed_and_keep_backups_until_next_rendered_launch() {
         let root = tempfile::tempdir().unwrap();
         std::fs::create_dir(root.path().join("previous")).unwrap();
@@ -952,18 +1006,24 @@ mod tests {
         assert!(!root.path().join("complete").exists());
         assert!(!root.path().join("healthy").exists());
         assert!(root.path().join("RECOVERY.txt").is_file());
-        record_health(root.path(), background.restart).unwrap();
+        record_health(root.path()).unwrap();
         assert!(root.path().join("complete").is_file());
         assert_eq!(
             std::fs::read(root.path().join("previous/AetherDesk.exe")).unwrap(),
             b"old executable"
         );
         let restart = tempfile::tempdir().unwrap();
-        record_health(restart.path(), true).unwrap();
+        record_health(restart.path()).unwrap();
         assert!(restart.path().join("healthy").exists());
         assert!(
             !restart.path().join("complete").exists(),
             "restart helper must retain ownership of completion"
+        );
+        defer_health(restart.path()).unwrap();
+        record_health(restart.path()).unwrap();
+        assert!(
+            restart.path().join("complete").exists(),
+            "a normal early close must allow next-launch health acknowledgement"
         );
     }
     #[test]

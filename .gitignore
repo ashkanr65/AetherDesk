@@ -4,6 +4,7 @@ Cargo.lock
 !/ui/rust/Cargo.lock
 !/core/rust/Cargo.lock
 target/
+.check-target/
 **/*.rs.bk
 
 # Dependencies

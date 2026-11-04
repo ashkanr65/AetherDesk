@@ -1,9 +1,56 @@
 use super::*;
 use std::time::Instant;
-fn pixel_image_rect(area: egui::Rect, size: egui::Vec2, pixels_per_point: f32) -> egui::Rect {
-    egui::Rect::from_min_size(area.min, size / pixels_per_point.max(0.01))
+fn display_scale(ctx: &egui::Context, zoom: f32) -> geometry::Scale {
+    geometry::Scale::new(
+        ctx.input(|i| i.viewport().native_pixels_per_point.unwrap_or(1.0)),
+        ctx.pixels_per_point(),
+        zoom,
+    )
 }
 impl Applications {
+    fn upload_frame(&mut self, ctx: &egui::Context, frame: &worker::Frame) {
+        if frame.sequence != self.sequence
+            && frame
+                .size
+                .iter()
+                .all(|side| *side <= ctx.input(|i| i.max_texture_side))
+        {
+            let same_size = self
+                .texture
+                .as_ref()
+                .is_some_and(|t| t.size() == frame.size);
+            if !same_size {
+                self.texture = Some(ctx.load_texture(
+                    format!("application-{:?}", self.id),
+                    egui::ColorImage::new(
+                        frame.size,
+                        vec![egui::Color32::BLACK; frame.size[0] * frame.size[1]],
+                    ),
+                    egui::TextureOptions::NEAREST,
+                ));
+            }
+            let old = self
+                .uploaded_image
+                .as_ref()
+                .filter(|old| same_size && old.size == frame.size);
+            let texture = self.texture.as_mut().unwrap();
+            for (&(x, y), image) in frame.tiles.iter() {
+                if old
+                    .and_then(|old| old.tiles.get(&(x, y)))
+                    .is_some_and(|previous| std::sync::Arc::ptr_eq(previous, image))
+                {
+                    continue;
+                }
+                texture.set_partial(
+                    [x as usize, y as usize],
+                    egui::ImageData::Color(image.clone()),
+                    egui::TextureOptions::NEAREST,
+                );
+            }
+            self.uploaded_image = Some(frame.clone());
+            self.sequence = frame.sequence;
+        }
+    }
     pub(super) fn popup_title(&self, id: u32) -> String {
         format!("{} - menu {id}", self.title)
     }
@@ -11,26 +58,49 @@ impl Applications {
         let Some(window) = state.selected.clone() else {
             return;
         };
-        let ppp = ctx.pixels_per_point().max(0.01);
+        let caption = native::caption(&window.title);
         let builder = crate::app_layout::builder(
             ctx,
             self.id,
-            &self.title,
-            egui::vec2(window.width as f32 / ppp, window.height as f32 / ppp + 32.0),
+            if self.native.handle().is_some() {
+                &caption
+            } else {
+                &self.title
+            },
+            display_scale(ctx, self.content_zoom)
+                .logical(egui::vec2(window.width as f32, window.height as f32))
+                + egui::vec2(0.0, 32.0),
         )
         .with_min_inner_size(egui::vec2(100.0, 80.0));
         let mut close = false;
         let mut any_focus = false;
         self.popup_textures
             .retain(|id, _| state.popups.iter().any(|p| p.info.window == *id));
+        self.popup_native
+            .retain(|id, _| state.popups.iter().any(|p| p.info.window == *id));
         ctx.show_viewport_immediate(self.id, builder, |ctx, _| {
+            self.native.bind(&self.title);
+            self.native.set_caption(&caption);
             crate::app_layout::update(ctx, "remote-application");
+            let mut zoom_changed = false;
             if ctx.input(|i| i.viewport().close_requested()) {
                 close = true;
                 return;
             }
             egui::TopBottomPanel::top("application-actions").show(ctx, |ui| {
                 ui.horizontal(|ui| {
+                    if !state.alive
+                        && crate::ui_icons::button(
+                            ui,
+                            crate::ui_icons::Icon::Refresh,
+                            "Reconnect application view",
+                            false,
+                        )
+                        .clicked()
+                    {
+                        self.retry_at = Instant::now();
+                        self.open_window(ctx, window.id);
+                    }
                     if crate::ui_icons::button(
                         ui,
                         crate::ui_icons::Icon::Tab,
@@ -49,7 +119,9 @@ impl Applications {
                     )
                     .clicked()
                     {
-                        let size = ctx.available_rect().size() * ctx.pixels_per_point();
+                        let extent = display_scale(ctx, self.content_zoom)
+                            .extent(ctx.available_rect().size());
+                        let size = egui::vec2(extent.0 as f32, extent.1 as f32);
                         if wire::dimensions(size.x.max(64.0) as u32, size.y.max(64.0) as u32)
                             .is_ok()
                         {
@@ -59,55 +131,46 @@ impl Applications {
                             });
                         }
                     }
+                    let zoom = crate::ui_icons::button(
+                        ui,
+                        crate::ui_icons::Icon::Zoom,
+                        "Application zoom",
+                        false,
+                    );
+                    egui::Popup::menu(&zoom)
+                        .layout(egui::Layout::top_down(egui::Align::Min))
+                        .show(|ui| {
+                            ui.set_width(220.0);
+                            ui.label("Application zoom");
+                            zoom_changed |= ui
+                                .add(
+                                    egui::Slider::new(&mut self.content_zoom, 0.5..=3.0)
+                                        .custom_formatter(|v, _| format!("{:.0}%", v * 100.0)),
+                                )
+                                .changed();
+                            if ui.button("Reset to 100%").clicked() {
+                                self.content_zoom = 1.0;
+                                zoom_changed = true;
+                            }
+                        });
                     ui.add(egui::Label::new(&window.title).truncate())
                         .on_hover_text(&window.title);
                 });
             });
+            let scale = display_scale(ctx, self.content_zoom);
             let mut image_rect = egui::Rect::NOTHING;
             egui::CentralPanel::default()
                 .frame(egui::Frame::NONE)
                 .show(ctx, |ui| {
-                    if let Some((sequence, image)) = &state.image {
-                        if *sequence != self.sequence
-                            && image
-                                .size
-                                .iter()
-                                .all(|side| *side <= ctx.input(|i| i.max_texture_side))
-                        {
-                            if self.texture.is_some()
-                                && self
-                                    .uploaded_image
-                                    .as_ref()
-                                    .is_some_and(|old| std::sync::Arc::ptr_eq(old, image))
-                            {
-                                // Only a menu changed: keep the main GPU resource.
-                            } else if let Some(texture) =
-                                self.texture.as_mut().filter(|t| t.size() == image.size)
-                            {
-                                texture.set(
-                                    egui::ImageData::Color(image.clone()),
-                                    egui::TextureOptions::NEAREST,
-                                );
-                            } else {
-                                self.texture = Some(ctx.load_texture(
-                                    format!("application-{:?}", self.id),
-                                    egui::ImageData::Color(image.clone()),
-                                    egui::TextureOptions::NEAREST,
-                                ));
-                            }
-                            self.uploaded_image = Some(image.clone());
-                            self.sequence = *sequence;
-                        }
+                    if let Some(frame) = &state.image {
+                        self.upload_frame(ctx, frame);
                     }
                     let (rect, response) = ui.allocate_exact_size(
                         ui.available_size().max(egui::vec2(1.0, 1.0)),
                         egui::Sense::click_and_drag(),
                     );
-                    image_rect = pixel_image_rect(
-                        rect,
-                        egui::vec2(window.width as f32, window.height as f32),
-                        ctx.pixels_per_point(),
-                    );
+                    image_rect =
+                        scale.image(rect, egui::vec2(window.width as f32, window.height as f32));
                     ui.painter().rect_filled(rect, 0.0, egui::Color32::BLACK);
                     if let Some(texture) = &self.texture {
                         ui.painter().image(
@@ -126,16 +189,18 @@ impl Applications {
                         true,
                         state.alive,
                     );
-                    let extent = (
-                        (rect.width() * ctx.pixels_per_point()).round().max(64.0) as u32,
-                        (rect.height() * ctx.pixels_per_point()).round().max(64.0) as u32,
-                    );
+                    let extent = scale.extent(rect.size());
+                    if zoom_changed {
+                        // A view zoom is not a remote resize, just like a DPI transition.
+                        self.resize_due = None;
+                        self.last_extent = Some(extent);
+                        self.resize_after = Instant::now() + Duration::from_millis(500);
+                    }
                     if self.sized_window != Some(window.id) {
                         let header = (ctx.content_rect().height() - rect.height()).max(0.0);
-                        let desired = egui::vec2(
-                            window.width as f32 / ctx.pixels_per_point(),
-                            window.height as f32 / ctx.pixels_per_point() + header,
-                        );
+                        let desired = scale
+                            .logical(egui::vec2(window.width as f32, window.height as f32))
+                            + egui::vec2(0.0, header);
                         // Initial sizing is a one-time viewport command, never an HWND resize while drawing.
                         let desired = crate::app_layout::application_initial_size(ctx, desired);
                         ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(desired));
@@ -188,13 +253,22 @@ impl Applications {
                     }
                 });
             if !close {
-                let owner = crate::remote_geometry::window(&self.title);
+                let owner = self.native.handle();
                 for popup in &state.popups {
-                    any_focus |= self.popup_view(ctx, popup, owner, image_rect, state.alive);
+                    any_focus |= self.popup_view(ctx, popup, owner, image_rect, scale, state.alive);
                 }
             }
-            ctx.request_repaint_after(Duration::from_millis(50));
+            ctx.request_repaint_after(Duration::from_millis(if self.resize_due.is_some() {
+                50
+            } else {
+                250
+            }));
         });
+        let active = any_focus;
+        if state.streaming && self.stream_active != Some(active) {
+            self.send(Request::Stream { active });
+            self.stream_active = Some(active);
+        }
         if !any_focus {
             self.release();
         } else {
@@ -207,6 +281,9 @@ impl Applications {
             self.view = false;
             self.texture = None;
             self.popup_textures.clear();
+            self.popup_native.clear();
+            self.native = Default::default();
+            self.stream_active = None;
             self.sized_window = None;
         }
     }
@@ -216,6 +293,7 @@ impl Applications {
         popup: &worker::PopupState,
         owner: Option<isize>,
         anchor: egui::Rect,
+        scale: geometry::Scale,
         alive: bool,
     ) -> bool {
         let info = &popup.info;
@@ -238,29 +316,45 @@ impl Applications {
         }
         let texture = self.popup_textures[&info.window].0.clone();
         let ppp = ctx.pixels_per_point();
-        let origin = ctx
-            .input(|i| i.viewport().inner_rect.map(|r| r.min))
-            .unwrap_or_default()
-            + anchor.min.to_vec2()
-            + egui::vec2(info.x as f32, info.y as f32) / ppp;
-        let title = self.popup_title(info.window);
+        let physical = owner
+            .and_then(crate::remote_geometry::screen_origin)
+            .map(|origin| {
+                geometry::menu_bounds(
+                    origin,
+                    anchor,
+                    ppp,
+                    scale,
+                    info,
+                    owner.and_then(crate::remote_geometry::work_area),
+                )
+            });
+        let origin = physical
+            .map(|r| egui::pos2(r.x as f32 / ppp, r.y as f32 / ppp))
+            .unwrap_or_else(|| {
+                ctx.input(|i| i.viewport().inner_rect.map(|r| r.min))
+                    .unwrap_or_default()
+                    + anchor.min.to_vec2()
+                    + scale.logical(egui::vec2(info.x as f32, info.y as f32))
+            });
+        let size = physical
+            .map(|r| egui::vec2(r.width as f32, r.height as f32) / ppp)
+            .unwrap_or_else(|| scale.logical(egui::vec2(info.width as f32, info.height as f32)));
+        let token = self.popup_title(info.window);
+        let caption = "Application menu";
+        let bound = self
+            .popup_native
+            .get(&info.window)
+            .and_then(|w| w.handle())
+            .is_some();
         let builder = egui::ViewportBuilder::default()
-            .with_title(&title)
+            .with_title(if bound { caption } else { &token })
             .with_decorations(false)
             .with_resizable(false)
             .with_active(false)
             .with_transparent(true)
             .with_position(origin)
-            .with_inner_size(egui::vec2(info.width as f32, info.height as f32) / ppp);
+            .with_inner_size(size);
         let mut focused = false;
-        let physical = owner
-            .and_then(crate::remote_geometry::screen_origin)
-            .map(|(x, y)| crate::remote_geometry::PhysicalRect {
-                x: x + (anchor.left() * ppp).round() as i32 + info.x,
-                y: y + (anchor.top() * ppp).round() as i32 + info.y,
-                width: info.width,
-                height: info.height,
-            });
         ctx.show_viewport_immediate(
             egui::ViewportId::from_hash_of(("application-menu", self.id, info.window)),
             builder,
@@ -283,11 +377,9 @@ impl Applications {
                             ui.available_size().max(egui::vec2(1.0, 1.0)),
                             egui::Sense::click_and_drag(),
                         );
-                        let image = pixel_image_rect(
-                            area,
-                            egui::vec2(info.width as f32, info.height as f32),
-                            ctx.pixels_per_point(),
-                        );
+                        // Native bounds already include parent DPI, zoom and work-area fitting.
+                        // Using this popup's own DPI a second time would detach the hit targets.
+                        let image = area;
                         ui.painter().image(
                             texture.id(),
                             image,
@@ -306,14 +398,19 @@ impl Applications {
                     });
             },
         );
-        if let Some(hwnd) = crate::remote_geometry::window(&title) {
+        let native = self.popup_native.entry(info.window).or_default();
+        native.bind(&token);
+        // The main title is obtained from the source; menu captions are hidden
+        // from the taskbar and never used for identity or keyboard ownership.
+        native.set_caption(caption);
+        if let Some(hwnd) = native.handle() {
             if let Some(owner) = owner {
                 if let Err(error) = crate::remote_geometry::set_owner(hwnd, owner) {
                     self.error = Some(error);
                 }
             }
             if let Some(bounds) = physical {
-                if let Err(error) = crate::remote_geometry::place(hwnd, bounds, &title) {
+                if let Err(error) = native.place(bounds) {
                     self.error = Some(error);
                 }
             }
@@ -352,6 +449,15 @@ impl Applications {
     ) -> bool {
         if !alive {
             return false;
+        }
+        if let Some(client) = &self.cursor_client {
+            self.cursor.paint(
+                ui,
+                image,
+                image.width() / size.0.max(1) as f32,
+                client.cursor(),
+                response.hovered(),
+            );
         }
         let scrolling = crate::remote_mouse::scroll_interaction(ui, response, image, false);
         if (response.hovered() && ui.input(|i| i.pointer.any_pressed())) || scrolling {
@@ -539,6 +645,75 @@ impl Applications {
 mod tests {
     use super::*;
     #[test]
+    fn unchanged_tiles_are_not_uploaded_again_and_skipped_paints_keep_every_patch() {
+        use std::sync::Arc;
+        let ctx = egui::Context::default();
+        let mut app = Applications::new(None, uuid::Uuid::new_v4());
+        let tile = |colour| Arc::new(egui::ColorImage::new([256, 1], vec![colour; 256]));
+        let red = tile(egui::Color32::RED);
+        let green = tile(egui::Color32::GREEN);
+        let a = worker::Frame {
+            sequence: 1,
+            size: [512, 1],
+            tiles: Arc::new(std::collections::BTreeMap::from([
+                ((0, 0), red),
+                ((256, 0), green),
+            ])),
+        };
+        let _ = ctx.run(Default::default(), |ctx| app.upload_frame(ctx, &a));
+        let id = app.texture.as_ref().unwrap().id();
+        // Both source tiles changed while the UI skipped sequence 2.
+        let blue = tile(egui::Color32::BLUE);
+        let c = worker::Frame {
+            sequence: 3,
+            size: [512, 1],
+            tiles: Arc::new(std::collections::BTreeMap::from([
+                ((0, 0), blue.clone()),
+                ((256, 0), tile(egui::Color32::YELLOW)),
+            ])),
+        };
+        let output = ctx.run(Default::default(), |ctx| app.upload_frame(ctx, &c));
+        let patches: Vec<_> = output
+            .textures_delta
+            .set
+            .iter()
+            .filter(|(texture, _)| *texture == id)
+            .map(|(_, delta)| delta)
+            .collect();
+        assert!(patches.iter().all(|delta| delta.pos.is_some()));
+        assert_eq!(
+            patches
+                .iter()
+                .map(|delta| delta.image.size()[0] * delta.image.size()[1])
+                .sum::<usize>(),
+            512
+        );
+        let d = worker::Frame {
+            sequence: 4,
+            size: [512, 1],
+            tiles: Arc::new(std::collections::BTreeMap::from([
+                ((0, 0), blue),
+                ((256, 0), tile(egui::Color32::WHITE)),
+            ])),
+        };
+        let output = ctx.run(Default::default(), |ctx| app.upload_frame(ctx, &d));
+        let patches: Vec<_> = output
+            .textures_delta
+            .set
+            .iter()
+            .filter(|(texture, _)| *texture == id)
+            .map(|(_, delta)| delta)
+            .collect();
+        assert_eq!(patches.len(), 1);
+        assert_eq!(patches[0].pos, Some([256, 0]));
+        let output = ctx.run(Default::default(), |ctx| app.upload_frame(ctx, &d));
+        assert!(!output
+            .textures_delta
+            .set
+            .iter()
+            .any(|(texture, _)| *texture == id));
+    }
+    #[test]
     fn clipboard_commands_only_reach_a_focused_application_and_release_temporary_control() {
         use std::sync::Arc;
         let ctx = egui::Context::default();
@@ -690,23 +865,6 @@ mod tests {
                     "background/outside scroll reached host at stage {stage}, image={rect:?}"
                 );
             }
-        }
-    }
-    #[test]
-    fn menu_origin_adds_client_and_signed_popup_offsets_without_scaling_the_app() {
-        let native_origin = egui::pos2(-1600.0, 40.0);
-        let anchor = egui::Rect::from_min_size(egui::pos2(0.0, 32.0), egui::vec2(300.0, 160.0));
-        let position = native_origin + anchor.min.to_vec2() + egui::vec2(290.0, -20.0) / 2.0;
-        assert_eq!(position, egui::pos2(-1455.0, 62.0));
-    }
-    #[test]
-    fn application_pixels_are_not_magnified_by_container_or_ui_scale() {
-        let area = egui::Rect::from_min_size(egui::pos2(3.0, 7.0), egui::vec2(1200.0, 900.0));
-        for ppp in [1.0, 1.25, 1.5, 2.0] {
-            let rect = pixel_image_rect(area, egui::vec2(300.0, 160.0), ppp);
-            assert_eq!(rect.min, area.min);
-            assert!((rect.width() * ppp - 300.0).abs() < 0.01);
-            assert!((rect.height() * ppp - 160.0).abs() < 0.01);
         }
     }
 }

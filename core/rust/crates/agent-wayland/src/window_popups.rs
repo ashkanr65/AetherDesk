@@ -9,12 +9,18 @@ pub(super) struct PopupCapture {
     size: (u32, u32),
     dirty: bool,
     last: Option<wire::Popup>,
+    hidden: Option<detach::HiddenInput>,
 }
 impl PopupCapture {
+    pub(super) fn hidden_input(&self) -> Option<(u32, u32, u32)> {
+        self.hidden.as_ref().map(|state| state.regions())
+    }
     fn destroy(self, connection: &RustConnection) {
         let _ = connection.free_pixmap(self.pixmap);
         let _ = damage::destroy(connection, self.damage);
-        let _ = composite::unredirect_window(connection, self.id, Redirect::AUTOMATIC);
+        if self.hidden.is_none() {
+            let _ = composite::unredirect_window(connection, self.id, Redirect::AUTOMATIC);
+        }
     }
 }
 fn related(
@@ -66,6 +72,11 @@ impl Mirror {
         &self,
         selected: u32,
     ) -> Result<Vec<(u32, i32, i32, u32, u32)>, Error> {
+        if let Some((at, candidates)) = &*self.menu_cache.borrow() {
+            if at.elapsed() < Duration::from_millis(250) {
+                return Ok(candidates.clone());
+            }
+        }
         let origin = self
             .connection
             .translate_coordinates(selected, self.root, 0, 0)?
@@ -112,6 +123,12 @@ impl Mirror {
                 let Ok(attrs) = cookie.reply() else {
                     continue;
                 };
+                // Track late toolkit ownership/type changes as well as mapping.
+                self.connection.change_window_attributes(
+                    id,
+                    &ChangeWindowAttributesAux::new()
+                        .event_mask(EventMask::PROPERTY_CHANGE | EventMask::STRUCTURE_NOTIFY),
+                )?;
                 if attrs.map_state != MapState::VIEWABLE || !attrs.override_redirect {
                     continue;
                 }
@@ -191,6 +208,7 @@ impl Mirror {
             }
         }
         candidates.sort_by_key(|(id, ..)| children.iter().position(|v| v == id));
+        *self.menu_cache.borrow_mut() = Some((Instant::now(), candidates.clone()));
         Ok(candidates)
     }
     fn popup_capture(
@@ -211,7 +229,12 @@ impl Mirror {
         if !self.popups.contains_key(&id) {
             let pixmap = self.connection.generate_id()?;
             let damage_id = self.connection.generate_id()?;
-            composite::redirect_window(&self.connection, id, Redirect::AUTOMATIC)?.check()?;
+            let hidden = if self.detached.is_some() {
+                Some(detach::HiddenInput::new(self.connection.clone(), id)?)
+            } else {
+                composite::redirect_window(&self.connection, id, Redirect::AUTOMATIC)?.check()?;
+                None
+            };
             self.popups.insert(
                 id,
                 PopupCapture {
@@ -221,6 +244,7 @@ impl Mirror {
                     size: (width, height),
                     dirty: true,
                     last: None,
+                    hidden,
                 },
             );
             damage::create(&self.connection, damage_id, id, ReportLevel::NON_EMPTY)?.check()?;
@@ -590,12 +614,40 @@ pub(super) fn verify_menus(mirror: &mut Mirror, controller: &RustConnection, win
         !mirror.application_has_focus().unwrap(),
         "foreign window acquired application input"
     );
-    assert!(mirror
+    xtest::fake_input(controller, KEY_PRESS_EVENT, 56, 0, root, 0, 0, 0)
+        .unwrap()
+        .check()
+        .unwrap();
+    controller.sync().unwrap();
+    mirror.wait_released(&[56], &[]).unwrap();
+    assert_ne!(
+        controller.query_keymap().unwrap().reply().unwrap().keys[7] & 1,
+        0,
+        "a release barrier cleared another application's held key after a focus handoff"
+    );
+    xtest::fake_input(controller, KEY_RELEASE_EVENT, 56, 0, root, 0, 0, 0)
+        .unwrap()
+        .check()
+        .unwrap();
+    let focus_error = mirror
         .handle(wire::Request::Key {
             evdev: 42,
-            pressed: true
+            pressed: true,
         })
-        .is_err());
+        .unwrap_err();
+    assert!(focus_error.is::<FocusChanged>());
+    assert!(matches!(
+        input_failure_reply(&focus_error),
+        wire::Reply::Error(message) if message == "Application focus changed"
+    ));
+    assert!(
+        mirror.keys.is_empty(),
+        "silent focus recovery retained a modifier"
+    );
+    assert!(matches!(
+        input_failure_reply(&Error::from("Capture failed")),
+        wire::Reply::Error(_)
+    ));
     controller
         .change_property32(
             PropMode::REPLACE,

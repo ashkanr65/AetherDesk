@@ -54,6 +54,11 @@ pub trait AgentConnection: RemoteAgentHost {
     async fn session_ended(&self, _session_id: Uuid) -> Result<bool, LifecycleError> {
         Ok(false)
     }
+    /// Capture a bounded, session-scoped diagnostic before startup rollback can
+    /// remove the failed desktop's files. Implementations must not return keys.
+    async fn startup_diagnostic(&self, _session_id: Uuid) -> Result<String, LifecycleError> {
+        Ok(String::new())
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -86,6 +91,7 @@ pub struct RemoteSessionLifecycle<C: AgentConnection> {
     capabilities: Option<Capabilities>,
     lossless_tiles: bool,
     cursor_shapes: bool,
+    startup_diagnostic: Option<String>,
 }
 
 impl<C: AgentConnection> RemoteSessionLifecycle<C> {
@@ -101,6 +107,7 @@ impl<C: AgentConnection> RemoteSessionLifecycle<C> {
             capabilities: None,
             lossless_tiles: false,
             cursor_shapes: false,
+            startup_diagnostic: None,
         }
     }
 
@@ -130,6 +137,9 @@ impl<C: AgentConnection> RemoteSessionLifecycle<C> {
 
     pub fn capabilities(&self) -> Option<&Capabilities> {
         self.capabilities.as_ref()
+    }
+    pub fn startup_diagnostic(&self) -> Option<&str> {
+        self.startup_diagnostic.as_deref()
     }
 
     pub async fn connect(
@@ -186,10 +196,28 @@ impl<C: AgentConnection> RemoteSessionLifecycle<C> {
     ) -> Result<Arc<ArppSession>, LifecycleError> {
         self.validate_parameters(parameters)?;
         self.state = LifecycleState::Deploying;
+        self.startup_diagnostic = None;
         let result = self
             .connect_inner(artifact, runtime, parameters, true, Some(cancel))
             .await;
         if result.is_err() {
+            if !cancel.is_cancelled() {
+                if let Ok(Ok(text)) = timeout(
+                    Duration::from_secs(2),
+                    self.connection.startup_diagnostic(self.session_id),
+                )
+                .await
+                {
+                    let text: String = text
+                        .chars()
+                        .filter(|c| !c.is_control() || matches!(c, '\n' | '\t'))
+                        .take(8192)
+                        .collect();
+                    if !text.is_empty() {
+                        self.startup_diagnostic = Some(text);
+                    }
+                }
+            }
             let cleanup = timeout(Duration::from_secs(18), async {
                 if self.session.is_none() {
                     if let Some(endpoint) = &self.endpoint {
@@ -483,8 +511,9 @@ async fn client_hello(
 
     let mut server_hello = false;
     let mut capabilities = None;
+    let deadline = tokio::time::Instant::now() + HANDSHAKE_TIMEOUT;
     for _ in 0..8 {
-        let frame = timeout(HANDSHAKE_TIMEOUT, session.receive())
+        let frame = tokio::time::timeout_at(deadline, session.receive_startup_control())
             .await
             .map_err(|_| LifecycleError::HandshakeTimeout)??;
         match frame.message {
@@ -500,7 +529,7 @@ async fn client_hello(
                 server_hello = true;
             }
             ArppMessage::Control(ControlMessage::Capabilities(value)) => capabilities = Some(value),
-            _ => return Err(LifecycleError::UnexpectedHandshakeMessage),
+            _ => return Err(unexpected_handshake("hello", &frame.message)),
         }
         if server_hello {
             if let Some(capabilities) = capabilities {
@@ -537,7 +566,7 @@ async fn wait_for_ready(
     session_id: Uuid,
     expected_resumed: bool,
 ) -> Result<(), LifecycleError> {
-    let frame = timeout(HANDSHAKE_TIMEOUT, session.receive())
+    let frame = timeout(HANDSHAKE_TIMEOUT, session.receive_startup_control())
         .await
         .map_err(|_| LifecycleError::HandshakeTimeout)??;
     match frame.message {
@@ -545,7 +574,7 @@ async fn wait_for_ready(
             session_id: returned,
             resumed,
         }) if returned == session_id && resumed == expected_resumed => Ok(()),
-        _ => Err(LifecycleError::UnexpectedHandshakeMessage),
+        _ => Err(unexpected_handshake("start", &frame.message)),
     }
 }
 
@@ -553,7 +582,7 @@ async fn wait_for_resume_state(
     session: &Arc<ArppSession>,
     session_id: Uuid,
 ) -> Result<ControlMessage, LifecycleError> {
-    let frame = timeout(HANDSHAKE_TIMEOUT, session.receive())
+    let frame = timeout(HANDSHAKE_TIMEOUT, session.receive_startup_control())
         .await
         .map_err(|_| LifecycleError::HandshakeTimeout)??;
     match frame.message {
@@ -562,8 +591,28 @@ async fn wait_for_resume_state(
         {
             Ok(message)
         }
-        _ => Err(LifecycleError::UnexpectedHandshakeMessage),
+        _ => Err(unexpected_handshake("resume", &frame.message)),
     }
+}
+
+fn unexpected_handshake(phase: &'static str, message: &ArppMessage) -> LifecycleError {
+    let kind = match message {
+        ArppMessage::Control(ControlMessage::ServerHello { .. }) => "ServerHello",
+        ArppMessage::Control(ControlMessage::Capabilities(_)) => "Capabilities",
+        ArppMessage::Control(ControlMessage::SessionReady { .. }) => "SessionReady",
+        ArppMessage::Control(ControlMessage::ResumeState { .. }) => "ResumeState",
+        ArppMessage::Control(ControlMessage::Close { .. }) => "Close",
+        ArppMessage::Control(_) => "OtherControl",
+        ArppMessage::Input(_) => "Input",
+        _ => "OtherMessage",
+    };
+    // Deliberately record kinds only, never nonces, endpoint tokens or payloads.
+    tracing::warn!(
+        phase,
+        received_message = kind,
+        "unexpected desktop handshake response"
+    );
+    LifecycleError::UnexpectedHandshakeMessage
 }
 
 pub fn channel_prelude(channel: u8, token: &[u8; 32]) -> Result<[u8; 38], LifecycleError> {

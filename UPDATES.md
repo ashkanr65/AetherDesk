@@ -48,13 +48,23 @@ the recovery folder after interrupted installation.
 
 After an update on close, the backup, journal and RECOVERY.txt remain in its
 LocalAppData/AetherDesk/updates/update-* folder until the user's next successful
-rendered launch. Completion is acknowledged without opening a test GUI on exit.
+launch that renders multiple frames over a 20-second startup grace period.
+Completion is acknowledged in the background, without opening a test GUI on exit.
 If the new executable cannot start, close all copies and follow RECOVERY.txt to
 run that folder's AetherDesk-updater.exe with **--recover-update** and its plan.json.
 Recovery stays closed and preserves diagnostic evidence. Installer repair may
 still be needed as described above. Existing Update and restart retains its
-immediate first-launch check and portable rollback behavior. Completed update
-folders are cleaned after a subsequent successful startup.
+first-launch check and portable rollback behavior. New helpers allow up to two
+minutes for startup and its health acknowledgement. The most recent completed
+recovery folder is retained for 24 hours; older completed folders are cleaned at
+subsequent startups. Pending and failed recovery folders are not swept this way.
+When an older helper launches this client for the first upgrade, it retains
+first-frame acknowledgement to stay compatible with that helper's shorter fixed
+deadline. The 20-second grace applies to new helpers and normal next-launch
+acknowledgement after installation on close; recovery retention applies to both.
+Closing normally during this grace period keeps the new files and recovery set,
+and defers confirmation to the next launch. A crash or startup timeout still uses
+the existing recovery behavior; a normal user close is not classified as a crash.
 
 ### Portable recovery fix prepared for build 5
 

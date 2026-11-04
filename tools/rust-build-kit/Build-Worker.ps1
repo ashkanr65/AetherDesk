@@ -2,6 +2,7 @@
 param([Parameter(Mandatory=$true)][ValidateRange(0,6)][int]$Step)
 . (Join-Path $PSScriptRoot 'Build-Common.ps1')
 $fingerprint = Get-SourceFingerprint
+$env:AETHERDESK_SOURCE_FINGERPRINT = $fingerprint
 $stamp = Get-Date -Format 'yyyyMMdd_HHmmss_fff'
 New-Item -ItemType Directory -Force -Path $logsRoot,$packagesRoot,$stateRoot | Out-Null
 $log = Join-Path $logsRoot ('step-{0:D2}-{1}.txt' -f $Step,$stamp)

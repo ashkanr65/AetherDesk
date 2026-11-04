@@ -4,6 +4,15 @@ use std::{env, fs, path::PathBuf, process::Command};
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-changed=assets/theme/aetherdesk.ico");
+    println!("cargo:rerun-if-changed=../../../../release.json");
+    println!("cargo:rerun-if-env-changed=AETHERDESK_SOURCE_FINGERPRINT");
+    let fingerprint = env::var("AETHERDESK_SOURCE_FINGERPRINT").unwrap_or_default();
+    assert!(
+        fingerprint.is_empty()
+            || (fingerprint.len() == 64 && fingerprint.bytes().all(|b| b.is_ascii_hexdigit())),
+        "Invalid build source fingerprint"
+    );
+    println!("cargo:rustc-env=AETHERDESK_SOURCE_FINGERPRINT={fingerprint}");
     if env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("windows") {
         return;
     }
@@ -26,6 +35,21 @@ fn main() {
     let rc = out.join("aetherdesk.rc");
     let res = out.join("aetherdesk.res");
     let version = env::var("CARGO_PKG_VERSION").unwrap();
+    let release: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(
+            PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").unwrap())
+                .join("../../../../release.json"),
+        )
+        .expect("Read release metadata"),
+    )
+    .expect("Valid release metadata");
+    assert_eq!(
+        release["version"].as_str(),
+        Some(version.as_str()),
+        "Cargo and release versions must agree"
+    );
+    let build = u16::try_from(release["build"].as_u64().expect("Numeric release build"))
+        .expect("Windows build number must fit in 16 bits");
     let numbers: Vec<u16> = version
         .split('.')
         .take(3)
@@ -38,8 +62,8 @@ fn main() {
             r#"LANGUAGE 9, 1
 1 ICON "{icon}"
 1 VERSIONINFO
-FILEVERSION {major},{minor},{patch},0
-PRODUCTVERSION {major},{minor},{patch},0
+FILEVERSION {major},{minor},{patch},{build}
+PRODUCTVERSION {major},{minor},{patch},{build}
 FILEOS 0x00040004
 FILETYPE 1
 BEGIN
@@ -50,8 +74,8 @@ BEGIN
    VALUE "FileDescription", "AetherDesk\0"
    VALUE "ProductName", "AetherDesk\0"
    VALUE "OriginalFilename", "AetherDesk.exe\0"
-   VALUE "FileVersion", "{version}\0"
-   VALUE "ProductVersion", "{version}\0"
+   VALUE "FileVersion", "{version}.{build}\0"
+   VALUE "ProductVersion", "{version}.{build}\0"
   END
  END
  BLOCK "VarFileInfo"

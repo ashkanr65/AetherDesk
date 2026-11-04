@@ -125,6 +125,7 @@ pub fn builder(
 }
 /// Shared by root, file, editor, review and comparison native windows.
 pub fn update(ctx: &egui::Context, role: &'static str) {
+    crate::window_geometry::stabilize_native_moves();
     let key = state_id(ctx.viewport_id());
     let mut sizing = ctx
         .data(|d| d.get_temp::<WindowSizing>(key))

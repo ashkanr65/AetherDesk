@@ -37,6 +37,10 @@ struct Loaded {
     baseline: Option<Vec<u8>>,
 }
 enum Reply {
+    Reconnected {
+        session: Arc<SshSession>,
+        result: Result<(), String>,
+    },
     Opened(Result<Loaded, String>),
     Launched(Result<bool, String>),
     Reloaded(Result<Vec<u8>, String>),
@@ -826,7 +830,12 @@ impl Editors {
         }
         ready
     }
-    pub fn ui(&mut self, ctx: &egui::Context, runtime: &crate::connection::Connections) {
+    pub fn ui(
+        &mut self,
+        ctx: &egui::Context,
+        runtime: &crate::connection::Connections,
+        sessions: &[Arc<SshSession>],
+    ) {
         self.review_ui(ctx, runtime);
         let mut actions = Vec::new();
         let mut diffs = Vec::new();
@@ -860,6 +869,16 @@ impl Editors {
                     egui::ScrollArea::vertical().id_salt(("editor-controls-scroll",document.id)).max_height(controls_height).auto_shrink([false,true]).show(ui,|ui| {
                     ui.horizontal_wrapped(|ui|{for (id,title) in &windows{if ui.selectable_label(*id==document.id,title.rsplit(['/', '\\']).next().unwrap_or(title)).clicked(){ctx.send_viewport_cmd_to(egui::ViewportId::from_hash_of(*id),egui::ViewportCommand::Focus);}}});
                     ui.horizontal_wrapped(|ui| {
+                        if let Location::Remote { session, .. } = &document.location {
+                            if session.is_closed() {
+                                let candidate = sessions.iter().find(|candidate| !candidate.is_closed() && crate::working_copies::identity(candidate) == crate::working_copies::identity(session)).cloned();
+                                let can_reconnect = candidate.is_some() && !document.busy && document.metadata.is_some();
+                                if ui.add_enabled(can_reconnect, egui::Button::new("Reconnect file")).on_hover_text("Verify this file on a connected session with the same host key and account. Your edits stay intact; saving is a separate action.").clicked() {
+                                    if let Some(candidate) = candidate.clone() { document.reconnect(candidate, runtime, ctx); }
+                                }
+                                if candidate.is_none() { ui.label("Reconnect the original host/account in a connection tab to save this file."); }
+                            }
+                        }
                         if !document.external && document.file.is_some() && ui.button("Compare with saved").clicked(){if let Some(saved)=TextFile::decode(&document.saved){diffs.push(crate::comparison::Comparison::text(document.title.clone()+" · Saved ↔ Editor",saved.text,document.text.clone(),runtime,ctx));}}
                         save_now=ui.add_enabled(!document.busy&&((!document.external&&document.file.is_some())||(document.external&&matches!(document.location,Location::Remote{..}))),egui::Button::new(if document.external {if matches!(document.location,Location::Remote{..}){"Upload saved working copy"}else{"Save in local application"}}else{"Save"})).clicked();
                         if ui.button("Find / replace").clicked(){document.tools.find=!document.tools.find;}
@@ -938,7 +957,61 @@ impl Editors {
         self.documents.retain(|d| !d.closed);
     }
 }
+fn validate_reconnected_file(
+    expected: &RemoteFileMetadata,
+    current: &RemoteFileMetadata,
+) -> Result<(), String> {
+    if current.kind != "file"
+        || current.canonical_path != expected.canonical_path
+        || expected.revision.is_none()
+        || current.revision != expected.revision
+    {
+        return Err("The server file changed or moved while disconnected. Your edits were kept; compare with the server file before saving.".into());
+    }
+    Ok(())
+}
 impl Document {
+    fn reconnect(
+        &mut self,
+        session: Arc<SshSession>,
+        runtime: &crate::connection::Connections,
+        ctx: &egui::Context,
+    ) {
+        let Location::Remote { session: old, .. } = &self.location else {
+            return;
+        };
+        if !old.is_closed()
+            || session.is_closed()
+            || crate::working_copies::identity(old) != crate::working_copies::identity(&session)
+        {
+            self.error =
+                Some("Choose a connected session with the original host key and account".into());
+            return;
+        }
+        let Some(expected) = self.metadata.clone() else {
+            return;
+        };
+        self.busy = true;
+        let tx = self.sender.clone();
+        let ctx = ctx.clone();
+        runtime.spawn(async move {
+            let result = async {
+                let current = session
+                    .file_operation(
+                        request("stat", expected.canonical_path.clone()),
+                        Arc::new(FileProgress::default()),
+                    )
+                    .await
+                    .map_err(|e| e.to_string())?
+                    .metadata
+                    .ok_or("Host file identity is missing")?;
+                validate_reconnected_file(&expected, &current)
+            }
+            .await;
+            let _ = tx.send(Reply::Reconnected { session, result }).await;
+            ctx.request_repaint();
+        });
+    }
     fn request_close(&mut self) -> bool {
         if self.busy || self.backup_pending || self.dirty() {
             self.closing = true;
@@ -1063,6 +1136,30 @@ impl Document {
                 self.busy = false;
             }
             match reply {
+                Reply::Reconnected { session, result } => match result {
+                    Ok(()) => {
+                        if let Location::Remote { session: old, path } = &mut self.location {
+                            if old.is_closed()
+                                && !session.is_closed()
+                                && crate::working_copies::identity(old)
+                                    == crate::working_copies::identity(&session)
+                            {
+                                *old = session;
+                                if let Some(metadata) = &self.metadata {
+                                    *path = metadata.canonical_path.clone();
+                                }
+                                self.language.stop();
+                                self.error = None;
+                            } else {
+                                self.error = Some(
+                                    "The reconnect target changed; your edits have been kept"
+                                        .into(),
+                                );
+                            }
+                        }
+                    }
+                    Err(error) => self.error = Some(error),
+                },
                 Reply::Backup(result) => {
                     self.backup_pending = false;
                     if let Err(error) = result {
@@ -1377,6 +1474,34 @@ impl Drop for Document {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn reconnect_requires_the_original_canonical_file_and_revision() {
+        let before = RemoteFileMetadata {
+            path: "/work/file".into(),
+            canonical_path: "/work/file".into(),
+            kind: "file".into(),
+            size: Some(4),
+            modified: None,
+            permissions: None,
+            uid: None,
+            gid: None,
+            revision: Some("original-revision".into()),
+            atomic_replace: true,
+        };
+        assert!(validate_reconnected_file(&before, &before).is_ok());
+        let mut changed = before.clone();
+        changed.revision = Some("changed".into());
+        assert!(validate_reconnected_file(&before, &changed).is_err());
+        changed = before.clone();
+        changed.canonical_path = "/another/file".into();
+        assert!(validate_reconnected_file(&before, &changed).is_err());
+        changed = before.clone();
+        changed.kind = "directory".into();
+        assert!(validate_reconnected_file(&before, &changed).is_err());
+        changed = before.clone();
+        changed.revision = None;
+        assert!(validate_reconnected_file(&changed, &changed).is_err());
+    }
     #[test]
     fn editor_close_is_owned_by_the_document_and_dirty_or_busy_work_blocks_shutdown() {
         let directory = tempfile::tempdir().unwrap();

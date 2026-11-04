@@ -451,6 +451,7 @@ pub(crate) struct AgentCompositorState {
     pub(crate) cursor_tx: watch::Sender<Option<Arc<crate::host_cursor::CursorImage>>>,
     pub(crate) frame_id: u64,
     target_valid: bool,
+    window_streams_only: bool,
     command_rx: std_mpsc::Receiver<CompositorCommand>,
     pub(crate) applications: Vec<Child>,
     pub(crate) pending_applications: Vec<ApplicationSpec>,
@@ -623,6 +624,7 @@ impl AgentCompositorState {
             cursor_tx,
             frame_id: 0,
             target_valid: false,
+            window_streams_only: false,
             command_rx,
             applications: Vec::new(),
             pending_applications: Vec::new(),
@@ -647,6 +649,13 @@ impl AgentCompositorState {
         while let Ok(command) = self.command_rx.try_recv() {
             match command {
                 CompositorCommand::Launch(application) => {
+                    if application
+                        .environment
+                        .iter()
+                        .any(|(key, value)| key == "AETHERDESK_APPLICATIONS_ONLY" && value == "1")
+                    {
+                        self.window_streams_only = true;
+                    }
                     self.pending_applications.push(application)
                 }
                 CompositorCommand::CaptureRate(fps) => self.capture_fps = fps.clamp(1, 240),
@@ -1071,6 +1080,11 @@ impl AgentCompositorState {
                 |_, _| Some(self.output.clone()),
             )
         });
+        // The root still presents buffers and frame callbacks normally. Only
+        // independent window streams read pixels in application-only sessions.
+        if self.window_streams_only {
+            return Ok(());
+        }
         let Some(damage) = result.damage else {
             return Ok(());
         };
@@ -1273,6 +1287,25 @@ impl CompositorHandler for AgentCompositorState {
                     .is_some_and(|toplevel| toplevel.wl_surface() == &root)
             }) {
                 window.on_commit();
+            }
+        }
+        // A rootful Xwayland surface needs a real wl_pointer enter before
+        // XTEST can hit-test its child windows. Application-only sessions do
+        // not send primary desktop motion, so initialize the seat once the
+        // root actually has a committed buffer. Doing this in new_toplevel is
+        // too early: its input region is still empty before the first commit.
+        if self.host_window_manager {
+            if let Some(pointer) = self._seat.get_pointer() {
+                if pointer.current_focus().is_none() {
+                    let position = pointer.current_location();
+                    if self.surface_under(position).is_some() {
+                        self.pointer_motion(
+                            position.x as i32,
+                            position.y as i32,
+                            self.start_time.elapsed().as_millis() as u32,
+                        );
+                    }
+                }
             }
         }
         self.popups.commit(surface);

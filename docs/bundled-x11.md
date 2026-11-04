@@ -21,6 +21,36 @@ The first build downloads approximately 143 MB for the binary and source
 archives; subsequent builds reuse the verified build cache. These downloads
 happen on the build machine, not on the end user's computer.
 
+### Native window painting (0.1.3 build 7)
+
+The private multiwindow server explicitly uses `-engine 1 -compositewm
+-nocompositealpha -nowgl +iglx`. Composite window backing must stay enabled:
+disabling it caused blank application and dialog content in SSH+X11, despite
+successful off-screen pixmap colour checks. Software GLX, application-visible
+Composite support, authentication and the normal TrueColor visual remain
+available. Only the optional per-pixel Windows desktop alpha path is disabled;
+ordinary application RGB colours are not reduced to a limited palette.
+
+The VcXsrv 21.1.16.1 access violation at RVA
+`0x1f56d0` observed on Windows in build 6. In the matching bundled executable,
+that address corresponds to a source read in the reverse pixel-copy loop that
+matches `fbBlt`. The event record alone does not establish the caller, invalid
+rectangle or lifetime error; the original crash still requires a process dump
+or a matching reproduction for a source-level root-cause fix. Disabling native
+alpha does not establish that this crash is fixed. Disabling Composite window
+backing is not an acceptable crash workaround because it breaks real painting.
+
+The native packaging regression starts an isolated authenticated instance with
+the actual client options. It checks exact 24-bit RGB values after overlapping
+copies in both directions, retains GLX/Composite capabilities, and repeatedly
+moves and resizes owned top-level/child windows across root edges. It also
+copies the pixel pattern into an actual native window and checks that window's
+client pixels. The owned test window is briefly kept visible on the primary
+screen without taking keyboard focus; no user windows are sampled. Off-screen pixmap
+success alone cannot pass this gate. Required window backing is checked. These are
+bounded regression checks, not a claim that the affected user's crash was
+reproduced or all Cadence application behaviour was validated.
+
 The build machine requires 7-Zip (available on the GitHub Windows runner).
 `Bundle-X11.ps1` accepts `-SevenZip` and `-CacheDirectory` for other build
 environments. Cache files are checked on every use; invalid files fail the

@@ -1,5 +1,5 @@
 //! Own each connection independently. No network operation runs on the UI thread.
-const SHELL_INTEGRATION: &str = r#"printf '\r\033[2K'; __aetherdesk_cd(){ if [ -n "${2-}" ]; then printf '\033]777;%s;begin\007' "$2"; fi; cd -- "$1"; __ad_cd_status=$?; if [ -n "${2-}" ]; then printf '\033]777;%s;end\007' "$2"; fi; return "$__ad_cd_status"; }; if [ -n "${BASH_VERSION:-}" ]; then case ":${HISTIGNORE-}:" in *": __aetherdesk_cd *:"*) ;; *) HISTIGNORE="${HISTIGNORE:+$HISTIGNORE:} __aetherdesk_cd *";; esac; __aetherdesk_emit_cwd(){ local __ad_status=$? __ad_path=$PWD; __ad_path=${__ad_path//\%/%25}; __ad_path=${__ad_path//;/%3B}; __ad_path=${__ad_path//\?/%3F}; __ad_path=${__ad_path//#/%23}; printf '\033]7;file://%s%s\007' "${HOSTNAME:-localhost}" "$__ad_path"; return "$__ad_status"; }; case ";${PROMPT_COMMAND[*]:-};" in *';__aetherdesk_emit_cwd;'*) ;; *) if declare -p PROMPT_COMMAND 2>/dev/null | grep -q '^declare -a'; then PROMPT_COMMAND=(__aetherdesk_emit_cwd "${PROMPT_COMMAND[@]}"); else PROMPT_COMMAND="__aetherdesk_emit_cwd${PROMPT_COMMAND:+;$PROMPT_COMMAND}"; fi ;; esac; __aetherdesk_emit_cwd; fi"#;
+const SHELL_INTEGRATION: &str = r#"printf '\r\033[2K'; __aetherdesk_cd(){ if [ -n "${2-}" ]; then printf '\033]777;%s;begin\007' "$2"; fi; cd -- "$1"; __ad_cd_status=$?; if [ -n "${2-}" ]; then printf '\033]777;%s;end\007' "$2"; fi; return "$__ad_cd_status"; }; if [ -n "${BASH_VERSION:-}" ]; then case ":${HISTIGNORE-}:" in *": __aetherdesk_cd *:"*) ;; *) HISTIGNORE="${HISTIGNORE:+$HISTIGNORE:} __aetherdesk_cd *";; esac; __aetherdesk_emit_cwd(){ local __ad_status=$? __ad_path=$PWD; __ad_path=${__ad_path//\%/%25}; __ad_path=${__ad_path//;/%3B}; __ad_path=${__ad_path//\?/%3F}; __ad_path=${__ad_path//#/%23}; printf '\033]7;file://%s%s\007' "${HOSTNAME:-localhost}" "$__ad_path"; if [ -n "${__aetherdesk_prompt_token:-}" ]; then local __ad_ready; __ad_ready=$(printf '\033]777;%s;prompt\007' "$__aetherdesk_prompt_token"); case "${PS1-}" in *"$__ad_ready"*) ;; *) PS1="\[${__ad_ready}\]${PS1-}";; esac; fi; return "$__ad_status"; }; if declare -p PROMPT_COMMAND 2>/dev/null | grep -q '^declare -a' && ((BASH_VERSINFO[0] < 5 || (BASH_VERSINFO[0] == 5 && BASH_VERSINFO[1] < 1))); then __ad_prompt_commands=("${PROMPT_COMMAND[@]}"); unset PROMPT_COMMAND; printf -v PROMPT_COMMAND '%s\n' "${__ad_prompt_commands[@]}"; unset __ad_prompt_commands; fi; case "${PROMPT_COMMAND[*]:-}" in *'__aetherdesk_emit_cwd'*) ;; *) if declare -p PROMPT_COMMAND 2>/dev/null | grep -q '^declare -a'; then PROMPT_COMMAND=("${PROMPT_COMMAND[@]}" __aetherdesk_emit_cwd); else PROMPT_COMMAND="${PROMPT_COMMAND:+$PROMPT_COMMAND$'\n'}__aetherdesk_emit_cwd"; fi ;; esac; fi"#;
 use ad_desktop_model::profiles::{ConnectionType, SavedSession};
 use ad_ssh::{FileProgress, RemoteFileRequest, RemoteFileResult, SshClient, SshConfig};
 use eframe::egui;
@@ -80,6 +80,21 @@ pub enum Command {
         request: RemoteFileRequest,
         progress: Arc<FileProgress>,
     },
+}
+
+pub(crate) fn receive_events(receiver: &mut mpsc::Receiver<Event>) -> Vec<Event> {
+    let mut events = Vec::new();
+    let mut bytes = 0usize;
+    while events.len() < 32 && bytes < 128 * 1024 {
+        let Ok(event) = receiver.try_recv() else {
+            break;
+        };
+        if let Event::Output(output) = &event {
+            bytes += output.len();
+        }
+        events.push(event);
+    }
+    events
 }
 
 pub struct Connection {
@@ -325,7 +340,9 @@ async fn run(
     x11_runtime: Arc<crate::x11::X11Runtime>,
     clock: crate::server_clock::Clock,
 ) {
-    let shell = matches!(kind, ConnectionType::SshTerminal | ConnectionType::SshX11);
+    let shell = kind.has_terminal();
+    let mut navigation = crate::terminal_navigation::Navigation::default();
+    let integration = navigation.bootstrap(SHELL_INTEGRATION);
     let mut x11 = if kind == ConnectionType::SshX11 {
         let result = x11_runtime.acquire(&cancel).await;
         match result {
@@ -350,7 +367,7 @@ async fn run(
     let x11_config = config.x11.clone();
     let client = SshClient::standalone(config);
     let connect = async {
-        let result = if matches!(kind, ConnectionType::RemoteDesktop | ConnectionType::SshX11) {
+        let result = if kind.has_host_session() || kind == ConnectionType::SshX11 {
             client.connect_with_bulk_transport().await
         } else {
             client.connect().await
@@ -381,8 +398,15 @@ async fn run(
         }
     };
     drop(client); // Authentication data does not survive the connection attempt.
+    let maintenance = tokio::select! {
+        _ = cancel.cancelled() => Err("Connection cancelled".to_owned()),
+        result = session.start_host_cleanup(env!("CARGO_PKG_VERSION")) => result.map_err(|e| e.to_string()),
+    };
+    if let Err(error) = maintenance {
+        tracing::warn!(%error, "optional host temporary-file maintenance unavailable; connection remains usable");
+    }
     let prepare = async {
-        let prefix = if kind != ConnectionType::RemoteDesktop {
+        let prefix = if !kind.has_host_session() {
             if let Some(script) = &startup {
                 session.prepare_startup(script, shell).await?
             } else {
@@ -391,9 +415,9 @@ async fn run(
         } else {
             String::new()
         };
-        if shell {
+        if shell && kind != ConnectionType::RemoteApplications {
             session
-                .open_shell_with_bootstrap(&format!("{prefix}{SHELL_INTEGRATION}"))
+                .open_shell_with_bootstrap(&format!("{prefix}{integration}"))
                 .await
                 .map_err(|e| e.to_string())?;
         }
@@ -411,10 +435,14 @@ async fn run(
         events.send(Event::Failed(error));
         return;
     }
-    let mut desktop = if kind == ConnectionType::RemoteDesktop {
+    let mut desktop = if kind.has_host_session() {
         let result = crate::remote::RemoteClient::start_with_startup(
             Arc::new(session.clone()),
-            desktop_environment,
+            if kind == ConnectionType::RemoteApplications {
+                "applications".into()
+            } else {
+                desktop_environment
+            },
             desktop_id,
             startup,
             events.ctx.clone(),
@@ -439,6 +467,33 @@ async fn run(
     } else {
         None
     };
+    if kind == ConnectionType::RemoteApplications && !cancel.is_cancelled() {
+        let setup = async {
+            let remote = desktop
+                .as_ref()
+                .ok_or("Application session did not start")?;
+            let target = remote
+                .window_target()
+                .ok_or("Application transport unavailable")?;
+            let environment = target.shell_environment().await?;
+            session
+                .open_shell_with_bootstrap(&format!("{environment}{integration}"))
+                .await
+                .map_err(|e| e.to_string())
+        };
+        let result = tokio::select! {
+            _ = cancel.cancelled() => Err("Connection cancelled".into()),
+            result = setup => result,
+        };
+        if let Err(error) = result {
+            if let Some(remote) = &desktop {
+                let _ = remote.stop(remote.newly_created()).await;
+            }
+            let _ = session.close().await;
+            events.send(Event::Failed(error));
+            return;
+        }
+    }
     if cancel.is_cancelled() || !events.send(Event::Connected) {
         if let Some(remote) = &desktop {
             if let Err(error) = remote
@@ -458,7 +513,6 @@ async fn run(
     events.send(Event::Authenticated(Arc::new(session.clone())));
     let _clock =
         crate::server_clock::Lease::start(session.clone(), clock, events.ctx.clone(), &cancel);
-    let mut navigation = crate::terminal_navigation::Navigation::default();
     let mut jobs = JoinSet::new();
     let mut progress = Vec::<Arc<FileProgress>>::new();
     let mut interval = tokio::time::interval(Duration::from_millis(if shell { 10 } else { 250 }));
@@ -488,7 +542,7 @@ async fn run(
                         break;
                     }
                 },
-                Some(Command::Input(bytes)) => if let Err(e) = session.send_data(&bytes) { events.send(Event::Failed(e.to_string())); break; },
+                Some(Command::Input(bytes)) => { if !bytes.is_empty() { navigation.user_input(); } if let Err(e) = session.send_data(&bytes) { events.send(Event::Failed(e.to_string())); break; } },
                 Some(Command::Navigate(path)) => { if shell { navigation.request(path); } },
                 Some(Command::CancelNavigation) => navigation.cancel_queued(),
                 Some(Command::Resize { cols, rows }) => if let Err(e) = session.resize_pty(cols, rows) { events.send(Event::Failed(e.to_string())); break; },
@@ -528,19 +582,31 @@ async fn run(
                     if state.state!="connected" {events.send(Event::Failed(state.error.unwrap_or_else(||"Remote desktop closed".into())));break;}
                 }
                 if !shell && session.is_closed() {events.send(Event::Failed("The SSH transport closed".into()));break;}
-                if shell {match session.read_available(32768) {
-                    Ok(bytes) if !bytes.is_empty() => {
-                        let bytes = navigation.filter(&bytes);
-                        if !bytes.is_empty() && !events.send(Event::Output(bytes)) { break; }
-                    },
-                    Ok(_) => {},
-                    Err(error) => { events.send(Event::Failed(error.to_string())); break; },
-                }}
                 let expired = navigation.expire(std::time::Instant::now());
                 if !expired.is_empty() && !events.send(Event::Output(expired)) { break; }
                 if shell { if let Some(command) = navigation.command() {
                     if let Err(error) = session.send_data(&command) { events.send(Event::Failed(error.to_string())); break; }
                 }}
+            },
+            available = async {
+                session.wait_for_terminal_output().await.map_err(|e| e.to_string())?;
+                // Reserve before draining bytes. A busy UI applies bounded
+                // backpressure without dropping echo or blocking input handling.
+                events.sender.reserve().await.map_err(|_| "Terminal view closed".to_owned())
+            }, if shell => {
+                match available {
+                    Ok(permit) => match session.read_available(32768) {
+                        Ok(bytes) => {
+                            let bytes = navigation.filter(&bytes);
+                            if !bytes.is_empty() {
+                                permit.send(Event::Output(bytes));
+                                events.ctx.request_repaint();
+                            }
+                        },
+                        Err(error) => { permit.send(Event::Failed(error.to_string())); events.ctx.request_repaint(); break; },
+                    },
+                    Err(error) => { events.send(Event::Failed(error)); break; },
+                }
             },
         }
     }
@@ -831,6 +897,41 @@ fn local_entries(path: &std::path::Path) -> std::io::Result<Vec<LocalEntry>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn terminal_output_batches_leave_room_for_input_and_preserve_byte_and_close_order() {
+        let (send, mut receive) = mpsc::channel(32);
+        let mut expected = Vec::new();
+        for index in 0..12u8 {
+            let bytes = vec![index; 32768];
+            expected.extend_from_slice(&bytes);
+            send.try_send(Event::Output(bytes)).unwrap();
+        }
+        send.try_send(Event::Closed).unwrap();
+        let mut actual = Vec::new();
+        let mut batches = 0;
+        let mut closed = false;
+        while !receive.is_empty() {
+            batches += 1;
+            let events = receive_events(&mut receive);
+            assert!(events.len() <= 32);
+            let mut bytes = 0;
+            for event in events {
+                match event {
+                    Event::Output(data) => {
+                        assert!(!closed);
+                        bytes += data.len();
+                        actual.extend(data);
+                    }
+                    Event::Closed => closed = true,
+                    _ => panic!("unexpected fixture event"),
+                }
+            }
+            assert!(bytes <= 128 * 1024);
+        }
+        assert!(batches > 1);
+        assert!(closed);
+        assert_eq!(actual, expected);
+    }
     #[test]
     fn wireguard_opt_out_uses_direct_transport_without_changing_other_tab_profiles() {
         let mut profile=SavedSession::from_json(&serde_json::json!({"id":"vpn","name":"VPN","host":"server","wireguardConfigPath":"C:/vpn/test.conf"})).unwrap();

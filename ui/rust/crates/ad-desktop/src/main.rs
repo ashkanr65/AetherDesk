@@ -110,7 +110,6 @@ struct RustDesktop {
     notifications: notifications::Center,
     last_notice: String,
     updates: updates::Updates,
-    update_health: Option<PathBuf>,
 }
 impl Default for RustDesktop {
     fn default() -> Self {
@@ -164,11 +163,6 @@ impl Default for RustDesktop {
             notifications: notifications::Center::default(),
             last_notice: String::new(),
             updates: updates::Updates::default(),
-            update_health: if std::env::args().nth(1).as_deref() == Some("--update-health") {
-                std::env::args_os().nth(2).map(PathBuf::from)
-            } else {
-                None
-            },
         };
         if app.preferences.settings.restore_tabs {
             if let Some(ids) = settings["openSessions"].as_array() {
@@ -744,13 +738,13 @@ impl eframe::App for RustDesktop {
                     self.editors.open(file, runtime, ctx);
                 }
             }
-            self.editors.ui(ctx, runtime);
             let sessions: Vec<_> = self
                 .workspace
                 .tabs
                 .iter()
                 .filter_map(|t| t.ssh_session())
                 .collect();
+            self.editors.ui(ctx, runtime, &sessions);
             self.editors.recovery_ui(ctx, runtime, &sessions);
         }
         if self.confirm_quit_open {
@@ -1448,9 +1442,6 @@ impl eframe::App for RustDesktop {
             }
         }
         self.notifications.ui(ctx, self.dark);
-        if let Some(stage) = self.update_health.take() {
-            let _ = update_apply::mark_healthy(&stage);
-        }
         self.updates.rendered();
         process_health::pulse(4);
         ctx.request_repaint_after(std::time::Duration::from_secs(1));
@@ -1494,7 +1485,7 @@ fn main() -> eframe::Result {
         logging::init(&root.join("logs/application.log"));
         crash_diagnostics::init(&root.join("logs"));
     }
-    tracing::info!("AetherDesk starting");
+    tracing::info!(version=?update_manifest::current().ok(), source_fingerprint=env!("AETHERDESK_SOURCE_FINGERPRINT"), "AetherDesk starting");
     let crash_run = storage::root()
         .ok()
         .map(|root| windows_crash_reports::begin(&root.join("logs")));
@@ -1523,6 +1514,7 @@ fn main() -> eframe::Result {
     let _health = storage::root()
         .ok()
         .map(|root| process_health::start(&root.join("logs")));
+    process_health::pulse(0);
     let result = eframe::run_native(
         "AetherDesk",
         options,

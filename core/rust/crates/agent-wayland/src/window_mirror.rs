@@ -1,5 +1,6 @@
 //! Opt-in X11 window mirror. Never changes the desktop compositing preference,
-//! replaces the WM, reparents/unmaps a client or closes an application.
+//! replaces the WM or closes an application. An explicitly mirrored client
+//! minimized on the desktop can live in a private, crash-safe capture holder.
 use ad_stream_protocol::{lossless::LosslessTile, window_stream as wire, Rectangle};
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::{
@@ -11,6 +12,7 @@ use std::{
         net::UnixStream,
     },
     path::Path,
+    sync::Arc,
     time::{Duration, Instant},
 };
 use tokio::io::unix::AsyncFd;
@@ -19,6 +21,7 @@ use x11rb::{
     protocol::{
         composite::{self, Redirect},
         damage::{self, ReportLevel},
+        xfixes,
         xproto::*,
         xtest, Event,
     },
@@ -29,8 +32,44 @@ use x11rb::{
 #[path = "window_popups.rs"]
 mod popups;
 use popups::PopupCapture;
+#[path = "window_capture.rs"]
+mod capture;
+#[path = "window_detach.rs"]
+mod detach;
+#[path = "window_updates.rs"]
+mod updates;
 
 type Error = Box<dyn std::error::Error + Send + Sync>;
+#[derive(Debug)]
+struct FocusChanged;
+impl std::fmt::Display for FocusChanged {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Application focus changed")
+    }
+}
+impl std::error::Error for FocusChanged {}
+
+fn input_failure_reply(error: &Error) -> wire::Reply {
+    // Focus can move through a toolkit menu while a queued input is in flight.
+    // Keep rejecting stale input, but recover silently rather than painting a warning.
+    if error.is::<FocusChanged>() {
+        // The client hides this condition and resets its held-input snapshot.
+        // An ordinary Ack would leave Ctrl/Shift out of sync after cleanup.
+        wire::Reply::Error("Application focus changed".into())
+    } else {
+        wire::Reply::Error(error.to_string().chars().take(240).collect())
+    }
+}
+fn x_button(button: u8) -> Result<u8, Error> {
+    match button {
+        1 => Ok(1),
+        2 => Ok(3),
+        3 => Ok(2),
+        4 => Ok(8),
+        5 => Ok(9),
+        _ => Err("Unsupported application button".into()),
+    }
+}
 struct Selected {
     id: u32,
     damage: u32,
@@ -43,15 +82,23 @@ struct Selected {
     rebind: bool,
     popups: Vec<wire::Popup>,
     client_range: Option<(u32, u32)>,
+    info: wire::WindowInfo,
+    metadata_dirty: bool,
+    region: u32,
 }
 pub struct Mirror {
-    connection: RustConnection,
+    connection: Arc<RustConnection>,
     root: u32,
+    application_runtime: Option<std::path::PathBuf>,
     selected: Option<Selected>,
     keys: BTreeSet<u8>,
     buttons: BTreeSet<u8>,
     wheel: [i32; 2],
     popups: std::collections::BTreeMap<u32, PopupCapture>,
+    menu_cache: std::cell::RefCell<Option<(Instant, Vec<(u32, i32, i32, u32, u32)>)>>,
+    atoms: std::cell::RefCell<std::collections::BTreeMap<Vec<u8>, u32>>,
+    last_read_pixels: u64,
+    detached: Option<detach::Detached>,
 }
 
 pub(crate) fn wheel_steps(remainder: &mut i32, value: i32) -> i32 {
@@ -67,7 +114,11 @@ fn private(path: &Path, directory: bool) -> Result<(), Error> {
     if metadata.file_type().is_symlink()
         || metadata.uid() != unsafe { libc::getuid() }
         || metadata.mode() & 0o077 != 0
-        || metadata.is_dir() != directory
+        || if directory {
+            !metadata.is_dir()
+        } else {
+            !metadata.is_file()
+        }
     {
         return Err("Remote desktop identity is not private to this account".into());
     }
@@ -117,6 +168,82 @@ fn authority(path: &Path) -> Result<(u32, Vec<u8>), Error> {
     Ok((display, cookie.to_vec()))
 }
 
+/// A shell prefix contains paths only, never the X authentication cookie.
+/// The private environment is sourced on the host, outside shell history.
+pub fn application_environment(session: &str) -> Result<String, Error> {
+    let mirror = Mirror::connect_session(session)?;
+    let manager = mirror
+        .values(mirror.root, b"_NET_SUPPORTING_WM_CHECK")?
+        .first()
+        .copied()
+        .ok_or("Application window manager is starting")?;
+    mirror.connection.get_window_attributes(manager)?.reply()?;
+    let runtime = mirror
+        .application_runtime
+        .as_ref()
+        .ok_or("Application session unavailable")?;
+    let environment = runtime.join("application-environment.sh");
+    private(&environment, false)?;
+    let pipe = runtime.join("application-launch.fifo");
+    validate_launch_pipe(&pipe)?;
+    let candidates: Vec<_> = std::fs::read_dir(runtime)?
+        .filter_map(Result::ok)
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|s| s == "Xauthority"))
+        .collect();
+    if candidates.len() != 1 {
+        return Err("Application display identity is not unique".into());
+    }
+    let (display, _) = authority(&candidates[0])?;
+    let quote = |path: &Path| -> Result<String, Error> {
+        let text = path.to_str().ok_or("Application path is not Unicode")?;
+        if text.chars().any(char::is_control) {
+            return Err("Invalid application path".into());
+        }
+        Ok(format!("'{}'", text.replace('\'', "'\\''")))
+    };
+    Ok(format!(". {}; unset WAYLAND_DISPLAY; export DISPLAY=':{display}' XAUTHORITY={} GDK_BACKEND=x11 QT_QPA_PLATFORM=xcb XDG_SESSION_TYPE=x11",
+        quote(&environment)?, quote(&candidates[0])?))
+}
+
+fn validate_launch_pipe(path: &Path) -> Result<(), Error> {
+    use std::os::unix::fs::FileTypeExt;
+    let metadata = std::fs::symlink_metadata(path)?;
+    if !metadata.file_type().is_fifo()
+        || metadata.uid() != unsafe { libc::getuid() }
+        || metadata.mode() & 0o077 != 0
+    {
+        return Err("Application launcher is not private to this session".into());
+    }
+    Ok(())
+}
+fn enqueue_application(runtime: &Path, command: &str) -> Result<(), Error> {
+    use std::io::Write;
+    use std::os::unix::fs::FileTypeExt;
+    if command.trim().is_empty() || command.len() > 2048 || command.contains(['\n', '\r', '\0']) {
+        return Err("Use one application command of at most 2048 bytes".into());
+    }
+    let path = runtime.join("application-launch.fifo");
+    validate_launch_pipe(&path)?;
+    let mut pipe = OpenOptions::new()
+        .write(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(&path)?;
+    let metadata = pipe.metadata()?;
+    if !metadata.file_type().is_fifo()
+        || metadata.uid() != unsafe { libc::getuid() }
+        || metadata.mode() & 0o077 != 0
+    {
+        return Err("Application launcher ownership changed".into());
+    }
+    // Below Linux PIPE_BUF: a single write is atomic across simultaneous tabs.
+    let line = format!("{command}\n");
+    if pipe.write(line.as_bytes())? != line.len() {
+        return Err("Application launcher is busy; retry".into());
+    }
+    Ok(())
+}
+
 impl Mirror {
     pub fn connect_session(session: &str) -> Result<Self, Error> {
         // The caller passes a parsed UUID; arbitrary paths/displays are refused.
@@ -162,9 +289,14 @@ impl Mirror {
             b"MIT-MAGIC-COOKIE-1".to_vec(),
             cookie,
         )?;
-        Self::from_connection(connection)
+        let mut mirror = Self::from_connection(connection)?;
+        mirror.application_runtime = Some(runtime);
+        Ok(mirror)
     }
-    pub(crate) fn from_connection(connection: RustConnection) -> Result<Self, Error> {
+    pub(crate) fn from_connection(
+        connection: impl Into<Arc<RustConnection>>,
+    ) -> Result<Self, Error> {
+        let connection = connection.into();
         let root = connection.setup().roots[0].root;
         let version = composite::query_version(&connection, 0, 4)?.reply()?;
         if version.major_version == 0 && version.minor_version < 2 {
@@ -172,18 +304,36 @@ impl Mirror {
         }
         damage::query_version(&connection, 1, 1)?.reply()?;
         xtest::get_version(&connection, 2, 2)?.reply()?;
+        xfixes::query_version(&connection, 5, 0)?.reply()?;
+        connection
+            .change_window_attributes(
+                root,
+                &ChangeWindowAttributesAux::new()
+                    .event_mask(EventMask::SUBSTRUCTURE_NOTIFY | EventMask::PROPERTY_CHANGE),
+            )?
+            .check()?;
         Ok(Self {
             connection,
             root,
+            application_runtime: None,
             selected: None,
             keys: BTreeSet::new(),
             buttons: BTreeSet::new(),
             wheel: [0; 2],
             popups: std::collections::BTreeMap::new(),
+            menu_cache: Default::default(),
+            atoms: Default::default(),
+            last_read_pixels: 0,
+            detached: None,
         })
     }
     fn atom(&self, name: &[u8]) -> Result<u32, Error> {
-        Ok(self.connection.intern_atom(false, name)?.reply()?.atom)
+        if let Some(atom) = self.atoms.borrow().get(name) {
+            return Ok(*atom);
+        }
+        let atom = self.connection.intern_atom(false, name)?.reply()?.atom;
+        self.atoms.borrow_mut().insert(name.to_vec(), atom);
+        Ok(atom)
     }
     fn values(&self, window: u32, name: &[u8]) -> Result<Vec<u32>, Error> {
         let reply = self
@@ -232,8 +382,13 @@ impl Mirror {
             self.atom(b"_NET_WM_WINDOW_TYPE_DESKTOP")?,
             self.atom(b"_NET_WM_WINDOW_TYPE_DOCK")?,
         ];
-        let clients = self.values(self.root, b"_NET_CLIENT_LIST")?;
-        Ok(clients
+        let mut clients = self.values(self.root, b"_NET_CLIENT_LIST")?;
+        for id in detach::listed_clients(&self.connection, self.root)? {
+            if !clients.contains(&id) {
+                clients.push(id);
+            }
+        }
+        let mut windows: Vec<_> = clients
             .into_iter()
             .take(wire::MAX_WINDOWS)
             .filter_map(|id| {
@@ -252,7 +407,15 @@ impl Mirror {
                 }
                 self.info(id).ok()
             })
-            .collect())
+            .collect();
+        if self.detached.is_some() {
+            if let Some(selected) = &self.selected {
+                if !selected.destroyed && !windows.iter().any(|info| info.id == selected.id) {
+                    windows.push(self.info(selected.id)?);
+                }
+            }
+        }
+        Ok(windows)
     }
     fn release_input(&mut self) -> Result<(), Error> {
         self.wheel = [0; 2];
@@ -288,8 +451,8 @@ impl Mirror {
                 }
             }
         }
-        // flush() only writes to the socket. A same-connection server round
-        // trip makes Release/Stop acknowledgements meaningful to other clients.
+        // Check the requests, but do not confuse a request round trip with
+        // device-event processing: a WM's synchronous grab can defer XTest.
         if let Err(error) = connection.sync() {
             failure.get_or_insert_with(|| error.into());
         }
@@ -298,15 +461,65 @@ impl Mirror {
             None => Ok(()),
         }
     }
+    fn wait_released(&self, keys: &[u8], buttons: &[u8]) -> Result<(), Error> {
+        if keys.is_empty() && buttons.is_empty() {
+            return Ok(());
+        }
+        let deadline = Instant::now() + Duration::from_millis(250);
+        loop {
+            let keys_up = if keys.is_empty() {
+                true
+            } else {
+                let state = self.connection.query_keymap()?.reply()?.keys;
+                keys.iter()
+                    .all(|&code| state[usize::from(code / 8)] & (1 << (code % 8)) == 0)
+            };
+            // Core QueryPointer represents buttons 1–5, not extended buttons
+            // 8/9. Those retain checked, ordered XTest release semantics.
+            let buttons_up = if buttons.iter().all(|code| *code > 5) {
+                true
+            } else {
+                let state = u16::from(self.connection.query_pointer(self.root)?.reply()?.mask);
+                buttons
+                    .iter()
+                    .filter(|code| **code <= 5)
+                    .all(|&code| state & (1 << (7 + code)) == 0)
+            };
+            if keys_up && buttons_up {
+                return Ok(());
+            }
+            // After a focus handoff another view may legitimately hold the
+            // same key/button. Never interpret that global state as ownership
+            // of its input, or inject another release into that application.
+            if self.selected.is_some() && self.application_has_focus().is_ok_and(|focused| !focused)
+            {
+                return Ok(());
+            }
+            if Instant::now() >= deadline {
+                return Err("The host has not finished releasing application input".into());
+            }
+            // Do not inject extra releases or clear another client's input.
+            // Yield so the WM/toolkit can replay its queued device events.
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
     fn clear(&mut self) -> Result<(), Error> {
-        let input = self.release_input();
+        let keys: Vec<_> = self.keys.iter().copied().collect();
+        let buttons: Vec<_> = self.buttons.iter().copied().collect();
+        let input = self
+            .release_input()
+            .and_then(|_| self.wait_released(&keys, &buttons));
         self.clear_popups();
+        // Return a live hidden client to the host WM before removing capture.
+        drop(self.detached.take());
         if let Some(s) = self.selected.take() {
+            let _ = xfixes::destroy_region(&self.connection, s.region);
             let _ = self.connection.free_pixmap(s.pixmap);
             let _ = damage::destroy(&self.connection, s.damage);
             let _ = composite::unredirect_window(&self.connection, s.id, Redirect::AUTOMATIC);
             let _ = self.connection.flush();
         }
+        *self.menu_cache.borrow_mut() = None;
         input
     }
     fn select(&mut self, id: u32) -> Result<wire::WindowInfo, Error> {
@@ -321,6 +534,7 @@ impl Mirror {
         composite::redirect_window(&self.connection, id, Redirect::AUTOMATIC)?.check()?;
         let damage = self.connection.generate_id()?;
         let pixmap = self.connection.generate_id()?;
+        let region = self.connection.generate_id()?;
         let client_range = self.application_client_range(id);
         self.selected = Some(Selected {
             id,
@@ -334,15 +548,20 @@ impl Mirror {
             rebind: false,
             popups: Vec::new(),
             client_range,
+            info: info.clone(),
+            metadata_dirty: false,
+            region,
         });
         let prepared = (|| -> Result<(), Error> {
             self.connection
                 .change_window_attributes(
                     id,
-                    &ChangeWindowAttributesAux::new().event_mask(EventMask::STRUCTURE_NOTIFY),
+                    &ChangeWindowAttributesAux::new()
+                        .event_mask(EventMask::STRUCTURE_NOTIFY | EventMask::PROPERTY_CHANGE),
                 )?
                 .check()?;
             damage::create(&self.connection, damage, id, ReportLevel::NON_EMPTY)?.check()?;
+            xfixes::create_region(&self.connection, region, &[])?.check()?;
             composite::name_window_pixmap(&self.connection, id, pixmap)?.check()?;
             self.connection.flush()?;
             Ok(())
@@ -360,10 +579,25 @@ impl Mirror {
                 break;
             };
             self.popup_event(&event);
+            if matches!(
+                &event,
+                Event::MapNotify(_)
+                    | Event::UnmapNotify(_)
+                    | Event::ConfigureNotify(_)
+                    | Event::DestroyNotify(_)
+                    | Event::ReparentNotify(_)
+                    | Event::PropertyNotify(_)
+            ) {
+                *self.menu_cache.borrow_mut() = None;
+            }
             if let Some(s) = &mut self.selected {
                 match event {
                     Event::DamageNotify(e) if e.damage == s.damage => s.dirty = true,
-                    Event::ConfigureNotify(e) if e.window == s.id => s.dirty = true,
+                    Event::ConfigureNotify(e) if e.window == s.id => {
+                        s.dirty = true;
+                        s.metadata_dirty = true;
+                    }
+                    Event::PropertyNotify(e) if e.window == s.id => s.metadata_dirty = true,
                     Event::DestroyNotify(e) if e.window == s.id => s.destroyed = true,
                     Event::UnmapNotify(e) if e.window == s.id => s.dirty = true,
                     Event::MapNotify(e) if e.window == s.id => {
@@ -378,16 +612,43 @@ impl Mirror {
     }
     fn frame(&mut self) -> Result<wire::Reply, Error> {
         self.events()?;
+        if self.selected.as_ref().is_some_and(|s| s.metadata_dirty) {
+            let info = self.info(self.selected.as_ref().unwrap().id)?;
+            let s = self.selected.as_mut().unwrap();
+            s.info = info;
+            s.metadata_dirty = false;
+        }
         let s = self.selected.as_ref().ok_or("No application selected")?;
         if s.destroyed {
             let _ = self.clear();
             return Err("The application window was closed".into());
         }
         let id = s.id;
-        let info = self.info(id)?;
-        let attrs = self.connection.get_window_attributes(id)?.reply()?;
+        let info = s.info.clone();
+        if let Some(detached) = &self.detached {
+            detached.resize_holder(info.width, info.height)?;
+        }
+        let mut attrs = self.connection.get_window_attributes(id)?.reply()?;
         if attrs.map_state != MapState::VIEWABLE {
-            return Err("Restore the application in the remote desktop to continue viewing".into());
+            let iconic = self.values(id, b"WM_STATE")?.first() == Some(&3);
+            if self.detached.is_none() && iconic {
+                self.release_input()?;
+                self.clear_popups();
+                self.detached = Some(detach::Detached::new(
+                    self.connection.clone(),
+                    self.root,
+                    id,
+                    &info,
+                )?);
+                if let Some(selected) = &mut self.selected {
+                    selected.rebind = true;
+                    selected.dirty = true;
+                }
+                attrs = self.connection.get_window_attributes(id)?.reply()?;
+            }
+            if attrs.map_state != MapState::VIEWABLE {
+                return Err("The application is not available for live capture".into());
+            }
         }
         let visual = self.connection.setup().roots[0]
             .allowed_depths
@@ -423,67 +684,8 @@ impl Mirror {
                 popups,
             });
         }
-        if s.rebind || s.size != (info.width, info.height) {
-            self.connection.free_pixmap(s.pixmap)?.check()?;
-            s.pixmap = self.connection.generate_id()?;
-            composite::name_window_pixmap(&self.connection, id, s.pixmap)?.check()?;
-            s.size = (info.width, info.height);
-            s.pixels.clear();
-            s.rebind = false;
-        }
-        damage::subtract(&self.connection, s.damage, 0u32, 0u32)?.check()?;
-        let image = self
-            .connection
-            .get_image(
-                ImageFormat::Z_PIXMAP,
-                s.pixmap,
-                0,
-                0,
-                info.width as u16,
-                info.height as u16,
-                u32::MAX,
-            )?
-            .reply()?;
-        let format = self
-            .connection
-            .setup()
-            .pixmap_formats
-            .iter()
-            .find(|f| f.depth == image.depth)
-            .ok_or("Unsupported window pixel format")?;
-        let pixels = decode_pixels(
-            info.width,
-            info.height,
-            format.bits_per_pixel,
-            format.scanline_pad,
-            self.connection.setup().image_byte_order == ImageOrder::LSB_FIRST,
-            &image.data,
-        )?;
-        let base = (!s.pixels.is_empty()).then_some(s.sequence);
-        let mut tiles = Vec::new();
-        for y in (0..info.height).step_by(256) {
-            for x in (0..info.width).step_by(256) {
-                let region = Rectangle {
-                    x,
-                    y,
-                    width: (info.width - x).min(256),
-                    height: (info.height - y).min(256),
-                };
-                let mut bytes = Vec::with_capacity((region.width * region.height * 4) as usize);
-                let mut changed = base.is_none();
-                for row in y..y + region.height {
-                    let start = ((row * info.width + x) * 4) as usize;
-                    let end = start + (region.width * 4) as usize;
-                    if !changed && pixels[start..end] != s.pixels[start..end] {
-                        changed = true;
-                    }
-                    bytes.extend_from_slice(&pixels[start..end]);
-                }
-                if changed {
-                    tiles.push(LosslessTile::encode(region, bytes)?);
-                }
-            }
-        }
+        let (tiles, base) = self.capture_tiles()?;
+        let s = self.selected.as_mut().unwrap();
         s.dirty = false;
         if tiles.is_empty() && !popups_changed {
             return Ok(wire::Reply::Idle);
@@ -493,7 +695,6 @@ impl Mirror {
             .sequence
             .checked_add(1)
             .ok_or("Window sequence exhausted")?;
-        s.pixels = pixels;
         Ok(wire::Reply::Frame {
             window: id,
             sequence: s.sequence,
@@ -517,6 +718,17 @@ impl Mirror {
             return Ok(());
         }
         self.release_input()?;
+        if self.detached.is_some() {
+            self.connection
+                .set_input_focus(InputFocus::PARENT, id, x11rb::CURRENT_TIME)?
+                .check()?;
+            self.connection.sync()?;
+            return if self.application_has_focus()? {
+                Ok(())
+            } else {
+                Err(FocusChanged.into())
+            };
+        }
         self.connection
             .send_event(
                 false,
@@ -529,7 +741,7 @@ impl Mirror {
         let deadline = Instant::now() + Duration::from_millis(250);
         while !self.application_has_focus()? {
             if Instant::now() >= deadline {
-                return Err("Activate the application in the remote desktop before typing".into());
+                return Err(FocusChanged.into());
             }
             std::thread::sleep(Duration::from_millis(5));
         }
@@ -537,11 +749,19 @@ impl Mirror {
     }
     fn require_focus(&mut self) -> Result<u32, Error> {
         let id = self.selected.as_ref().ok_or("No application selected")?.id;
+        // XFWM can finish its old iconify/focus transaction after the hidden
+        // client was remapped. Fresh input from the independent native view
+        // may focus this owned client directly, without raising a desktop app
+        // or dropping a modifier the user is still holding.
+        if self.detached.is_some() && !self.application_has_focus()? {
+            self.connection
+                .set_input_focus(InputFocus::PARENT, id, x11rb::CURRENT_TIME)?
+                .check()?;
+            self.connection.sync()?;
+        }
         if !self.application_has_focus()? {
             self.release_input()?;
-            return Err(
-                "Application focus changed; click its independent view to activate it again".into(),
-            );
+            return Err(FocusChanged.into());
         }
         Ok(id)
     }
@@ -549,7 +769,7 @@ impl Mirror {
         let id = self.selected.as_ref().ok_or("No application selected")?.id;
         let active = self.active()?;
         let focused = self.connection.get_input_focus()?.reply()?.focus;
-        if active == id && (focused == id || focused <= 1) {
+        if active == id && (focused == id || (focused <= 1 && self.detached.is_none())) {
             return Ok(true);
         }
         // A toolkit may focus a menu (or a child of it) while its popup grab
@@ -573,7 +793,7 @@ impl Mirror {
         };
         // A genuinely different active application always wins, even if an old
         // menu from the selected app is still mapped.
-        if active != 0 && !belongs(active)? {
+        if self.detached.is_none() && active != 0 && !belongs(active)? {
             return Ok(false);
         }
         if focused > 1 {
@@ -582,7 +802,7 @@ impl Mirror {
         // PointerRoot/None is used during some legacy menu grabs. Require an
         // actual pointer target in the currently validated family, not merely
         // a cached menu or an unset active-window property.
-        if active == 0 && !menus.is_empty() {
+        if (active == 0 || self.detached.is_some()) && !menus.is_empty() {
             let mut target = self.root;
             for _ in 0..32 {
                 let pointer = self.connection.query_pointer(target)?.reply()?;
@@ -595,20 +815,28 @@ impl Mirror {
                 }
             }
         }
-        Ok(active == id || menus.iter().any(|m| m.0 == active))
+        Ok(self.detached.is_none() && (active == id || menus.iter().any(|m| m.0 == active)))
     }
     fn motion(&mut self, x: i32, y: i32) -> Result<(), Error> {
         let id = self.require_focus()?;
-        let info = self.info(id)?;
+        if self.selected.as_ref().is_some_and(|s| s.metadata_dirty) {
+            let info = self.info(id)?;
+            let selected = self.selected.as_mut().unwrap();
+            selected.info = info;
+            selected.metadata_dirty = false;
+        }
+        let info = self.selected.as_ref().unwrap().info.clone();
         let in_client = x >= 0 && y >= 0 && x < info.width as i32 && y < info.height as i32;
-        let in_menu = self.selected.as_ref().is_some_and(|s| {
-            s.popups.iter().any(|p| {
-                i64::from(x) >= i64::from(p.x)
-                    && i64::from(y) >= i64::from(p.y)
-                    && i64::from(x) < i64::from(p.x) + i64::from(p.width)
-                    && i64::from(y) < i64::from(p.y) + i64::from(p.height)
-            })
-        });
+        let in_menu = !in_client
+            && self
+                .popup_candidates(id)?
+                .iter()
+                .any(|&(_, px, py, width, height)| {
+                    i64::from(x) >= i64::from(px)
+                        && i64::from(y) >= i64::from(py)
+                        && i64::from(x) < i64::from(px) + i64::from(width)
+                        && i64::from(y) < i64::from(py) + i64::from(height)
+                });
         if !(in_client || in_menu) || i16::try_from(x).is_err() || i16::try_from(y).is_err() {
             return Err("Pointer is outside the application and its menus".into());
         }
@@ -638,8 +866,67 @@ impl Mirror {
         Ok(())
     }
     pub(crate) fn handle(&mut self, request: wire::Request) -> Result<wire::Reply, Error> {
+        self.events()?;
+        let before_keys = self.keys.clone();
+        let before_buttons = self.buttons.clone();
+        // The private holder never intercepts desktop mouse input. Expose its
+        // input shape only for an atomic synthetic-input transaction. Other
+        // X11 clients cannot receive an accidental click in that interval.
+        let _input = if self.detached.is_some()
+            && matches!(
+                &request,
+                wire::Request::Focus
+                    | wire::Request::Key { .. }
+                    | wire::Request::Move { .. }
+                    | wire::Request::Button { .. }
+                    | wire::Request::Wheel { .. }
+            ) {
+            let mut regions = vec![self.detached.as_ref().unwrap().input()];
+            regions.extend(
+                self.popups
+                    .values()
+                    .filter_map(|popup| popup.hidden_input()),
+            );
+            Some(detach::InputGuard::new(
+                self.connection.clone(),
+                regions,
+                self.detached.as_ref().unwrap().viewport()?,
+            )?)
+        } else {
+            None
+        };
+        let mut wheel_released = Vec::new();
+        let result = self.handle_request(request, &mut wheel_released);
+        drop(_input);
+        let reply = match result {
+            Ok(reply) => reply,
+            Err(error) => {
+                let keys: Vec<_> = before_keys.union(&self.keys).copied().collect();
+                let buttons: Vec<_> = before_buttons.union(&self.buttons).copied().collect();
+                if let Err(cleanup) = self
+                    .release_input()
+                    .and_then(|_| self.wait_released(&keys, &buttons))
+                {
+                    tracing::warn!(%cleanup, "Application input cleanup did not finish");
+                }
+                return Err(error);
+            }
+        };
+        let keys: Vec<_> = before_keys.difference(&self.keys).copied().collect();
+        let mut buttons: Vec<_> = before_buttons.difference(&self.buttons).copied().collect();
+        buttons.extend(wheel_released);
+        self.connection.flush()?;
+        self.wait_released(&keys, &buttons)?;
+        Ok(reply)
+    }
+    fn handle_request(
+        &mut self,
+        request: wire::Request,
+        wheel_released: &mut Vec<u8>,
+    ) -> Result<wire::Reply, Error> {
         use wire::Request::*;
         match request {
+            Stream { .. } => {}
             List => return Ok(wire::Reply::Windows(self.list()?)),
             Select(id) => return Ok(wire::Reply::Selected(self.select(id)?)),
             Poll => return self.frame(),
@@ -647,19 +934,29 @@ impl Mirror {
             Resize { width, height } => {
                 wire::dimensions(width, height)?;
                 let id = self.selected.as_ref().ok_or("No application selected")?.id;
-                self.connection
-                    .send_event(
-                        false,
-                        self.root,
-                        EventMask::SUBSTRUCTURE_REDIRECT | EventMask::SUBSTRUCTURE_NOTIFY,
-                        ClientMessageEvent::new(
-                            32,
+                if let Some(detached) = &self.detached {
+                    detached.resize_holder(width, height)?;
+                    self.connection
+                        .configure_window(
                             id,
-                            self.atom(b"_NET_MOVERESIZE_WINDOW")?,
-                            [1 | (3 << 10) | (2 << 12), 0, 0, width, height],
-                        ),
-                    )?
-                    .check()?;
+                            &ConfigureWindowAux::new().width(width).height(height),
+                        )?
+                        .check()?;
+                } else {
+                    self.connection
+                        .send_event(
+                            false,
+                            self.root,
+                            EventMask::SUBSTRUCTURE_REDIRECT | EventMask::SUBSTRUCTURE_NOTIFY,
+                            ClientMessageEvent::new(
+                                32,
+                                id,
+                                self.atom(b"_NET_MOVERESIZE_WINDOW")?,
+                                [1 | (3 << 10) | (2 << 12), 0, 0, width, height],
+                            ),
+                        )?
+                        .check()?;
+                }
                 if let Some(s) = &mut self.selected {
                     s.dirty = true;
                 }
@@ -704,14 +1001,7 @@ impl Mirror {
                 y,
             } => {
                 self.motion(x, y)?;
-                let code = match button {
-                    1 => 1,
-                    2 => 3,
-                    3 => 2,
-                    4 => 8,
-                    5 => 9,
-                    _ => return Err("Unsupported application button".into()),
-                };
+                let code = x_button(button)?;
                 if pressed {
                     self.buttons.insert(code);
                 } else if !self.buttons.contains(&code) {
@@ -747,6 +1037,7 @@ impl Mirror {
                     let steps = wheel_steps(&mut self.wheel[index], value);
                     for _ in 0..steps.abs() {
                         let code = if steps > 0 { positive } else { negative };
+                        self.buttons.insert(code);
                         xtest::fake_input(
                             &self.connection,
                             BUTTON_PRESS_EVENT,
@@ -769,13 +1060,32 @@ impl Mirror {
                             0,
                         )?
                         .check()?;
+                        self.buttons.remove(&code);
+                        wheel_released.push(code);
                     }
                 }
             }
             Release => self.release_input()?,
             Stop => self.clear()?,
+            InputBatch(requests) => {
+                if requests.is_empty() || requests.len() > 64 {
+                    return Err("Invalid application input batch".into());
+                }
+                for request in requests {
+                    if let Err(error) = self.handle(request.into()) {
+                        let _ = self.release_input();
+                        return Err(error);
+                    }
+                }
+            }
+            Launch(command) => {
+                let runtime = self
+                    .application_runtime
+                    .as_ref()
+                    .ok_or("Application launching is unavailable")?;
+                enqueue_application(runtime, &command)?;
+            }
         }
-        self.connection.flush()?;
         Ok(wire::Reply::Ack)
     }
 }
@@ -898,75 +1208,11 @@ impl Pipe {
 }
 
 pub async fn serve(session: &str) -> Result<(), Error> {
-    let input = Pipe::new(0)?;
-    let output = Pipe::new(1)?;
-    async fn send(output: &Pipe, reply: &wire::Reply) -> Result<(), Error> {
-        let bytes = wire::encode(reply)?;
-        tokio::time::timeout(Duration::from_secs(10), async {
-            output.write_all(wire::MAGIC).await?;
-            output
-                .write_all(&(bytes.len() as u32).to_be_bytes())
-                .await?;
-            output.write_all(&bytes).await
-        })
-        .await??;
-        Ok(())
-    }
-    let mut mirror = match Mirror::connect_session(session) {
-        Ok(mirror) => mirror,
-        Err(error) => {
-            send(
-                &output,
-                &wire::Reply::Error(error.to_string().chars().take(240).collect()),
-            )
-            .await?;
-            return Ok(());
-        }
-    };
-    send(&output, &wire::Reply::Ready).await?;
-    loop {
-        let received = tokio::time::timeout(Duration::from_secs(15), async {
-            let mut magic = [0; 8];
-            input.read_exact(&mut magic).await?;
-            if &magic != wire::MAGIC {
-                return Err(std::io::Error::other("Invalid window stream identity"));
-            }
-            let mut length = [0; 4];
-            input.read_exact(&mut length).await?;
-            let size = u32::from_be_bytes(length) as usize;
-            if size > 64 * 1024 {
-                return Err(std::io::Error::other("Oversized window request"));
-            }
-            let mut bytes = vec![0; size];
-            input.read_exact(&mut bytes).await?;
-            Ok::<_, std::io::Error>(bytes)
-        })
-        .await;
-        let bytes = match received {
-            Ok(Ok(bytes)) => bytes,
-            _ => break,
-        };
-        let request: wire::Request = wire::decode(&bytes)?;
-        let stop = matches!(request, wire::Request::Stop);
-        let clear_on_error = matches!(request, wire::Request::Poll | wire::Request::Select(_));
-        let reply = match mirror.handle(request) {
-            Ok(reply) => reply,
-            Err(error) => {
-                if let Err(cleanup_error) = mirror.release_input() {
-                    tracing::warn!(%cleanup_error, "Independent window input release failed");
-                }
-                if clear_on_error {
-                    let _ = mirror.clear();
-                }
-                wire::Reply::Error(error.to_string().chars().take(240).collect())
-            }
-        };
-        send(&output, &reply).await?;
-        if stop {
-            break;
-        }
-    }
-    Ok(())
+    updates::serve(session).await
+}
+#[cfg(test)]
+pub(crate) fn verify_event_stream(session: &str, connection: &RustConnection, window: u32) {
+    updates::verify_stream(session, connection, window);
 }
 
 #[cfg(test)]
@@ -1155,6 +1401,7 @@ pub(crate) fn verify_existing_window(
         assert!(base.is_none());
         wire::apply_frame(None, sequence, base, w, h, tiles).unwrap();
     }
+    capture::verify_partial(&mut mirror, controller, window, gc, info.width, info.height);
     popups::verify_menus(&mut mirror, controller, window);
     mirror.handle(wire::Request::Focus).unwrap();
     let baseline = controller.query_keymap().unwrap().reply().unwrap();
@@ -1196,18 +1443,18 @@ pub(crate) fn verify_existing_window(
     };
     let press_owned = |mirror: &mut Mirror| {
         mirror
-            .handle(wire::Request::Key {
-                evdev: 30,
-                pressed: true,
-            })
-            .unwrap();
-        mirror
-            .handle(wire::Request::Button {
-                button: 1,
-                pressed: true,
-                x: 10,
-                y: 10,
-            })
+            .handle(wire::Request::InputBatch(vec![
+                wire::WindowInput::Key {
+                    evdev: 30,
+                    pressed: true,
+                },
+                wire::WindowInput::Button {
+                    button: 1,
+                    pressed: true,
+                    x: 10,
+                    y: 10,
+                },
+            ]))
             .unwrap();
     };
     for _ in 0..8 {
@@ -1221,6 +1468,43 @@ pub(crate) fn verify_existing_window(
         mirror.handle(wire::Request::Release).unwrap(); // idempotent
         assert_input(false, false);
     }
+    // A real synchronous WM grab can defer device processing beyond XSync.
+    // Release must not acknowledge success before the host unfreezes it.
+    press_owned(&mut mirror);
+    let grabbed = controller
+        .grab_pointer(
+            false,
+            window,
+            EventMask::BUTTON_PRESS | EventMask::BUTTON_RELEASE,
+            GrabMode::SYNC,
+            GrabMode::ASYNC,
+            0u32,
+            0u32,
+            x11rb::CURRENT_TIME,
+        )
+        .unwrap()
+        .reply()
+        .unwrap();
+    assert_eq!(grabbed.status, GrabStatus::SUCCESS);
+    std::thread::scope(|scope| {
+        let thaw = scope.spawn(|| {
+            std::thread::sleep(Duration::from_millis(40));
+            controller
+                .allow_events(Allow::ASYNC_POINTER, x11rb::CURRENT_TIME)
+                .unwrap()
+                .check()
+                .unwrap();
+            controller
+                .ungrab_pointer(x11rb::CURRENT_TIME)
+                .unwrap()
+                .check()
+                .unwrap();
+            controller.sync().unwrap();
+        });
+        mirror.handle(wire::Request::Release).unwrap();
+        assert_input(false, false);
+        thaw.join().unwrap();
+    });
     // Ordinary matching key/button release also waits for checked success.
     press_owned(&mut mirror);
     mirror
@@ -1237,6 +1521,26 @@ pub(crate) fn verify_existing_window(
             y: 10,
         })
         .unwrap();
+    assert_input(false, false);
+    assert!(mirror.handle(wire::Request::InputBatch(vec![])).is_err());
+    assert!(mirror
+        .handle(wire::Request::InputBatch(vec![
+            wire::WindowInput::Release;
+            65
+        ]))
+        .is_err());
+    assert!(mirror
+        .handle(wire::Request::InputBatch(vec![
+            wire::WindowInput::Key {
+                evdev: 30,
+                pressed: true
+            },
+            wire::WindowInput::Key {
+                evdev: u32::MAX,
+                pressed: true
+            },
+        ]))
+        .is_err());
     assert_input(false, false);
     press_owned(&mut mirror);
     assert!(matches!(
@@ -1277,8 +1581,46 @@ pub(crate) fn verify_existing_window(
 }
 
 #[cfg(test)]
+pub(crate) fn verify_minimized_window(
+    connection: RustConnection,
+    controller: &RustConnection,
+    window: u32,
+) {
+    detach::verify_minimized(Arc::new(connection), controller, window);
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn application_launcher_rejects_nonprivate_files_and_enqueues_atomic_commands() {
+        use std::ffi::CString;
+        use std::os::unix::fs::PermissionsExt;
+        let directory = tempfile::tempdir().unwrap();
+        let pipe = directory.path().join("application-launch.fifo");
+        std::fs::write(&pipe, b"not a pipe").unwrap();
+        assert!(enqueue_application(directory.path(), "xterm").is_err());
+        std::fs::remove_file(&pipe).unwrap();
+        let c = CString::new(pipe.as_os_str().as_encoded_bytes()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0);
+        // Hold a reader so the nonblocking writer cannot hang on a dead broker.
+        let mut reader = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .custom_flags(libc::O_NONBLOCK)
+            .open(&pipe)
+            .unwrap();
+        for bad in ["", "xterm\nother", "xterm\r", "x\0"] {
+            assert!(enqueue_application(directory.path(), bad).is_err());
+        }
+        assert!(enqueue_application(directory.path(), &"x".repeat(2049)).is_err());
+        enqueue_application(directory.path(), "printf '%s' 'literal; argument'").unwrap();
+        let mut buffer = [0u8; 4096];
+        let n = reader.read(&mut buffer).unwrap();
+        assert_eq!(&buffer[..n], b"printf '%s' 'literal; argument'\n");
+        std::fs::set_permissions(&pipe, std::fs::Permissions::from_mode(0o666)).unwrap();
+        assert!(enqueue_application(directory.path(), "xterm").is_err());
+    }
     #[test]
     fn x11_wheel_fractions_accumulate_without_amplification_or_axis_leakage() {
         let mut axes = [0; 2];

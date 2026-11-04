@@ -100,7 +100,8 @@ def verify_x11_runtime(package):
         with (scratch / "process.log").open("wb") as output:
             process = subprocess.Popen(
                 [str(root / "vcxsrv.exe"), f":{display}", "-multiwindow", "-notrayicon",
-                 "-noreset", "-nowgl", "+iglx", "-auth", str(authority),
+                 "-engine", "1", "-noreset", "-compositewm", "-nocompositealpha",
+                 "-nowgl", "+iglx", "-auth", str(authority),
                  "-logfile", str(scratch / "server.log"), "-listen", "tcp", "-nolisten", "inet6"],
                 cwd=root, env=env, stdin=subprocess.DEVNULL, stdout=output,
                 stderr=subprocess.STDOUT, creationflags=subprocess.CREATE_NO_WINDOW,
@@ -133,6 +134,11 @@ def verify_x11_runtime(package):
                     raise RuntimeError("Bundled X server accepted an invalid authentication cookie")
                 if process.poll() is not None:
                     raise RuntimeError("Bundled X server stopped after its first client disconnected")
+                deadline = time.monotonic() + 3
+                while "Using Composite redirection" not in (scratch / "server.log").read_text(errors="replace"):
+                    if process.poll() is not None or time.monotonic() >= deadline:
+                        raise RuntimeError("Bundled X server did not enable its required window backing")
+                    time.sleep(0.02)
             except BaseException:
                 log = scratch / "server.log"
                 if log.exists():

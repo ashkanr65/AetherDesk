@@ -11,6 +11,9 @@ use tokio::{
     sync::mpsc,
 };
 use tokio_util::sync::CancellationToken;
+#[path = "application_frames.rs"]
+mod frames;
+pub(super) use frames::Frame;
 
 #[derive(Clone)]
 pub(crate) struct Target {
@@ -20,6 +23,39 @@ pub(crate) struct Target {
     pub runtime: tokio::runtime::Handle,
 }
 impl Target {
+    pub(crate) async fn shell_environment(&self) -> Result<String, String> {
+        let command = self
+            .command()?
+            .replace("--window-mirror", "--application-environment");
+        // The helper can precede the WM's atomic environment publication.
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
+        loop {
+            let output = self
+                .ssh
+                .execute_command_output(&command, Duration::from_secs(3))
+                .await
+                .map_err(|e| e.to_string())?;
+            if output.exit_status == 0 {
+                let value = String::from_utf8(output.stdout)
+                    .map_err(|_| "Invalid application environment")?;
+                let value = value.trim();
+                if value.len() > 8192
+                    || value.contains(['\n', '\r', '\0'])
+                    || !value.starts_with(". '")
+                {
+                    return Err("Invalid application shell environment".into());
+                }
+                return Ok(format!("{value}; "));
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return Err(
+                    "Application environment did not become ready. Check the host agent log."
+                        .into(),
+                );
+            }
+            tokio::time::sleep(Duration::from_millis(150)).await;
+        }
+    }
     fn command(&self) -> Result<String, String> {
         command(&self.version, self.session)
     }
@@ -45,12 +81,14 @@ pub(super) struct PopupState {
 }
 #[derive(Clone, Default)]
 pub(super) struct State {
+    pub input_epoch: u64,
     pub windows: Vec<WindowInfo>,
     pub selected: Option<WindowInfo>,
-    pub image: Option<(u64, Arc<egui::ColorImage>)>,
+    pub image: Option<Frame>,
     pub popups: Vec<PopupState>,
     pub error: Option<String>,
     pub alive: bool,
+    pub streaming: bool,
 }
 pub(super) struct Worker {
     pub commands: mpsc::Sender<Request>,
@@ -126,185 +164,109 @@ async fn read<S: AsyncRead + Unpin>(stream: &mut S) -> Result<Reply, String> {
         .map_err(|_| "Incomplete application response")?;
     wire::decode(&bytes)
 }
+#[path = "application_stream.rs"]
+mod stream;
 async fn run(
     target: Target,
-    mut commands: mpsc::Receiver<Request>,
+    commands: mpsc::Receiver<Request>,
     state: Arc<Mutex<State>>,
     ctx: egui::Context,
 ) -> Result<(), String> {
-    let channel = tokio::time::timeout(
-        Duration::from_secs(10),
-        target.ssh.open_exec_channel(&target.command()?),
-    )
-    .await
-    .map_err(|_| "Application connection timed out")?
-    .map_err(|e| e.to_string())?;
-    let mut stream = channel.into_stream();
-    let ready = tokio::time::timeout(Duration::from_secs(10), read(&mut stream))
-        .await
-        .map_err(|_| "Application helper did not start")??;
-    match ready {
-        Reply::Ready => {}
-        Reply::Error(error) => return Err(error),
-        _ => return Err("Application helper did not negotiate the expected version".into()),
+    stream::run(target, commands, state, ctx).await
+}
+
+fn quiet_focus_error(error: &str) -> bool {
+    error.starts_with("Application focus changed")
+        || error == "Activate the application in the remote desktop before typing"
+}
+
+fn batch_commands(
+    first: Request,
+    commands: &mut mpsc::Receiver<Request>,
+    pending: &mut Option<Request>,
+) -> Request {
+    if !wire::batchable(&first) {
+        return first;
     }
-    let mut selected = None;
-    let mut previous: Option<(u64, u32, u32, Vec<u8>)> = None;
-    let mut ticker = tokio::time::interval(Duration::from_millis(50));
-    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-    let mut list_due = Instant::now() - Duration::from_secs(2);
-    loop {
-        let request = tokio::select! {
-            biased;
-            command=commands.recv()=>match command{Some(c)=>c,None=>Request::Stop},
-            _=ticker.tick()=>{
-                if selected.is_some(){Request::Poll}
-                else if list_due.elapsed()>Duration::from_secs(1){list_due=Instant::now();Request::List}
-                else{continue;}
+    let mut batch = vec![first];
+    while batch.len() < 64 {
+        match commands.try_recv() {
+            Ok(next) if wire::batchable(&next) => batch.push(next),
+            Ok(next) => {
+                *pending = Some(next);
+                break;
             }
-        };
-        let stop = matches!(request, Request::Stop);
-        tokio::time::timeout(Duration::from_secs(10), write(&mut stream, &request))
-            .await
-            .map_err(|_| "Application command timed out")??;
-        let reply = tokio::time::timeout(Duration::from_secs(10), read(&mut stream))
-            .await
-            .map_err(|_| "Application capture timed out")??;
-        match reply {
-            Reply::Ready => return Err("Unexpected repeated application handshake".into()),
-            Reply::Windows(windows) => {
-                if windows.len() > wire::MAX_WINDOWS || windows.iter().any(|w| w.title.len() > 2048)
-                {
-                    return Err("Invalid application list".into());
-                }
-                state.lock().windows = windows;
-            }
-            Reply::Selected(window) => {
-                wire::dimensions(window.width, window.height)?;
-                selected = Some(window.id);
-                previous = None;
-                let mut s = state.lock();
-                s.selected = Some(window);
-                s.image = None;
-                s.popups.clear();
-                s.error = None;
-            }
-            Reply::Frame {
-                window,
-                sequence,
-                base,
-                width,
-                height,
-                tiles,
-                popups,
-            } => {
-                if selected != Some(window) {
-                    return Err("Application frame belongs to a different window".into());
-                }
-                wire::validate_popups(&popups)?;
-                let popup_pixels: u64 = popups
-                    .iter()
-                    .map(|p| u64::from(p.width) * u64::from(p.height))
-                    .sum();
-                if u64::from(width) * u64::from(height) + popup_pixels > wire::MAX_PIXELS as u64 {
-                    return Err("Application and menus exceed the capture budget".into());
-                }
-                let old = state.lock().popups.clone();
-                let mut popup_images = Vec::new();
-                for popup in popups {
-                    let image = if let Some(old) = old.iter().find(|p| p.info == popup) {
-                        old.image.clone()
-                    } else {
-                        let bytes = wire::apply_frame(
-                            None,
-                            1,
-                            None,
-                            popup.width,
-                            popup.height,
-                            popup.tiles.clone(),
-                        )?;
-                        Arc::new(egui::ColorImage::new(
-                            [popup.width as usize, popup.height as usize],
-                            bytes
-                                .chunks_exact(4)
-                                .map(|p| {
-                                    egui::Color32::from_rgba_premultiplied(p[2], p[1], p[0], p[3])
-                                })
-                                .collect(),
-                        ))
-                    };
-                    popup_images.push(PopupState { info: popup, image });
-                }
-                let only_menus = tiles.is_empty()
-                    && previous.as_ref().is_some_and(|(seq, w, h, _)| {
-                        base == Some(*seq) && sequence > *seq && *w == width && *h == height
-                    });
-                if only_menus {
-                    let (_, w, h, bytes) = previous.take().unwrap();
-                    previous = Some((sequence, w, h, bytes));
-                    let mut s = state.lock();
-                    if let Some((seq, _)) = &mut s.image {
-                        *seq = sequence;
-                    }
-                    s.popups = popup_images;
-                    s.error = None;
-                    drop(s);
-                    ctx.request_repaint();
-                    continue;
-                }
-                let pixels = wire::apply_frame(
-                    previous
-                        .as_ref()
-                        .map(|(seq, w, h, bytes)| (*seq, *w, *h, bytes.as_slice())),
-                    sequence,
-                    base,
-                    width,
-                    height,
-                    tiles,
-                )?;
-                let image = egui::ColorImage::new(
-                    [width as usize, height as usize],
-                    pixels
-                        .chunks_exact(4)
-                        .map(|p| egui::Color32::from_rgb(p[2], p[1], p[0]))
-                        .collect(),
-                );
-                previous = Some((sequence, width, height, pixels));
-                let mut s = state.lock();
-                s.image = Some((sequence, Arc::new(image)));
-                s.popups = popup_images;
-                s.error = None;
-                if let Some(window) = &mut s.selected {
-                    window.width = width;
-                    window.height = height;
-                }
-            }
-            Reply::Error(error) => {
-                let mut s = state.lock();
-                s.error = Some(error.chars().take(240).collect());
-                if matches!(request, Request::Select(_) | Request::Poll) {
-                    selected = None;
-                    previous = None;
-                    s.selected = None;
-                    s.image = None;
-                    s.popups.clear();
-                }
-            }
-            Reply::Ack => state.lock().error = None,
-            Reply::Idle => {}
-        }
-        ctx.request_repaint();
-        if stop {
-            let _ = stream.shutdown().await;
-            break;
+            Err(_) => break,
         }
     }
-    Ok(())
+    if batch.len() == 1 {
+        batch.pop().unwrap()
+    } else {
+        Request::InputBatch(
+            batch
+                .into_iter()
+                .map(|r| wire::WindowInput::try_from(r).expect("only eligible input is collected"))
+                .collect(),
+        )
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn only_legacy_focus_notices_are_silent() {
+        assert!(quiet_focus_error(
+            "Application focus changed; click its independent view to activate it again"
+        ));
+        assert!(quiet_focus_error(
+            "Activate the application in the remote desktop before typing"
+        ));
+        assert!(!quiet_focus_error("Connection timed out"));
+        assert!(!quiet_focus_error("The application window was closed"));
+    }
+    #[test]
+    fn input_batching_preserves_modifiers_release_order_and_capture_boundaries() {
+        let (tx, mut rx) = mpsc::channel(128);
+        tx.try_send(Request::Key {
+            evdev: 30,
+            pressed: true,
+        })
+        .unwrap();
+        tx.try_send(Request::Key {
+            evdev: 30,
+            pressed: false,
+        })
+        .unwrap();
+        tx.try_send(Request::Release).unwrap();
+        tx.try_send(Request::Select(42)).unwrap();
+        tx.try_send(Request::Move { x: 5, y: 9 }).unwrap();
+        let mut pending = None;
+        let batch = batch_commands(
+            Request::Key {
+                evdev: 42,
+                pressed: true,
+            },
+            &mut rx,
+            &mut pending,
+        );
+        let Request::InputBatch(input) = batch else {
+            panic!("queued input used individual network round trips")
+        };
+        assert_eq!(input.len(), 4);
+        assert!(matches!(
+            input[0],
+            wire::WindowInput::Key {
+                evdev: 42,
+                pressed: true
+            }
+        ));
+        assert!(matches!(input[3], wire::WindowInput::Release));
+        assert!(matches!(pending, Some(Request::Select(42))));
+        assert!(matches!(rx.try_recv(), Ok(Request::Move { x: 5, y: 9 })));
+        assert!(!wire::batchable(&Request::InputBatch(input)));
+        assert!(!wire::batchable(&Request::Launch("xterm".into())));
+    }
     #[test]
     fn application_helper_command_is_session_bound_and_rejects_shell_fragments() {
         let session = uuid::Uuid::nil();

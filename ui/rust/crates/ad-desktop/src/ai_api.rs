@@ -45,7 +45,7 @@ pub fn endpoint(base: &str, resource: &str) -> Result<reqwest::Url, String> {
     url.set_path(&format!("{path}/{resource}"));
     Ok(url)
 }
-fn client(url: &reqwest::Url) -> Result<reqwest::Client, String> {
+fn client(url: &reqwest::Url, total: Duration) -> Result<reqwest::Client, String> {
     let mut builder = reqwest::Client::builder();
     if matches!(
         url.host_str(),
@@ -56,7 +56,8 @@ fn client(url: &reqwest::Url) -> Result<reqwest::Client, String> {
     builder
         .redirect(reqwest::redirect::Policy::none())
         .connect_timeout(Duration::from_secs(20))
-        .timeout(Duration::from_secs(120))
+        .read_timeout(total)
+        .timeout(total)
         .build()
         .map_err(|_| "Could not initialize the provider connection".into())
 }
@@ -65,7 +66,7 @@ pub async fn models(
     key: Zeroizing<String>,
 ) -> Result<Vec<crate::ai_models::Model>, String> {
     let url = endpoint(base, "models")?;
-    let mut request = client(&url)?.get(url);
+    let mut request = client(&url, Duration::from_secs(120))?.get(url);
     if !key.is_empty() {
         request = request.bearer_auth(key.as_str());
     }
@@ -246,21 +247,42 @@ impl Accumulator {
         Ok(output)
     }
 }
+pub(crate) const DEFAULT_RESPONSE_TIMEOUT: u64 = 600;
+#[cfg(test)]
 pub async fn complete(
     base: &str,
     key: Zeroizing<String>,
     body: Value,
     events: mpsc::Sender<StreamEvent>,
 ) -> Result<Value, String> {
+    complete_with_timeout(
+        base,
+        key,
+        body,
+        events,
+        Duration::from_secs(DEFAULT_RESPONSE_TIMEOUT),
+    )
+    .await
+}
+pub(crate) async fn complete_with_timeout(
+    base: &str,
+    key: Zeroizing<String>,
+    body: Value,
+    events: mpsc::Sender<StreamEvent>,
+    total: Duration,
+) -> Result<Value, String> {
     if serde_json::to_vec(&body).map_err(|e| e.to_string())?.len() > 8 * 1024 * 1024 {
         return Err("Conversation exceeds the request size limit. Start a new chat".into());
     }
     let url = endpoint(base, "chat/completions")?;
-    let client = client(&url)?;
+    let client = client(&url, total)?;
     let start = Instant::now();
     let mut attempt = 0;
     let mut response = loop {
-        let mut request = client.post(url.clone()).json(&body);
+        let Some(remaining) = total.checked_sub(start.elapsed()) else {
+            return Err("The AI response exceeded its time limit. Increase Maximum response time in AI Assistant settings for slow reasoning models.".into());
+        };
+        let mut request = client.post(url.clone()).json(&body).timeout(remaining);
         if !key.is_empty() {
             request = request.bearer_auth(key.as_str());
         }
@@ -283,6 +305,7 @@ pub async fn complete(
                 }
                 tokio::time::sleep(Duration::from_secs(delay)).await;
             }
+            Err(error) if error.is_timeout() => return Err("The AI provider did not respond within the time limit. Check the connection or increase Maximum response time in AI Assistant settings. The request was not replayed.".into()),
             Err(_) if attempt < 3 && start.elapsed() < Duration::from_secs(50) => {
                 tokio::time::sleep(Duration::from_secs(1 << attempt)).await
             }
@@ -296,11 +319,20 @@ pub async fn complete(
     };
     // Retry only before any response is delivered: never replay partial output or tools.
     let mut state = Accumulator::default();
-    while let Some(chunk) = response
-        .chunk()
-        .await
-        .map_err(|_| "The provider interrupted its response; it has not been replayed")?
-    {
+    let mut receiving = false;
+    loop {
+        let idle = if receiving {
+            total.min(Duration::from_secs(180))
+        } else {
+            total
+        };
+        let chunk = tokio::time::timeout(idle, response.chunk()).await
+            .map_err(|_| "The provider stream stopped sending data within the response time limit. Partial output was kept; the request was not replayed.")?
+        .map_err(|error| if error.is_timeout() {
+            "The AI response timed out or stopped sending data. Partial output was kept and the request was not replayed. Check the connection or increase Maximum response time in AI Assistant settings."
+        } else { "The provider interrupted its response; it has not been replayed" })?;
+        let Some(chunk) = chunk else { break };
+        receiving = true;
         for text in state.chunk(&chunk)? {
             events
                 .send(StreamEvent::Text(text))
@@ -336,6 +368,48 @@ pub async fn complete(
 mod tests {
     use super::*;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    #[tokio::test]
+    async fn reasoning_wait_uses_the_selected_limit_and_timeouts_are_not_replayed() {
+        for (wait, limit, success) in [(50, 500, true), (150, 50, false)] {
+            let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+                .await
+                .unwrap();
+            let url = format!("http://{}/v1", listener.local_addr().unwrap());
+            let task = tokio::spawn(async move {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut data = [0; 4096];
+                let _ = socket.read(&mut data).await.unwrap();
+                tokio::time::sleep(Duration::from_millis(wait)).await;
+                let _ = socket
+                    .write_all(
+                        response("200 OK", "Content-Type: text/event-stream\r\n", ANSWER)
+                            .as_bytes(),
+                    )
+                    .await;
+            });
+            let (tx, mut rx) = mpsc::channel(8);
+            let now = Instant::now();
+            let result = complete_with_timeout(
+                &url,
+                Zeroizing::new(String::new()),
+                json!({"model":"reasoning","messages":[]}),
+                tx,
+                Duration::from_millis(limit),
+            )
+            .await;
+            assert_eq!(result.is_ok(), success, "{result:?}");
+            if success {
+                assert!(rx.recv().await.is_some());
+            } else {
+                assert!(result.unwrap_err().contains("not replayed"));
+                assert!(
+                    now.elapsed() < Duration::from_millis(700),
+                    "timed-out request was retried"
+                );
+            }
+            task.await.unwrap();
+        }
+    }
     async fn fixture(responses: Vec<String>) -> (String, tokio::task::JoinHandle<Vec<String>>) {
         let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
             .await

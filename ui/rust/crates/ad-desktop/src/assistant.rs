@@ -24,6 +24,11 @@ pub(crate) struct Provider {
     pub(crate) capabilities: std::collections::BTreeMap<String, crate::ai_models::Model>,
     #[serde(default)]
     pub(crate) manual_models: Vec<String>,
+    #[serde(default = "default_response_timeout")]
+    pub(crate) response_timeout_seconds: u64,
+}
+fn default_response_timeout() -> u64 {
+    ai_api::DEFAULT_RESPONSE_TIMEOUT
 }
 impl Provider {
     fn remember_model(&mut self, model: &str) {
@@ -62,6 +67,7 @@ fn configure_provider(
         models: vec![],
         capabilities: Default::default(),
         manual_models: vec![],
+        response_timeout_seconds: ai_api::DEFAULT_RESPONSE_TIMEOUT,
     });
     // A different endpoint must not retain another server's model catalog.
     if result.base != base.trim() {
@@ -1292,11 +1298,18 @@ impl Assistant {
                         ui.add_enabled_ui(!self.busy, |ui| {
                             settings_group(ui, |ui| {
                                 ui.strong("Message limits and tools");
+                                let mut provider = self.providers.get_mut(self.provider);
                                 let chat = &mut self.chats[self.chat];
                                 egui::Grid::new("ai-budget-grid")
                                     .num_columns(2)
                                     .spacing([16.0, 10.0])
                                     .show(ui, |ui| {
+                                        if let Some(provider) = &mut provider {
+                                            ui.label("Maximum response time");
+                                            model_settings_changed |= ui.add(egui::DragValue::new(&mut provider.response_timeout_seconds).range(30..=1800).suffix(" s"))
+                                                .on_hover_text("Time allowed for this service, including slow reasoning before an answer starts. After output starts, three minutes without incoming data ends the response.").changed();
+                                            ui.end_row();
+                                        }
                                         ui.label("Context budget");
                                         model_settings_changed |= ui
                                             .add(
@@ -2034,11 +2047,12 @@ async fn run(
         {
             body["chat_template_kwargs"] = json!({"enable_thinking":true});
         }
-        let response = ai_api::complete(
+        let response = ai_api::complete_with_timeout(
             &provider.base,
             Zeroizing::new(key.to_string()),
             body,
             stream_tx,
+            std::time::Duration::from_secs(provider.response_timeout_seconds.clamp(30, 1800)),
         )
         .await;
         let _ = forward.await;
@@ -2934,6 +2948,7 @@ mod tests {
             models: vec![],
             capabilities: Default::default(),
             manual_models: vec![],
+            response_timeout_seconds: ai_api::DEFAULT_RESPONSE_TIMEOUT,
         };
         provider.remember_model("private-model");
         provider.update_models(vec![
@@ -2945,6 +2960,22 @@ mod tests {
         let mut restored: Provider = serde_json::from_value(encoded).unwrap();
         restored.update_models(Vec::new());
         assert_eq!(restored.models, ["private-model"]);
+    }
+    #[test]
+    fn provider_response_limits_default_for_older_services_and_round_trip_independently() {
+        let older = json!([{"id":"one","name":"Service one","base":"https://one.example/v1","models":[]}, {"id":"two","name":"Service two","base":"https://two.example/v1","models":[]}]);
+        let mut providers: Vec<Provider> = serde_json::from_value(older).unwrap();
+        assert_eq!(providers[0].response_timeout_seconds, 600);
+        assert_eq!(providers[1].response_timeout_seconds, 600);
+        providers[0].response_timeout_seconds = 900;
+        let restored: Vec<Provider> =
+            serde_json::from_value(serde_json::to_value(&providers).unwrap()).unwrap();
+        assert_eq!(restored[0].response_timeout_seconds, 900);
+        assert_eq!(restored[1].response_timeout_seconds, 600);
+        let edited =
+            configure_provider(Some(&restored[0]), "Renamed service", &restored[0].base, "")
+                .unwrap();
+        assert_eq!(edited.response_timeout_seconds, 900);
     }
     #[test]
     fn unavailable_saved_workspace_requires_an_explicit_choice() {

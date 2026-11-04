@@ -1,5 +1,10 @@
 //! Read-only native window geometry. Never move a window from a native callback.
 use eframe::egui;
+#[path = "window_dpi.rs"]
+mod dpi;
+pub(crate) fn stabilize_native_moves() {
+    dpi::install();
+}
 #[derive(Clone, Copy)]
 pub struct Area {
     pub work: egui::Rect,

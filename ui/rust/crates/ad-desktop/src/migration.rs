@@ -173,6 +173,7 @@ pub(crate) fn import_assistant(
             models: Vec::new(),
             capabilities: Default::default(),
             manual_models: Vec::new(),
+            response_timeout_seconds: crate::ai_api::DEFAULT_RESPONSE_TIMEOUT,
         };
         if let Some(model) = setting["modelId"].as_str().filter(|s| !s.is_empty()) {
             provider.models.push(model.into());

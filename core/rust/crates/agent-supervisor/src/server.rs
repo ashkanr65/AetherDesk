@@ -129,6 +129,14 @@ impl AgentServer {
         supervisor.shutdown().await?;
         // The desktop is stopped. Log/storage cleanup is best-effort and must
         // never suppress the authoritative acknowledgement of that fact.
+        let _ = tokio::fs::write(
+            self.config.session_directory.join("ended"),
+            format!(
+                "AETHERDESK_SESSION_ENDED_V1 {}\n",
+                self.config.supervisor.session_id
+            ),
+        )
+        .await;
         if let Err(error) = remove_tree_if_present(&self.config.session_directory).await {
             warn!(%error, "ended session storage could not be removed");
         }
@@ -321,6 +329,10 @@ async fn run_client(
         }
     };
     let media_output = async {
+        if supervisor.applications_only() {
+            // Only per-window streams carry pixels in this connection mode.
+            return std::future::pending::<Result<(), AgentServerError>>().await;
+        }
         let lossless = loop {
             let mode = *media_mode_rx.borrow_and_update();
             if let Some(enabled) = mode {
@@ -1107,6 +1119,123 @@ pub enum AgentServerError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn application_only_session_keeps_control_without_sending_full_desktop_frames() {
+        use agent_wayland::compositor::{ApplicationSpec, CompositorConfig};
+        use std::os::unix::fs::PermissionsExt;
+        let root = tempfile::tempdir().unwrap();
+        let directory = root.path().join("session");
+        let runtime = directory.join("runtime");
+        std::fs::create_dir_all(&runtime).unwrap();
+        std::fs::set_permissions(&runtime, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let id = Uuid::new_v4();
+        let mut application = ApplicationSpec::new("/bin/sleep");
+        application.arguments = vec!["60".into()];
+        application.environment = vec![("AETHERDESK_APPLICATIONS_ONLY".into(), "1".into())];
+        let server = AgentServer::bind(AgentServerConfig {
+            supervisor: SupervisorConfig {
+                session_id: id,
+                compositor: CompositorConfig {
+                    width: 320,
+                    height: 200,
+                    refresh_millihz: 30_000,
+                    runtime_dir: runtime,
+                    enable_xwayland: false,
+                    host_window_manager: false,
+                },
+                input: agent_input::InputConfig::default(),
+                encoder: agent_encoder::EncoderConfig {
+                    width: 320,
+                    height: 200,
+                    framerate: 30,
+                    bitrate_kbps: 512,
+                    keyframe_interval: 30,
+                    codec: VideoCodec::H264,
+                },
+                application,
+            },
+            session_directory: directory.clone(),
+        })
+        .await
+        .unwrap();
+        let endpoint = server.endpoint().clone();
+        let task = tokio::spawn(server.run());
+        let mut channels = Vec::new();
+        for channel in 0..3 {
+            let mut stream = TcpStream::connect((std::net::Ipv4Addr::LOCALHOST, endpoint.port))
+                .await
+                .unwrap();
+            let mut prelude = [0u8; 38];
+            prelude[..4].copy_from_slice(&CHANNEL_MAGIC);
+            prelude[4] = CHANNEL_VERSION;
+            prelude[5] = channel;
+            prelude[6..].copy_from_slice(&endpoint.token);
+            stream.write_all(&prelude).await.unwrap();
+            channels.push(stream);
+        }
+        let mut channels = channels.into_iter();
+        let session = ArppSession::new(Arc::new(SshTransportAdapter::new(
+            SshChannelIo::from_stream(channels.next().unwrap()),
+            SshChannelIo::from_stream(channels.next().unwrap()),
+            SshChannelIo::from_stream(channels.next().unwrap()),
+        )));
+        session
+            .send(ArppMessage::Control(ControlMessage::ClientHello {
+                protocol_version: PROTOCOL_VERSION,
+                client_nonce: [1; 32],
+            }))
+            .await
+            .unwrap();
+        for _ in 0..2 {
+            timeout(Duration::from_secs(5), session.receive())
+                .await
+                .unwrap()
+                .unwrap();
+        }
+        session
+            .send(ArppMessage::Control(ControlMessage::ResumeSession {
+                session_id: id,
+                last_presented_frame: 0,
+                cache_epoch: 0,
+                cache_digest: [0; 32],
+            }))
+            .await
+            .unwrap();
+        let ready = timeout(Duration::from_secs(5), session.receive())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            matches!(ready.message,ArppMessage::Control(ControlMessage::ResumeState{session_id,..}) if session_id==id)
+        );
+        assert!(
+            timeout(Duration::from_millis(250), session.receive())
+                .await
+                .is_err(),
+            "application-only session sent unused desktop pixels"
+        );
+        session
+            .send(ArppMessage::Control(ControlMessage::Close {
+                reason_code: 0,
+                detail: "end isolated application test".into(),
+            }))
+            .await
+            .unwrap();
+        let closed = timeout(Duration::from_secs(5), session.receive())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(matches!(
+            closed.message,
+            ArppMessage::Control(ControlMessage::Close { reason_code: 0, .. })
+        ));
+        timeout(Duration::from_secs(5), task)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert!(!directory.exists());
+    }
 
     #[tokio::test]
     async fn failure_monitor_preserves_detached_sessions_and_detects_failed_desktops() {

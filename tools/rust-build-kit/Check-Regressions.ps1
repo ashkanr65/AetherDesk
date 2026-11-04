@@ -1,6 +1,7 @@
 [CmdletBinding()]
-param([string]$Repository = ([IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))),[switch]$CheckReferences)
+param([string]$Repository,[switch]$CheckReferences)
 $ErrorActionPreference='Stop'
+if (!$Repository) { $Repository = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..')) }
 # Explicit platform-only attributes must agree with the selected build phase.
 # Compiler registrations remain authoritative for other conditional expressions.
 function Assert-TestPlatformPhase([string]$Phase,[string]$Attributes,[string]$Name) {

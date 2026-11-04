@@ -4,6 +4,72 @@
   "meaning": "Native behavioral baselines and original-suite mapping. Registration is not a passing test; all live acceptance remains R12.",
   "features": [
     {
+      "id": "connection.remote_applications",
+      "liveAcceptance": "Use the complete rebuilt package to launch real applications, menus/dialogs and multiple views; verify physical Ctrl/Shift/AltGr/keypad/wheel input, clipboard, mixed-DPI movement, SFTP/editor/monitoring, disconnect/reconnect and explicit End session. Use read-only or disposable Cadence work; automated fixtures do not establish all EDA compatibility.",
+      "checks": [
+        {
+          "phase": "windows",
+          "package": "ad-desktop-model",
+          "source": "ui/rust/crates/ad-desktop-model/src/profiles.rs",
+          "test": "remote_applications_round_trip_without_changing_existing_connection_types"
+        },
+        {
+          "phase": "windows",
+          "package": "ad-desktop",
+          "source": "ui/rust/crates/ad-desktop/src/desktop_recovery.rs",
+          "test": "application_sessions_keep_their_own_recovery_identity"
+        },
+        {
+          "phase": "windows",
+          "package": "ad-desktop",
+          "source": "ui/rust/crates/ad-desktop/src/application_workspace.rs",
+          "test": "application_panel_leaves_room_for_the_terminal_at_small_sizes_and_large_fonts"
+        },
+        {
+          "phase": "windows",
+          "package": "ad-desktop",
+          "source": "ui/rust/crates/ad-desktop/src/remote_application_worker.rs",
+          "test": "input_batching_preserves_modifiers_release_order_and_capture_boundaries"
+        },
+        {
+          "phase": "linux",
+          "package": "agent-wayland",
+          "source": "core/rust/crates/agent-wayland/src/host_desktop.rs",
+          "test": "application_session_launches_retains_exact_window_pixels_and_ends_its_children"
+        },
+        {
+          "phase": "linux",
+          "package": "agent-wayland",
+          "source": "core/rust/crates/agent-wayland/src/window_mirror.rs",
+          "test": "application_launcher_rejects_nonprivate_files_and_enqueues_atomic_commands"
+        },
+        {
+          "phase": "linux",
+          "package": "agent-supervisor",
+          "source": "core/rust/crates/agent-supervisor/src/server.rs",
+          "test": "application_only_session_keeps_control_without_sending_full_desktop_frames"
+        },
+        {
+          "phase": "windows",
+          "package": "ad-ssh",
+          "source": "core/rust/crates/ad-ssh/src/isolation_tests.rs",
+          "test": "blocked_graphics_cannot_block_terminal_or_remote_input"
+        },
+        {
+          "phase": "linux",
+          "package": "agent-supervisor",
+          "source": "core/rust/crates/agent-supervisor/src/main.rs",
+          "test": "application_exports_preserve_host_values_without_injecting_agent_libraries"
+        },
+        {
+          "phase": "windows",
+          "package": "ad-stream-protocol",
+          "source": "core/rust/crates/ad-stream-protocol/src/window_stream.rs",
+          "test": "ordered_input_batch_round_trips_without_nested_or_launch_commands"
+        }
+      ]
+    },
+    {
       "id": "display.shared_lossless_tiles",
       "checks": [
         {
@@ -1205,6 +1271,36 @@
           "package": "ad-ssh",
           "source": "core/rust/crates/ad-ssh/src/shell.rs",
           "test": "saturated_writer_reports_failure_without_waiting"
+        },
+        {
+          "phase": "linux",
+          "package": "ad-ssh",
+          "source": "core/rust/crates/ad-ssh/src/host_cleanup.rs",
+          "test": "owned_host_residue_is_cleaned_without_touching_other_tabs_desktops_or_transfers"
+        },
+        {
+          "phase": "windows",
+          "package": "ad-ssh",
+          "source": "core/rust/crates/ad-ssh/src/host_cleanup.rs",
+          "test": "maintenance_errors_distinguish_full_disk_permissions_and_missing_interpreter"
+        },
+        {
+          "phase": "windows",
+          "package": "ad-ssh",
+          "source": "core/rust/crates/ad-ssh/src/host_cleanup.rs",
+          "test": "maintenance_readiness_accepts_split_packets_and_rejects_unbounded_output"
+        },
+        {
+          "phase": "linux",
+          "package": "ad-ssh",
+          "source": "core/rust/crates/ad-ssh/src/host_cleanup.rs",
+          "test": "maintenance_errors_distinguish_full_disk_permissions_and_missing_interpreter"
+        },
+        {
+          "phase": "linux",
+          "package": "ad-ssh",
+          "source": "core/rust/crates/ad-ssh/src/host_cleanup.rs",
+          "test": "maintenance_readiness_accepts_split_packets_and_rejects_unbounded_output"
         }
       ],
       "liveAcceptance": "R1: gated reconnect until worker cleanup, explicit channel EOF/close, X11 startup cleanup and owned AI/Tools SSH process groups with renewable leases. Ten interpreted cleanup fixtures pass in the cached AlmaLinux/Bash 4.4 build environment, including heartbeat read-boundary and malformed-input checks; compiler and live auth/transfer/process-leak checks remain."
@@ -1552,6 +1648,24 @@
           "phase": "windows",
           "package": "ad-desktop",
           "source": "ui/rust/crates/ad-desktop/src/terminal.rs",
+          "test": "sparse_terminal_draws_visible_ink_without_thousands_of_empty_cells"
+        },
+        {
+          "phase": "windows",
+          "package": "ad-desktop",
+          "source": "ui/rust/crates/ad-desktop/src/connection.rs",
+          "test": "terminal_output_batches_leave_room_for_input_and_preserve_byte_and_close_order"
+        },
+        {
+          "phase": "windows",
+          "package": "ad-ssh",
+          "source": "core/rust/crates/ad-ssh/src/shell.rs",
+          "test": "output_notification_survives_arrival_before_wait_and_drains_before_close"
+        },
+        {
+          "phase": "windows",
+          "package": "ad-desktop",
+          "source": "ui/rust/crates/ad-desktop/src/terminal.rs",
           "test": "split_osc7_reports_unicode_paths_without_executing_output"
         },
         {
@@ -1583,9 +1697,51 @@
           "package": "ad-desktop",
           "source": "ui/rust/crates/ad-desktop/src/terminal.rs",
           "test": "terminal_scrollbar_tracks_real_history_and_keeps_gutter_out_of_pty_input"
+        },
+        {
+          "phase": "windows",
+          "package": "ad-desktop",
+          "source": "ui/rust/crates/ad-desktop/src/terminal.rs",
+          "test": "dragging_terminal_selection_scrolls_both_edges_and_wheel_without_losing_its_anchor"
+        },
+        {
+          "phase": "windows",
+          "package": "ad-desktop",
+          "source": "ui/rust/crates/ad-desktop/src/terminal.rs",
+          "test": "shift_selection_stays_local_after_shift_release_and_stops_on_focus_loss"
+        },
+        {
+          "phase": "windows",
+          "package": "ad-desktop",
+          "source": "ui/rust/crates/ad-desktop/src/terminal.rs",
+          "test": "selected_history_tracks_new_output_without_copying_the_wrong_rows"
+        },
+        {
+          "phase": "windows",
+          "package": "ad-desktop",
+          "source": "ui/rust/crates/ad-desktop/src/terminal_selection.rs",
+          "test": "history_selection_copies_multiple_pages_in_both_directions_and_restores_view"
+        },
+        {
+          "phase": "windows",
+          "package": "ad-desktop",
+          "source": "ui/rust/crates/ad-desktop/src/terminal_selection.rs",
+          "test": "history_selection_preserves_soft_wrap_unicode_and_blank_rows"
+        },
+        {
+          "phase": "windows",
+          "package": "ad-desktop",
+          "source": "ui/rust/crates/ad-desktop/src/terminal_selection.rs",
+          "test": "edge_selection_scrolling_is_time_based_bounded_and_reverses_without_momentum"
+        },
+        {
+          "phase": "windows",
+          "package": "ad-desktop",
+          "source": "ui/rust/crates/ad-desktop/src/terminal.rs",
+          "test": "wheel_extends_held_selection_before_drag_threshold_and_keeps_it_on_release"
         }
       ],
-      "liveAcceptance": "R2 adds mouse protocols/motion/wheel, IME commit deduplication, AltGr and saved screen geometry/settings. Compare vim/top, split Unicode, wide cells and focus release live. Verify the right-side history rail in SSH and SSH+X11; dragging it must not send mouse bytes to a remote terminal application."
+      "liveAcceptance": "R2 adds mouse protocols/motion/wheel, IME commit deduplication, AltGr and saved screen geometry/settings. Compare vim/top, split Unicode, wide cells and focus release live. Verify the right-side history rail in SSH and SSH+X11; dragging it must not send mouse bytes to a remote terminal application. Verify selecting multiple history screens while holding the primary button, using the wheel and dragging beyond both terminal edges. Speed follows pointer distance and elapsed time, never repaint count. Release/focus loss stops auto-scroll; Shift-drag stays local through modifier release in mouse-reporting applications. Selection copy retains Unicode, soft wraps and the same text while new output scrolls."
     },
     {
       "id": "terminal.shortcuts",
@@ -1791,9 +1947,27 @@
           "package": "ad-desktop",
           "source": "ui/rust/crates/ad-desktop/src/terminal_navigation.rs",
           "test": "canceling_folder_sync_keeps_inflight_echo_filter_and_drops_unsent_changes"
+        },
+        {
+          "phase": "windows",
+          "package": "ad-desktop",
+          "source": "ui/rust/crates/ad-desktop/src/terminal_navigation.rs",
+          "test": "folder_changes_wait_for_a_private_prompt_and_never_enter_running_or_typed_commands"
+        },
+        {
+          "phase": "windows",
+          "package": "ad-desktop",
+          "source": "ui/rust/crates/ad-desktop/src/terminal_navigation.rs",
+          "test": "user_input_cancels_unsent_sync_and_unconfirmed_echo_cannot_trigger_retries"
+        },
+        {
+          "phase": "windows",
+          "package": "ad-desktop",
+          "source": "ui/rust/crates/ad-desktop/src/terminal_navigation.rs",
+          "test": "wrapped_navigation_echo_is_owned_by_its_nonce_and_real_errors_remain_visible"
         }
       ],
-      "liveAcceptance": "Bash prompt OSC7 follows shell directories; explicit file-pane navigation quotes a user-initiated cd. Split reports and invalid paths have source regressions. Other shells may supply OSC7; escape output never executes commands."
+      "liveAcceptance": "Bash prompt OSC7 follows shell directories. Explicit file-pane navigation waits for a private per-connection Bash prompt marker, never a visible prompt heuristic. Typing or pasting cancels unsent navigation; requests made while busy coalesce until a new prompt. Unconfirmed helper output disables further injection until reconnect. Genuine errors and user history remain visible. Other shells can report OSC7 but receive no automatic folder commands without the supported prompt integration."
     },
     {
       "id": "sftp.panes",
@@ -2649,6 +2823,12 @@
           "package": "ad-ssh",
           "source": "core/rust/crates/ad-ssh/src/shell.rs",
           "test": "saturated_writer_reports_failure_without_waiting"
+        },
+        {
+          "phase": "windows",
+          "package": "ad-desktop",
+          "source": "ui/rust/crates/ad-desktop/src/editor.rs",
+          "test": "reconnect_requires_the_original_canonical_file_and_revision"
         }
       ],
       "liveAcceptance": "Native consumers use original SFTP revisions/staged save and local conflict checks; verify races, permissions, disconnected/changed host and recovery."
@@ -3669,6 +3849,12 @@
           "package": "ad-desktop",
           "source": "ui/rust/crates/ad-desktop/src/remote_application_view.rs",
           "test": "clipboard_commands_only_reach_a_focused_application_and_release_temporary_control"
+        },
+        {
+          "phase": "windows",
+          "package": "ad-desktop",
+          "source": "ui/rust/crates/ad-desktop/src/process_health.rs",
+          "test": "native_health_probes_include_owned_windows_and_collect_only_wait_metadata"
         }
       ],
       "liveAcceptance": "R6 source preserves physical Windows keypad/sided modifiers/AltGr/Win/menu/Print/Pause, lock flags, repeat, native mouse order and focus/lease release; exact foreground routing excludes injected events and toolbar/other windows. Existing IME path retains agent capability limits. Compile source regressions and verify live keyboard/drag/system shortcuts under R12. Mouse contract repairs add required client-route parity, wire/evdev mappings, Wayland axis frames and a real X11 application button/wheel bridge check. Run native checks during the next build, then manually compare mouse clicks, scrolling and EDA zoom in tab/fullscreen/all-monitor modes."
@@ -3805,6 +3991,54 @@
         {
           "phase": "windows",
           "package": "ad-desktop",
+          "source": "ui/rust/crates/ad-desktop/src/remote_applications.rs",
+          "test": "retained_application_view_initializes_pointer_without_clicks_or_modifiers"
+        },
+        {
+          "phase": "windows",
+          "package": "ad-desktop",
+          "source": "ui/rust/crates/ad-desktop/src/application_frames.rs",
+          "test": "sparse_frames_preserve_exact_colours_and_reuse_unchanged_tiles_across_skipped_paints"
+        },
+        {
+          "phase": "windows",
+          "package": "ad-desktop",
+          "source": "ui/rust/crates/ad-desktop/src/application_stream.rs",
+          "test": "ordered_input_does_not_wait_for_the_picture_reader"
+        },
+        {
+          "phase": "windows",
+          "package": "ad-desktop",
+          "source": "ui/rust/crates/ad-desktop/src/remote_application_view.rs",
+          "test": "unchanged_tiles_are_not_uploaded_again_and_skipped_paints_keep_every_patch"
+        },
+        {
+          "phase": "windows",
+          "package": "ad-desktop",
+          "source": "ui/rust/crates/ad-desktop/src/application_native.rs",
+          "test": "duplicate_source_captions_and_renames_keep_distinct_native_targets"
+        },
+        {
+          "phase": "linux",
+          "package": "agent-wayland",
+          "source": "core/rust/crates/agent-wayland/src/window_capture.rs",
+          "test": "damage_tiles_clip_negative_rectangles_and_preserve_every_touched_edge"
+        },
+        {
+          "phase": "windows",
+          "package": "ad-stream-protocol",
+          "source": "core/rust/crates/ad-stream-protocol/src/window_stream.rs",
+          "test": "streaming_extensions_preserve_legacy_discriminants_and_metadata"
+        },
+        {
+          "phase": "linux",
+          "package": "ad-stream-protocol",
+          "source": "core/rust/crates/ad-stream-protocol/src/window_stream.rs",
+          "test": "streaming_extensions_preserve_legacy_discriminants_and_metadata"
+        },
+        {
+          "phase": "windows",
+          "package": "ad-desktop",
           "source": "ui/rust/crates/ad-desktop/src/remote_application_view.rs",
           "test": "scrolling_activates_the_application_before_ordered_motion_and_wheel"
         },
@@ -3817,8 +4051,8 @@
         {
           "phase": "windows",
           "package": "ad-desktop",
-          "source": "ui/rust/crates/ad-desktop/src/remote_application_view.rs",
-          "test": "application_pixels_are_not_magnified_by_container_or_ui_scale"
+          "source": "ui/rust/crates/ad-desktop/src/application_geometry.rs",
+          "test": "monitor_dpi_keeps_text_logical_size_and_host_extent_unchanged"
         },
         {
           "phase": "windows",
@@ -3841,8 +4075,8 @@
         {
           "phase": "windows",
           "package": "ad-desktop",
-          "source": "ui/rust/crates/ad-desktop/src/remote_application_view.rs",
-          "test": "menu_origin_adds_client_and_signed_popup_offsets_without_scaling_the_app"
+          "source": "ui/rust/crates/ad-desktop/src/application_geometry.rs",
+          "test": "negative_menu_offsets_stay_inside_owner_monitor_and_keep_input_mapping"
         },
         {
           "phase": "linux",
@@ -3879,6 +4113,30 @@
           "package": "ad-desktop",
           "source": "ui/rust/crates/ad-desktop/src/remote_cursor.rs",
           "test": "host_cursor_uploads_only_its_small_shape_and_restores_local_pointer_outside_desktop"
+        },
+        {
+          "phase": "windows",
+          "package": "ad-desktop",
+          "source": "ui/rust/crates/ad-desktop/src/window_dpi.rs",
+          "test": "boundary_dpi_changes_coalesce_until_the_native_drag_ends"
+        },
+        {
+          "phase": "windows",
+          "package": "ad-desktop",
+          "source": "ui/rust/crates/ad-desktop/src/window_dpi.rs",
+          "test": "native_window_defers_boundary_changes_and_releases_its_subclass_on_close"
+        },
+        {
+          "phase": "windows",
+          "package": "ad-desktop",
+          "source": "ui/rust/crates/ad-desktop/src/application_geometry.rs",
+          "test": "scaled_and_fitted_menus_map_clicks_to_the_original_host_pixels"
+        },
+        {
+          "phase": "windows",
+          "package": "ad-desktop",
+          "source": "ui/rust/crates/ad-desktop/src/remote_application_worker.rs",
+          "test": "only_legacy_focus_notices_are_silent"
         }
       ],
       "liveAcceptance": "R6 source uses native physical monitor geometry and window placement, mixed DPI/negative origins, full host layouts on every tab/current/all transition, even/protocol-bounded sizes and unplugged-device fallback. Compile and verify host window repositioning, pointer alignment and hotplug under R12. Selected-window mirror remains a local prototype: verify exact colours under occlusion, focus/keyboard/mouse and resize, disposal without app termination, tab switching and connection-specific VPN. Window-family dialogs, native keyboard capture, hidden-original behavior and measured latency remain incomplete. Verify owned-menu focus, live host resize/text pointer shapes in tab/current/all modes, detached mixed-DPI dragging. Keeping a minimized original live still requires true-detachment architecture and is not implemented."
@@ -4209,6 +4467,30 @@
           "package": "ad-desktop",
           "source": "ui/rust/crates/ad-desktop/src/remote.rs",
           "test": "waking_after_idle_does_not_burst_missed_heartbeats"
+        },
+        {
+          "phase": "windows",
+          "package": "ad-stream-client",
+          "source": "core/rust/crates/ad-stream-client/src/session.rs",
+          "test": "startup_notifications_are_bounded_and_replayed_before_later_transport_data"
+        },
+        {
+          "phase": "windows",
+          "package": "ad-stream-client",
+          "source": "core/rust/crates/ad-stream-client/src/session.rs",
+          "test": "independent_ssh_readers_preserve_cursor_and_clipboard_before_resume_control_arrives"
+        },
+        {
+          "phase": "windows",
+          "package": "ad-remote-session",
+          "source": "core/rust/crates/ad-remote-session/tests/lifecycle_integration.rs",
+          "test": "early_cursor_and_clipboard_messages_survive_the_startup_handshake_in_order"
+        },
+        {
+          "phase": "windows",
+          "package": "ad-remote-session",
+          "source": "core/rust/crates/ad-remote-session/tests/lifecycle_integration.rs",
+          "test": "invalid_control_responses_keep_diagnostics_before_rollback_and_preserve_saved_desktops"
         }
       ],
       "liveAcceptance": "R1: cancellation owns bounded launch/partial handshake, rolls back positively identified fresh agents and preserves existing desktops; unclaimed launches expire. Duplicate IDs persist before launch and reopen through Saved desktop tabs; confirmed End removes records. Compile and validate live cancellation/restart/termination."
@@ -4563,9 +4845,15 @@
           "package": "ad-desktop",
           "source": "ui/rust/crates/ad-desktop/src/x11_diagnostics.rs",
           "test": "x11_failure_reports_are_bounded_redacted_and_survive_runtime_cleanup"
+        },
+        {
+          "phase": "windows",
+          "package": "ad-ssh",
+          "source": "core/rust/crates/ad-ssh/src/client.rs",
+          "test": "x11_proxy_preserves_large_redraws_small_replies_and_half_close"
         }
       ],
-      "liveAcceptance": "R9 adds serialized shared-server leases, per-tab forwarding cookies, last-tab shutdown, old-generation isolation, Windows cleanup jobs and private fallback-icon settings. The production icon helper, clipboard, software GLX and multiwindow mode remain. Stage 4 runs the real bundled-manager regression; compile/package/live verification remains R12."
+      "liveAcceptance": "The bundled-manager packaging test exercises required Composite window backing, actual native-window pixel output, exact TrueColor overlapping copies, GLX/Composite capability retention and repeated top-level/child edge movement and resizing. The original crash trigger and complete Cadence application behaviour require separate reproduction/live acceptance; blank windows cannot be accepted as a crash workaround."
     },
     {
       "id": "security.vault",
@@ -4749,6 +5037,18 @@
           "package": "ad-desktop",
           "source": "ui/rust/crates/ad-desktop/src/ai_api.rs",
           "test": "streaming_handles_split_utf8_null_content_and_tool_arguments"
+        },
+        {
+          "phase": "windows",
+          "package": "ad-desktop",
+          "source": "ui/rust/crates/ad-desktop/src/ai_api.rs",
+          "test": "reasoning_wait_uses_the_selected_limit_and_timeouts_are_not_replayed"
+        },
+        {
+          "phase": "windows",
+          "package": "ad-desktop",
+          "source": "ui/rust/crates/ad-desktop/src/assistant.rs",
+          "test": "provider_response_limits_default_for_older_services_and_round_trip_independently"
         }
       ],
       "liveAcceptance": "HTTPS/loopback policy, no redirects, native TLS, endpoint normalization and bounded requests added; run provider fixtures/live checks."
@@ -5655,6 +5955,30 @@
           "package": "ad-desktop",
           "source": "ui/rust/crates/ad-desktop/src/windows_crash_reports.rs",
           "test": "native_windows_report_query_is_bounded_and_read_only"
+        },
+        {
+          "phase": "linux",
+          "package": "agent-supervisor",
+          "source": "core/rust/crates/agent-supervisor/src/log_capture.rs",
+          "test": "host_logs_rotate_and_archive_a_bounded_tail_without_removing_unknown_files"
+        },
+        {
+          "phase": "linux",
+          "package": "agent-supervisor",
+          "source": "core/rust/crates/agent-supervisor/src/log_capture.rs",
+          "test": "failed_log_writes_do_not_stop_draining_the_worker"
+        },
+        {
+          "phase": "linux",
+          "package": "agent-supervisor",
+          "source": "core/rust/crates/agent-supervisor/src/log_capture.rs",
+          "test": "legacy_host_logs_are_trimmed_to_their_newest_bytes_before_rotation"
+        },
+        {
+          "phase": "linux",
+          "package": "agent-supervisor",
+          "source": "core/rust/crates/agent-supervisor/src/log_capture.rs",
+          "test": "ending_a_desktop_preserves_a_diagnostic_tail_without_recreating_its_runtime"
         }
       ],
       "liveAcceptance": "R10 adds rotated-file merge, structured severity/source/case filters, independent host choice, counts, copy/open-folder and asynchronous bounded export/reads. Native disk/redaction/filter fixtures added; compiler/live checks remain R12."
@@ -5735,6 +6059,18 @@
           "package": "ad-desktop",
           "source": "ui/rust/crates/ad-desktop/src/update_apply.rs",
           "test": "installer_recovery_preserves_application_and_uninstaller_files_and_rejects_bad_inventory"
+        },
+        {
+          "phase": "windows",
+          "package": "ad-desktop",
+          "source": "ui/rust/crates/ad-desktop/src/updates.rs",
+          "test": "update_health_waits_for_multiple_frames_and_a_startup_grace_period"
+        },
+        {
+          "phase": "windows",
+          "package": "ad-desktop",
+          "source": "ui/rust/crates/ad-desktop/src/update_apply.rs",
+          "test": "first_launch_distinguishes_normal_close_crash_timeout_and_health"
         }
       ],
       "liveAcceptance": "Build kit packages Windows/Linux regression reports and matching catalog hashes, plus a required passing bundled-X11 result, with installer/ZIP runtimes. Offline artifact/failure fixtures pass; real packaging and clean-machine checks remain R12."

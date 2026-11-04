@@ -1,5 +1,7 @@
 //! Native terminal screen: byte-stream parsing is independent of UI repaint.
 use eframe::egui::{self, Color32, Event, Key, Modifiers};
+#[path = "terminal_selection.rs"]
+mod selection;
 
 #[derive(Default)]
 pub struct Replies(Vec<u8>, Option<String>);
@@ -39,7 +41,11 @@ impl vt100::Callbacks for Replies {
 
 pub struct Terminal {
     parser: vt100::Parser<Replies>,
-    selection: Option<((u16, u16), (u16, u16))>,
+    selection: Option<(selection::Cell, selection::Cell)>,
+    selection_drag: bool,
+    selection_pointer: Option<egui::Pos2>,
+    selection_scroll: f32,
+    selection_tick: Option<f64>,
     settings: crate::terminal_settings::Settings,
     settings_version: u64,
     highlighter: crate::terminal_settings::Highlighter,
@@ -67,6 +73,10 @@ impl Default for Terminal {
                 Replies::default(),
             ),
             selection: None,
+            selection_drag: false,
+            selection_pointer: None,
+            selection_scroll: 0.0,
+            selection_tick: None,
             history_limit: settings.scrollback_lines,
             scrollback_available: 0,
             scroll_grab: None,
@@ -91,8 +101,55 @@ impl Terminal {
         (cols, rows)
     }
     pub fn process(&mut self, bytes: &[u8]) -> Vec<u8> {
+        let old_history = self.scrollback_available;
+        let old_offset = self.parser.screen().scrollback();
+        let alternate = self.parser.screen().alternate_screen();
+        let tracking = self.selection.is_some() && !alternate;
+        if tracking && old_history > 0 {
+            // A one-row history probe counts newly scrolled rows even after the
+            // retained history reaches capacity. It never changes host state.
+            self.parser.screen_mut().set_scrollback(1);
+        }
         self.parser.process(bytes);
+        let probe = self.parser.screen().scrollback();
         self.refresh_history();
+        if alternate != self.parser.screen().alternate_screen() {
+            self.clear_selection();
+        } else if tracking {
+            let shift = if old_history == 0 {
+                self.scrollback_available
+            } else {
+                probe.saturating_sub(1)
+            };
+            self.parser.screen_mut().set_scrollback(if old_offset > 0 {
+                old_offset.saturating_add(shift)
+            } else {
+                0
+            });
+            if self.scrollback_available < old_history
+                || (old_history > 0 && probe == 0)
+                || (old_history == 0 && self.scrollback_available >= self.history_limit)
+                || (old_history > 1
+                    && self.scrollback_available == old_history
+                    && probe == old_history)
+            {
+                // History was erased, or an entire retained window was evicted.
+                self.clear_selection();
+            } else if let Some((a, b)) = self.selection.as_mut() {
+                a.0 -= shift as i64;
+                b.0 -= shift as i64;
+                let oldest = -(self.scrollback_available as i64);
+                if a.0 < oldest && b.0 < oldest {
+                    self.clear_selection();
+                } else {
+                    for point in [a, b] {
+                        if point.0 < oldest {
+                            *point = (oldest, 0);
+                        }
+                    }
+                }
+            }
+        }
         std::mem::take(&mut self.parser.callbacks_mut().0)
     }
     fn refresh_history(&mut self) {
@@ -109,6 +166,10 @@ impl Terminal {
         self.parser.callbacks_mut().1.take()
     }
     pub fn release_mouse(&mut self) -> Vec<u8> {
+        self.selection_drag = false;
+        self.selection_pointer = None;
+        self.selection_scroll = 0.0;
+        self.selection_tick = None;
         self.ime_preedit.clear();
         let Some(button) = self.mouse_button.take() else {
             return vec![];
@@ -128,12 +189,16 @@ impl Terminal {
             self.parser.screen().mouse_protocol_encoding(),
         )
     }
-    pub fn selected_text(&self) -> Option<String> {
-        self.selection.map(|(a, b)| {
-            let (a, b) = if a <= b { (a, b) } else { (b, a) };
-            self.parser
-                .screen()
-                .contents_between(a.0, a.1, b.0, b.1.saturating_add(1))
+    fn clear_selection(&mut self) {
+        self.selection = None;
+        self.selection_drag = false;
+        self.selection_pointer = None;
+        self.selection_scroll = 0.0;
+        self.selection_tick = None;
+    }
+    pub fn selected_text(&mut self) -> Option<String> {
+        self.selection.map(|range| {
+            selection::copy(self.parser.screen_mut(), range, self.scrollback_available)
         })
     }
     pub fn settings_button(&mut self, ui: &mut egui::Ui) {
@@ -162,7 +227,7 @@ impl Terminal {
                     Replies::default(),
                 );
                 self.parser.process(&state);
-                self.selection = None;
+                self.clear_selection();
                 self.history_limit = settings.scrollback_lines;
                 self.refresh_history();
             }
@@ -235,7 +300,7 @@ impl Terminal {
         if self.parser.screen().size() != (rows, cols) {
             self.parser.screen_mut().set_size(rows, cols);
             self.refresh_history();
-            self.selection = None;
+            self.clear_selection();
         }
         let (surface, _) = ui.allocate_exact_size(
             egui::vec2(available.x, available.y.max(2.0)),
@@ -267,9 +332,25 @@ impl Terminal {
         };
         let mouse_mode = self.parser.screen().mouse_protocol_mode();
         let mouse_encoding = self.parser.screen().mouse_protocol_encoding();
+        let local_selection_gesture = self.selection_drag;
+        if !ui.input(|i| i.focused && i.pointer.primary_down()) {
+            if self.selection_drag && ui.input(|i| i.focused) {
+                if let (Some((_, end)), Some(pos)) = (
+                    self.selection.as_mut(),
+                    ui.input(|i| i.pointer.interact_pos()),
+                ) {
+                    *end = selection::cell(cell_at(pos), self.parser.screen().scrollback());
+                }
+            }
+            self.selection_drag = false;
+            self.selection_pointer = None;
+            self.selection_scroll = 0.0;
+            self.selection_tick = None;
+        }
         let report_mouse = enabled
             && mouse_mode != vt100::MouseProtocolMode::None
-            && !ui.input(|i| i.modifiers.shift);
+            && !ui.input(|i| i.modifiers.shift)
+            && !local_selection_gesture;
         if self.mouse_button.is_some()
             && (!report_mouse
                 || !ui.input(|i| i.focused)
@@ -334,24 +415,28 @@ impl Terminal {
                 }
             }
         }
-        if response.drag_started() && !report_mouse {
-            if let Some(pos) = response.interact_pointer_pos() {
-                let cell = cell_at(pos);
+        if !self.selection_drag
+            && !report_mouse
+            && (response.drag_started_by(egui::PointerButton::Primary)
+                || (response.is_pointer_button_down_on()
+                    && ui.input(|i| i.pointer.primary_pressed())))
+        {
+            if let Some(pos) = ui.input(|i| i.pointer.press_origin()) {
+                let cell = selection::cell(cell_at(pos), self.parser.screen().scrollback());
                 self.selection = Some((cell, cell));
+                self.selection_drag = true;
+                self.selection_scroll = 0.0;
+                self.selection_tick = Some(ui.input(|i| i.time));
+                response.request_focus();
             }
         }
-        if response.dragged() && !report_mouse {
-            if let (Some((_, end)), Some(pos)) =
-                (self.selection.as_mut(), response.interact_pointer_pos())
-            {
-                *end = cell_at(pos);
-            }
+        if response.clicked_by(egui::PointerButton::Primary)
+            && (report_mouse || self.selection.is_none_or(|(a, b)| a == b))
+        {
+            self.clear_selection();
         }
-        if response.clicked() {
-            self.selection = None;
-        }
-        if response.hovered() {
-            let scroll = ui.input(|i| i.raw_scroll_delta.y);
+        let scroll = ui.input(|i| i.raw_scroll_delta.y);
+        if response.hovered() || self.selection_drag {
             if scroll.abs() >= 1.0 {
                 if report_mouse {
                     let cell = ui
@@ -371,6 +456,7 @@ impl Terminal {
                 } else if enabled
                     && self.parser.screen().alternate_screen()
                     && !ui.input(|i| i.modifiers.shift)
+                    && !self.selection_drag
                 {
                     for _ in 0..3 {
                         action.input.extend(
@@ -388,13 +474,53 @@ impl Terminal {
                     }
                 } else {
                     let old = self.parser.screen().scrollback();
-                    let offset = if scroll > 0.0 {
+                    self.parser.screen_mut().set_scrollback(if scroll > 0.0 {
                         old.saturating_add(3)
                     } else {
                         old.saturating_sub(3)
-                    };
-                    self.parser.screen_mut().set_scrollback(offset);
-                    self.selection = None;
+                    });
+                }
+            }
+        }
+        if self.selection_drag {
+            let now = ui.input(|i| i.time);
+            let dt = self
+                .selection_tick
+                .replace(now)
+                .map_or(0.0, |previous| (now - previous).max(0.0) as f32);
+            if let Some(pos) = response.interact_pointer_pos() {
+                self.selection_pointer = Some(pos);
+            }
+            if let Some(pos) = self.selection_pointer {
+                let old = self.parser.screen().scrollback();
+                let edge_drag =
+                    response.dragged_by(egui::PointerButton::Primary) || !rect.contains(pos);
+                let lines = if edge_drag
+                    && scroll.abs() < 1.0
+                    && !self.parser.screen().alternate_screen()
+                {
+                    selection::edge_lines(&mut self.selection_scroll, rect, pos, cell_height, dt)
+                } else {
+                    self.selection_scroll = 0.0;
+                    0
+                };
+                let offset = if lines >= 0 {
+                    old.saturating_add(lines as usize)
+                } else {
+                    old.saturating_sub((-lines) as usize)
+                };
+                self.parser.screen_mut().set_scrollback(offset);
+                if edge_drag
+                    && ((pos.y < rect.top() + cell_height && offset < self.scrollback_available)
+                        || (pos.y > rect.bottom() - cell_height && offset > 0))
+                {
+                    ui.ctx()
+                        .request_repaint_after(std::time::Duration::from_millis(20));
+                } else {
+                    self.selection_scroll = 0.0;
+                }
+                if let Some((_, end)) = self.selection.as_mut() {
+                    *end = selection::cell(cell_at(pos), self.parser.screen().scrollback());
                 }
             }
         }
@@ -487,9 +613,15 @@ impl Terminal {
                                 } else {
                                     old.saturating_sub(usize::from(rows))
                                 });
-                            self.selection = None;
+                            self.clear_selection();
                         } else if modifiers.ctrl && modifiers.shift && key == Key::A {
-                            self.selection = Some(((0, 0), (rows - 1, cols - 1)));
+                            self.selection = Some((
+                                selection::cell((0, 0), self.parser.screen().scrollback()),
+                                selection::cell(
+                                    (rows - 1, cols - 1),
+                                    self.parser.screen().scrollback(),
+                                ),
+                            ));
                         } else if modifiers.ctrl && modifiers.shift && key == Key::C {
                             if let Some(text) = self.selected_text() {
                                 ui.ctx().copy_text(text);
@@ -534,13 +666,13 @@ impl Terminal {
             });
             if !action.input.is_empty() {
                 self.parser.screen_mut().set_scrollback(0);
-                self.selection = None;
+                self.clear_selection();
             }
         }
         if response.secondary_clicked() && !report_mouse {
             if let Some(text) = self.selected_text().filter(|s| !s.is_empty()) {
                 ui.ctx().copy_text(text);
-                self.selection = None;
+                self.clear_selection();
             } else if enabled {
                 if let Ok(text) = clipboard_text() {
                     action
@@ -591,10 +723,10 @@ impl Terminal {
                         pos.y - self.scroll_grab.unwrap_or(thumb.height() / 2.0),
                     );
                     self.parser.screen_mut().set_scrollback(offset);
-                    self.selection = None;
+                    self.clear_selection();
                 }
             }
-            if rail.hovered() {
+            if rail.hovered() && !self.selection_drag {
                 let wheel = ui.input(|i| i.raw_scroll_delta.y);
                 if wheel.abs() >= 1.0 {
                     let old = self.parser.screen().scrollback();
@@ -603,7 +735,7 @@ impl Terminal {
                     } else {
                         old.saturating_sub(3)
                     });
-                    self.selection = None;
+                    self.clear_selection();
                 }
             }
         }
@@ -631,7 +763,8 @@ impl Terminal {
         );
         rail.on_hover_text("Terminal history · drag to scroll · bottom returns to live output");
         let painter = ui.painter().with_clip_rect(rect);
-        painter.rect_filled(rect, 0.0, self.settings.color("background"));
+        let default_background = self.settings.color("background");
+        painter.rect_filled(rect, 0.0, default_background);
         let screen = self.parser.screen();
         for row in 0..rows {
             let word_colours =
@@ -663,33 +796,40 @@ impl Terminal {
                 }
                 if let Some((a, b)) = self.selection {
                     let (a, b) = if a <= b { (a, b) } else { (b, a) };
-                    if a <= (row, col) && (row, col) <= b {
+                    let point = selection::cell((row, col), screen.scrollback());
+                    if a <= point && point <= b {
                         background = self.settings.color("selection");
                     }
                 }
                 if cell.is_wide_continuation() {
                     continue;
                 }
-                painter.rect_filled(cell_rect, 0.0, background);
+                // The surface already paints the default background. Empty
+                // cells need neither another rectangle nor a font layout.
+                if background != default_background {
+                    painter.rect_filled(cell_rect, 0.0, background);
+                }
                 if cell.dim() {
                     foreground = foreground.gamma_multiply(0.65);
                 }
                 let text = cell.contents();
-                painter.text(
-                    point,
-                    egui::Align2::LEFT_TOP,
-                    text,
-                    font.clone(),
-                    foreground,
-                );
-                if cell.bold() {
+                if !text.is_empty() && text != " " {
                     painter.text(
-                        point + egui::vec2(0.5, 0.0),
+                        point,
                         egui::Align2::LEFT_TOP,
                         text,
                         font.clone(),
                         foreground,
                     );
+                    if cell.bold() {
+                        painter.text(
+                            point + egui::vec2(0.5, 0.0),
+                            egui::Align2::LEFT_TOP,
+                            text,
+                            font.clone(),
+                            foreground,
+                        );
+                    }
                 }
                 if cell.underline() {
                     painter.line_segment(
@@ -983,6 +1123,9 @@ fn row_word_colours(
             line.push(' ');
         }
     }
+    if line.trim().is_empty() {
+        return Vec::new();
+    }
     let spans = highlighter.spans(&line, settings);
     offsets
         .into_iter()
@@ -1030,6 +1173,368 @@ fn scroll_offset(track: egui::Rect, thumb_height: f32, history: usize, top: f32)
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn selection_frame(
+        terminal: &mut Terminal,
+        ctx: &egui::Context,
+        time: f64,
+        events: Vec<Event>,
+        modifiers: Modifiers,
+        focused: bool,
+    ) -> egui::Rect {
+        let mut rect = egui::Rect::NOTHING;
+        let _ = ctx.run(
+            egui::RawInput {
+                time: Some(time),
+                focused,
+                modifiers,
+                events,
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(500.0, 300.0),
+                )),
+                ..Default::default()
+            },
+            |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    rect = ui.available_rect_before_wrap();
+                    rect.max.x -= 18.0;
+                    assert!(
+                        terminal.ui(ui, true).input.is_empty(),
+                        "local text selection sent input to the host"
+                    );
+                });
+            },
+        );
+        rect
+    }
+    fn primary(pos: egui::Pos2, pressed: bool, modifiers: Modifiers) -> Event {
+        Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers,
+        }
+    }
+    #[test]
+    fn wheel_extends_held_selection_before_drag_threshold_and_keeps_it_on_release() {
+        let ctx = egui::Context::default();
+        ctx.options_mut(|options| options.max_passes = 1.try_into().unwrap());
+        let mut terminal = Terminal::default();
+        let rect = selection_frame(&mut terminal, &ctx, 0.0, vec![], Modifiers::NONE, true);
+        for _ in 0..100 {
+            terminal.process(b"output\r\n");
+        }
+        let pos = rect.center();
+        selection_frame(
+            &mut terminal,
+            &ctx,
+            0.1,
+            vec![
+                Event::PointerMoved(pos),
+                primary(pos, true, Modifiers::NONE),
+            ],
+            Modifiers::NONE,
+            true,
+        );
+        let anchor = terminal.selection.unwrap().0;
+        selection_frame(
+            &mut terminal,
+            &ctx,
+            0.2,
+            vec![Event::MouseWheel {
+                unit: egui::MouseWheelUnit::Line,
+                delta: egui::vec2(0.0, 1.0),
+                modifiers: Modifiers::NONE,
+            }],
+            Modifiers::NONE,
+            true,
+        );
+        assert_eq!(terminal.selection.unwrap().0, anchor);
+        assert_ne!(terminal.selection.unwrap().0, terminal.selection.unwrap().1);
+        selection_frame(
+            &mut terminal,
+            &ctx,
+            0.3,
+            vec![primary(pos, false, Modifiers::NONE)],
+            Modifiers::NONE,
+            true,
+        );
+        assert!(!terminal.selection_drag);
+        assert!(terminal.selected_text().unwrap().contains("output"));
+    }
+    #[test]
+    fn dragging_terminal_selection_scrolls_both_edges_and_wheel_without_losing_its_anchor() {
+        let ctx = egui::Context::default();
+        ctx.options_mut(|options| options.max_passes = 1.try_into().unwrap());
+        let mut terminal = Terminal::default();
+        let rect = selection_frame(&mut terminal, &ctx, 0.0, vec![], Modifiers::NONE, true);
+        for line in 0..200 {
+            terminal.process(format!("line-{line:03}\r\n").as_bytes());
+        }
+        let height = (terminal.settings.font_size * terminal.settings.line_height).ceil();
+        let start = rect.min + egui::vec2(24.0, height * 4.5);
+        let inside = rect.min + egui::vec2(24.0, height * 2.5);
+        selection_frame(
+            &mut terminal,
+            &ctx,
+            0.1,
+            vec![
+                Event::PointerMoved(start),
+                primary(start, true, Modifiers::NONE),
+            ],
+            Modifiers::NONE,
+            true,
+        );
+        selection_frame(
+            &mut terminal,
+            &ctx,
+            0.2,
+            vec![Event::PointerMoved(inside)],
+            Modifiers::NONE,
+            true,
+        );
+        let anchor = terminal.selection.unwrap().0;
+        assert_eq!(
+            anchor.0, 4,
+            "drag must start at the press origin, not the later drag threshold"
+        );
+        selection_frame(
+            &mut terminal,
+            &ctx,
+            0.3,
+            vec![Event::MouseWheel {
+                unit: egui::MouseWheelUnit::Line,
+                delta: egui::vec2(0.0, 1.0),
+                modifiers: Modifiers::NONE,
+            }],
+            Modifiers::NONE,
+            true,
+        );
+        assert!(terminal.parser.screen().scrollback() >= 3);
+        assert_eq!(terminal.selection.unwrap().0, anchor);
+        let above = egui::pos2(inside.x, rect.top() - height * 3.0);
+        for tick in 0..20 {
+            selection_frame(
+                &mut terminal,
+                &ctx,
+                0.4 + tick as f64 * 0.05,
+                vec![Event::PointerMoved(above)],
+                Modifiers::NONE,
+                true,
+            );
+        }
+        let offset = terminal.parser.screen().scrollback();
+        selection_frame(
+            &mut terminal,
+            &ctx,
+            1.35,
+            vec![Event::PointerMoved(above)],
+            Modifiers::NONE,
+            true,
+        );
+        assert_eq!(
+            terminal.parser.screen().scrollback(),
+            offset,
+            "an extra layout pass advanced time-based scrolling twice"
+        );
+        assert!(offset > usize::from(terminal.parser.screen().size().0));
+        assert!(
+            terminal.selected_text().unwrap().lines().count()
+                > usize::from(terminal.parser.screen().size().0)
+        );
+        let below = egui::pos2(inside.x, rect.bottom() + height * 3.0);
+        for tick in 0..10 {
+            selection_frame(
+                &mut terminal,
+                &ctx,
+                1.4 + tick as f64 * 0.05,
+                vec![Event::PointerMoved(below)],
+                Modifiers::NONE,
+                true,
+            );
+        }
+        assert!(terminal.parser.screen().scrollback() < offset);
+        assert_eq!(terminal.selection.unwrap().0, anchor);
+        selection_frame(
+            &mut terminal,
+            &ctx,
+            2.0,
+            vec![primary(below, false, Modifiers::NONE)],
+            Modifiers::NONE,
+            true,
+        );
+        let stopped = terminal.parser.screen().scrollback();
+        assert!(!terminal.selection_drag);
+        for tick in 0..5 {
+            selection_frame(
+                &mut terminal,
+                &ctx,
+                2.1 + tick as f64 * 0.1,
+                vec![],
+                Modifiers::NONE,
+                true,
+            );
+        }
+        assert_eq!(
+            terminal.parser.screen().scrollback(),
+            stopped,
+            "scrolling continued after release"
+        );
+        assert!(terminal.selection.is_some());
+    }
+    #[test]
+    fn shift_selection_stays_local_after_shift_release_and_stops_on_focus_loss() {
+        let ctx = egui::Context::default();
+        ctx.options_mut(|options| options.max_passes = 1.try_into().unwrap());
+        let mut terminal = Terminal::default();
+        let rect = selection_frame(&mut terminal, &ctx, 0.0, vec![], Modifiers::NONE, true);
+        for _ in 0..100 {
+            terminal.process(b"output\r\n");
+        }
+        terminal.process(b"\x1b[?1000h\x1b[?1006h");
+        let start = rect.min + egui::vec2(30.0, 90.0);
+        let end = rect.min + egui::vec2(30.0, 40.0);
+        selection_frame(
+            &mut terminal,
+            &ctx,
+            0.1,
+            vec![
+                Event::PointerMoved(start),
+                primary(start, true, Modifiers::SHIFT),
+            ],
+            Modifiers::SHIFT,
+            true,
+        );
+        selection_frame(
+            &mut terminal,
+            &ctx,
+            0.2,
+            vec![Event::PointerMoved(end)],
+            Modifiers::SHIFT,
+            true,
+        );
+        assert!(terminal.selection_drag);
+        selection_frame(
+            &mut terminal,
+            &ctx,
+            0.3,
+            vec![Event::PointerMoved(end)],
+            Modifiers::NONE,
+            true,
+        );
+        assert!(terminal.selection_drag);
+        selection_frame(
+            &mut terminal,
+            &ctx,
+            0.4,
+            vec![primary(end, false, Modifiers::NONE)],
+            Modifiers::NONE,
+            true,
+        );
+        assert!(!terminal.selection_drag);
+        selection_frame(
+            &mut terminal,
+            &ctx,
+            0.5,
+            vec![
+                Event::PointerMoved(start),
+                primary(start, true, Modifiers::SHIFT),
+            ],
+            Modifiers::SHIFT,
+            true,
+        );
+        selection_frame(
+            &mut terminal,
+            &ctx,
+            0.6,
+            vec![Event::PointerMoved(egui::pos2(30.0, rect.top() - 80.0))],
+            Modifiers::SHIFT,
+            true,
+        );
+        assert!(terminal.selection_drag);
+        selection_frame(&mut terminal, &ctx, 0.7, vec![], Modifiers::SHIFT, false);
+        assert!(!terminal.selection_drag);
+        let stopped = terminal.parser.screen().scrollback();
+        selection_frame(&mut terminal, &ctx, 0.8, vec![], Modifiers::SHIFT, false);
+        assert_eq!(terminal.parser.screen().scrollback(), stopped);
+    }
+    #[test]
+    fn selected_history_tracks_new_output_without_copying_the_wrong_rows() {
+        let mut terminal = Terminal::default();
+        terminal.parser = vt100::Parser::new_with_callbacks(3, 12, 5, Replies::default());
+        terminal.process(b"zero\r\none\r\ntwo\r\nthree\r\nfour\r\nfive\r\nsix\r\nseven");
+        terminal.selection = Some(((-2, 0), (0, 4)));
+        let before = terminal.selected_text().unwrap();
+        terminal.parser.screen_mut().set_scrollback(2);
+        terminal.process(b"\r\neight");
+        assert_eq!(terminal.selected_text().unwrap(), before);
+        assert_eq!(terminal.parser.screen().scrollback(), 3);
+        terminal.process(b"\x1b[?1049h");
+        assert!(terminal.selection.is_none());
+        let mut short = Terminal::default();
+        short.parser = vt100::Parser::new_with_callbacks(3, 12, 100, Replies::default());
+        short.process(b"zero\r\none\r\ntwo\r\nthree");
+        assert_eq!(short.scrollback_available, 1);
+        short.selection = Some(((0, 0), (0, 2)));
+        short.process(b"\rTHREE");
+        assert_eq!(
+            short.selected_text().as_deref(),
+            Some("one"),
+            "a harmless redraw must not erase selection with one history row"
+        );
+    }
+    #[test]
+    fn sparse_terminal_draws_visible_ink_without_thousands_of_empty_cells() {
+        let mut terminal = Terminal::default();
+        terminal.process(b"\x1b[41m   \x1b[0mA\x1b[4m \x1b[0m");
+        let ctx = egui::Context::default();
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1800.0, 900.0),
+            )),
+            ..Default::default()
+        };
+        let mut output = egui::FullOutput::default();
+        let started = std::time::Instant::now();
+        for _ in 0..3 {
+            output = ctx.run(input.clone(), |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    terminal.ui(ui, true);
+                });
+            });
+        }
+        let empty_text = output
+            .shapes
+            .iter()
+            .filter(|s| {
+                matches!(&s.shape,
+            egui::Shape::Text(t) if t.galley.job.text.trim().is_empty())
+            })
+            .count();
+        eprintln!(
+            "sparse terminal: {} shapes, {} blank text shapes, {:?} for 3 frames",
+            output.shapes.len(),
+            empty_text,
+            started.elapsed()
+        );
+        assert!(output.shapes.iter().any(|s| matches!(&s.shape,
+            egui::Shape::Text(t) if t.galley.job.text == "A")));
+        assert!(output.shapes.iter().any(|s| matches!(&s.shape,
+            egui::Shape::Rect(r) if r.fill == terminal.settings.ansi(1))));
+        assert!(output
+            .shapes
+            .iter()
+            .any(|s| matches!(&s.shape, egui::Shape::LineSegment { .. })));
+        assert_eq!(
+            empty_text, 0,
+            "blank terminal cells should not create text layouts"
+        );
+        assert!(
+            output.shapes.len() < 100,
+            "sparse-screen drawing work should follow visible content"
+        );
+    }
     #[test]
     fn terminal_scrollbar_tracks_real_history_and_keeps_gutter_out_of_pty_input() {
         let mut t = Terminal::default();

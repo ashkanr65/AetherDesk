@@ -15,6 +15,7 @@ pub enum Icon {
     Monitor,
     Monitors,
     Resolution,
+    Zoom,
     SecureKeys,
     Disconnect,
     EndSession,
@@ -49,24 +50,50 @@ pub fn button_scaled(
     let (rect, response) =
         ui.allocate_exact_size(egui::vec2(28.0, 28.0) * scale, egui::Sense::click());
     let visuals = ui.style().interact(&response);
+    let palette = crate::theme::colors(ui.visuals().dark_mode);
+    let destructive = matches!(icon, Icon::EndSession);
+    let danger_hover = destructive
+        && response.enabled()
+        && (response.hovered() || response.is_pointer_button_down_on());
+    let background = if selected {
+        ui.visuals().selection.bg_fill
+    } else {
+        visuals.bg_fill
+    };
+    let background = if danger_hover {
+        let blend = |base: u8, red: u8| ((u16::from(base) * 85 + u16::from(red) * 15) / 100) as u8;
+        Color32::from_rgb(
+            blend(palette.button.r(), palette.error.r()),
+            blend(palette.button.g(), palette.error.g()),
+            blend(palette.button.b(), palette.error.b()),
+        )
+    } else {
+        background
+    };
     ui.painter().rect(
         rect,
         (3.0 * scale).round() as u8,
-        if selected {
-            ui.visuals().selection.bg_fill
+        background,
+        if danger_hover {
+            Stroke::new(visuals.bg_stroke.width, palette.error)
         } else {
-            visuals.bg_fill
+            visuals.bg_stroke
         },
-        visuals.bg_stroke,
         egui::StrokeKind::Inside,
     );
     response.widget_info(|| {
         egui::WidgetInfo::labeled(egui::WidgetType::Button, response.enabled(), label)
     });
-    let color = if selected {
+    let color = if destructive {
+        if response.enabled() {
+            palette.error
+        } else {
+            visuals.fg_stroke.color
+        }
+    } else if selected {
         ui.visuals().selection.stroke.color
     } else if !response.hovered() && !response.is_pointer_button_down_on() {
-        crate::theme::colors(ui.visuals().dark_mode).icon
+        palette.icon
     } else {
         ui.style().interact(&response).fg_stroke.color
     };
@@ -298,6 +325,12 @@ pub fn draw(p: &egui::Painter, rect: Rect, icon: Icon, color: Color32) {
             border((0.03, 0.27), (0.72, 0.94));
             border((0.29, 0.03), (0.97, 0.68));
             line((0.37, 0.22), (0.88, 0.22));
+        }
+        Icon::Zoom => {
+            p.circle_stroke(at(0.4, 0.4), rect.width() * 0.28, stroke);
+            line((0.61, 0.61), (0.94, 0.94));
+            line((0.24, 0.4), (0.56, 0.4));
+            line((0.4, 0.24), (0.4, 0.56));
         }
         Icon::Resolution => {
             border((0.06, 0.13), (0.94, 0.78));

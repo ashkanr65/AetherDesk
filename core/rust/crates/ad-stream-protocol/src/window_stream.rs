@@ -84,6 +84,115 @@ pub enum Request {
     },
     Release,
     Stop,
+    /// Explicit user command, executed only inside this private host session.
+    Launch(String),
+    /// Ordered input only; no nested batches, capture or process operations.
+    InputBatch(Vec<WindowInput>),
+    /// Opt in to unsolicited, ordered image/metadata updates. Also a lease heartbeat.
+    Stream {
+        active: bool,
+    },
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub enum WindowInput {
+    Focus,
+    Resize {
+        width: u32,
+        height: u32,
+    },
+    Key {
+        evdev: u32,
+        pressed: bool,
+    },
+    Move {
+        x: i32,
+        y: i32,
+    },
+    Button {
+        button: u8,
+        pressed: bool,
+        x: i32,
+        y: i32,
+    },
+    Wheel {
+        horizontal: i32,
+        vertical: i32,
+    },
+    Release,
+}
+impl TryFrom<Request> for WindowInput {
+    type Error = ();
+    fn try_from(request: Request) -> Result<Self, ()> {
+        Ok(match request {
+            Request::Focus => Self::Focus,
+            Request::Resize { width, height } => Self::Resize { width, height },
+            Request::Key { evdev, pressed } => Self::Key { evdev, pressed },
+            Request::Move { x, y } => Self::Move { x, y },
+            Request::Button {
+                button,
+                pressed,
+                x,
+                y,
+            } => Self::Button {
+                button,
+                pressed,
+                x,
+                y,
+            },
+            Request::Wheel {
+                horizontal,
+                vertical,
+            } => Self::Wheel {
+                horizontal,
+                vertical,
+            },
+            Request::Release => Self::Release,
+            _ => return Err(()),
+        })
+    }
+}
+impl From<WindowInput> for Request {
+    fn from(input: WindowInput) -> Self {
+        match input {
+            WindowInput::Focus => Self::Focus,
+            WindowInput::Resize { width, height } => Self::Resize { width, height },
+            WindowInput::Key { evdev, pressed } => Self::Key { evdev, pressed },
+            WindowInput::Move { x, y } => Self::Move { x, y },
+            WindowInput::Button {
+                button,
+                pressed,
+                x,
+                y,
+            } => Self::Button {
+                button,
+                pressed,
+                x,
+                y,
+            },
+            WindowInput::Wheel {
+                horizontal,
+                vertical,
+            } => Self::Wheel {
+                horizontal,
+                vertical,
+            },
+            WindowInput::Release => Self::Release,
+        }
+    }
+}
+
+pub fn batchable(request: &Request) -> bool {
+    matches!(
+        request,
+        Request::Focus
+            | Request::Resize { .. }
+            | Request::Key { .. }
+            | Request::Move { .. }
+            | Request::Button { .. }
+            | Request::Wheel { .. }
+            | Request::Release
+    )
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -103,6 +212,10 @@ pub enum Reply {
     Idle,
     Ack,
     Error(String),
+    /// The same selected application changed its title or dimensions.
+    Metadata(WindowInfo),
+    /// A stream's selected view ended; input errors alone do not close a view.
+    ViewClosed(String),
 }
 
 pub fn dimensions(width: u32, height: u32) -> Result<usize, &'static str> {
@@ -144,6 +257,14 @@ pub fn apply_frame(
     height: u32,
     tiles: Vec<LosslessTile>,
 ) -> Result<Vec<u8>, String> {
+    let decoded = decode_tiles(
+        previous.map(|(s, w, h, _)| (s, w, h)),
+        sequence,
+        base,
+        width,
+        height,
+        tiles,
+    )?;
     let count = dimensions(width, height)?;
     if sequence == 0 {
         return Err("Invalid application frame sequence".into());
@@ -164,12 +285,45 @@ pub fn apply_frame(
     } else {
         vec![0; count]
     };
+    for (region, bytes) in decoded {
+        for row in 0..region.height as usize {
+            let target = ((region.y as usize + row) * width as usize + region.x as usize) * 4;
+            let stride = region.width as usize * 4;
+            pixels[target..target + stride]
+                .copy_from_slice(&bytes[row * stride..(row + 1) * stride]);
+        }
+    }
+    Ok(pixels)
+}
+
+/// Validate and decode a complete transaction before publishing any changed tile.
+/// Consumers can retain immutable unchanged tiles instead of copying the desktop.
+pub fn decode_tiles(
+    previous: Option<(u64, u32, u32)>,
+    sequence: u64,
+    base: Option<u64>,
+    width: u32,
+    height: u32,
+    tiles: Vec<LosslessTile>,
+) -> Result<Vec<(Rectangle, Vec<u8>)>, String> {
+    dimensions(width, height)?;
+    if sequence == 0 {
+        return Err("Invalid application frame sequence".into());
+    }
+    if let Some(base) = base {
+        if !previous
+            .is_some_and(|(seq, w, h)| seq == base && sequence > seq && w == width && h == height)
+        {
+            return Err("Application frame base is stale".into());
+        }
+    }
     let columns = width.div_ceil(256);
     let rows = height.div_ceil(256);
     if tiles.len() > (columns * rows) as usize {
         return Err("Too many application tiles".into());
     }
     let mut seen = std::collections::BTreeSet::new();
+    let mut decoded = Vec::with_capacity(tiles.len());
     for tile in tiles {
         let Rectangle {
             x,
@@ -187,22 +341,78 @@ pub fn apply_frame(
         {
             return Err("Invalid or duplicate application tile".into());
         }
+        let region = tile.region;
         let bytes = tile.decode()?;
-        for row in 0..h as usize {
-            let target = ((y as usize + row) * width as usize + x as usize) * 4;
-            pixels[target..target + w as usize * 4]
-                .copy_from_slice(&bytes[row * w as usize * 4..(row + 1) * w as usize * 4]);
-        }
+        decoded.push((region, bytes));
     }
     if base.is_none() && seen.len() != (columns * rows) as usize {
         return Err("Incomplete application image".into());
     }
-    Ok(pixels)
+    Ok(decoded)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn streaming_extensions_preserve_legacy_discriminants_and_metadata() {
+        assert_eq!(encode(&Request::Poll).unwrap(), 2u32.to_le_bytes());
+        assert_eq!(encode(&Reply::Ready).unwrap(), 0u32.to_le_bytes());
+        let subscribe = encode(&Request::Stream { active: false }).unwrap();
+        assert_eq!(&subscribe[..4], &13u32.to_le_bytes());
+        assert!(matches!(
+            decode::<Request>(&subscribe).unwrap(),
+            Request::Stream { active: false }
+        ));
+        assert!(WindowInput::try_from(Request::Stream { active: true }).is_err());
+        let info = WindowInfo {
+            id: 99,
+            title: "Virtuoso® Studio — Layout".into(),
+            width: 800,
+            height: 600,
+            transient_for: None,
+        };
+        let reply = decode::<Reply>(&encode(&Reply::Metadata(info.clone())).unwrap()).unwrap();
+        assert!(matches!(reply,Reply::Metadata(value) if value==info));
+    }
+    #[test]
+    fn ordered_input_batch_round_trips_without_nested_or_launch_commands() {
+        let batch = Request::InputBatch(vec![
+            WindowInput::Focus,
+            WindowInput::Key {
+                evdev: 42,
+                pressed: true,
+            },
+            WindowInput::Button {
+                button: 1,
+                pressed: true,
+                x: 15,
+                y: 25,
+            },
+            WindowInput::Button {
+                button: 1,
+                pressed: false,
+                x: 15,
+                y: 25,
+            },
+            WindowInput::Release,
+        ]);
+        let bytes = encode(&batch).unwrap();
+        let Request::InputBatch(input) = decode::<Request>(&bytes).unwrap() else {
+            panic!("input batch changed wire identity")
+        };
+        assert_eq!(input.len(), 5);
+        assert!(matches!(
+            input[1],
+            WindowInput::Key {
+                evdev: 42,
+                pressed: true
+            }
+        ));
+        assert!(matches!(input[4], WindowInput::Release));
+        assert!(WindowInput::try_from(Request::Launch("xterm".into())).is_err());
+        assert!(WindowInput::try_from(Request::InputBatch(input)).is_err());
+    }
     #[test]
     fn menu_packets_preserve_signed_offsets_and_reject_unbounded_or_duplicate_layers() {
         let popup = Popup {

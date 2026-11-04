@@ -36,6 +36,10 @@ struct AgentState {
     cancel_hello: Option<tokio_util::sync::CancellationToken>,
     cancel_resume: Option<tokio_util::sync::CancellationToken>,
     fail_open_once: bool,
+    early_notifications: bool,
+    reject_hello: bool,
+    wrong_resume: bool,
+    diagnostic_reads: usize,
 }
 
 #[derive(Default)]
@@ -80,6 +84,15 @@ impl RemoteAgentHost for MockConnection {
 
 #[async_trait]
 impl AgentConnection for MockConnection {
+    async fn startup_diagnostic(&self, _session_id: Uuid) -> Result<String, LifecycleError> {
+        let mut state = self.state.lock().unwrap();
+        assert!(
+            !state.ending,
+            "diagnostics were requested after startup rollback"
+        );
+        state.diagnostic_reads += 1;
+        Ok("fixture startup failure before cleanup".into())
+    }
     async fn session_ended(&self, _session_id: Uuid) -> Result<bool, LifecycleError> {
         let mut state = self.state.lock().unwrap();
         if state.cleanup_probes_remaining > 0 {
@@ -167,6 +180,24 @@ impl TransportAdapter for MockTransport {
                 if let Some(cancel) = &self.state.lock().unwrap().cancel_hello {
                     cancel.cancel();
                 }
+                if self.state.lock().unwrap().reject_hello {
+                    self.reply(ArppMessage::Control(ControlMessage::Close {
+                        reason_code: 42,
+                        detail: "fixture refusal".into(),
+                    }))
+                    .await;
+                    return Ok(());
+                }
+                if self.state.lock().unwrap().early_notifications {
+                    self.reply(early_cursor(1)).await;
+                    self.reply(ArppMessage::Clipboard(
+                        ad_stream_protocol::ClipboardMessage::Offer {
+                            revision: 1,
+                            mime_types: vec!["text/plain".into()],
+                        },
+                    ))
+                    .await;
+                }
                 self.reply(ArppMessage::Control(ControlMessage::ServerHello {
                     protocol_version: PROTOCOL_VERSION,
                     server_nonce: [9; 32],
@@ -192,6 +223,22 @@ impl TransportAdapter for MockTransport {
                 }
                 self.state.lock().unwrap().resumes += 1;
                 self.state.lock().unwrap().attached = true;
+                if self.state.lock().unwrap().early_notifications {
+                    self.reply(early_cursor(2)).await;
+                    self.reply(ArppMessage::Metrics(
+                        ad_stream_protocol::MetricsMessage::Pong {
+                            nonce: 1,
+                            sent_at_us: 2,
+                            received_at_us: 3,
+                        },
+                    ))
+                    .await;
+                }
+                let session_id = if self.state.lock().unwrap().wrong_resume {
+                    Uuid::new_v4()
+                } else {
+                    session_id
+                };
                 self.reply(ArppMessage::Control(ControlMessage::ResumeState {
                     session_id,
                     cache_epoch: 3,
@@ -263,6 +310,103 @@ impl TransportAdapter for MockTransport {
         );
         state.attached = false;
         Ok(())
+    }
+}
+
+fn early_cursor(x: i32) -> ArppMessage {
+    ArppMessage::Display(ad_stream_protocol::DisplayMessage::CursorUpdate {
+        frame_id: 0,
+        x,
+        y: 0,
+        hotspot_x: 0,
+        hotspot_y: 0,
+        width: 1,
+        height: 1,
+        visible: true,
+        rgba: vec![255; 4].into(),
+    })
+}
+
+#[tokio::test]
+async fn early_cursor_and_clipboard_messages_survive_the_startup_handshake_in_order() {
+    let binary = std::env::temp_dir().join(format!("ad-agent-handshake-{}", Uuid::new_v4()));
+    tokio::fs::write(&binary, b"fixture").await.unwrap();
+    let artifact = AgentArtifact::inspect("0.1.0", &binary).await.unwrap();
+    let connection = Arc::new(MockConnection::default());
+    connection.state.lock().unwrap().early_notifications = true;
+    let id = Uuid::new_v4();
+    let parameters = handshake_parameters(id);
+    let mut client = RemoteSessionLifecycle::new(connection, id);
+    let session = client
+        .connect_saved_desktop(&artifact, None, &parameters)
+        .await
+        .unwrap();
+    assert_eq!(session.receive().await.unwrap().message, early_cursor(1));
+    assert!(matches!(
+        session.receive().await.unwrap().message,
+        ArppMessage::Clipboard(_)
+    ));
+    assert_eq!(session.receive().await.unwrap().message, early_cursor(2));
+    assert!(matches!(
+        session.receive().await.unwrap().message,
+        ArppMessage::Metrics(_)
+    ));
+    client.disconnect(DisconnectMode::Terminate).await.unwrap();
+    tokio::fs::remove_file(binary).await.unwrap();
+}
+
+#[tokio::test]
+async fn invalid_control_responses_keep_diagnostics_before_rollback_and_preserve_saved_desktops() {
+    let binary = std::env::temp_dir().join(format!("ad-agent-handshake-{}", Uuid::new_v4()));
+    tokio::fs::write(&binary, b"fixture").await.unwrap();
+    let artifact = AgentArtifact::inspect("0.1.0", &binary).await.unwrap();
+    for retained in [false, true] {
+        for bad_hello in [false, true] {
+            let connection = Arc::new(MockConnection::default());
+            {
+                let mut state = connection.state.lock().unwrap();
+                state.retained = retained;
+                state.reject_hello = bad_hello;
+                state.wrong_resume = !bad_hello;
+            }
+            let id = Uuid::new_v4();
+            let mut client = RemoteSessionLifecycle::new(connection.clone(), id);
+            let result = client
+                .connect_saved_desktop_cancellable(
+                    &artifact,
+                    None,
+                    &handshake_parameters(id),
+                    &tokio_util::sync::CancellationToken::new(),
+                )
+                .await;
+            assert!(matches!(
+                result,
+                Err(LifecycleError::UnexpectedHandshakeMessage)
+            ));
+            assert_eq!(
+                client.startup_diagnostic(),
+                Some("fixture startup failure before cleanup")
+            );
+            let state = connection.state.lock().unwrap();
+            assert_eq!(state.retained, retained);
+            assert_eq!(state.diagnostic_reads, 1);
+        }
+    }
+    tokio::fs::remove_file(binary).await.unwrap();
+}
+
+fn handshake_parameters(session_id: Uuid) -> SessionParameters {
+    SessionParameters {
+        session_id,
+        desktop_environment: "xfce".into(),
+        width: 640,
+        height: 480,
+        scale_milli: 1000,
+        monitors: 1,
+        video_codec: VideoCodec::H264,
+        audio_codec: None,
+        target_fps: 30,
+        target_bitrate_kbps: 4000,
     }
 }
 

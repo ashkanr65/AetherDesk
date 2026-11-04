@@ -38,8 +38,12 @@ impl crate::SshSession {
         script: &StartupScript,
         shell: bool,
     ) -> Result<String, String> {
+        let private = self
+            .temporary_root()
+            .map(|path| format!("AETHERDESK_TEMP_DIR={} ", quote(&path)))
+            .unwrap_or_default();
         let command = format!(
-            "{}bash -c {} aetherdesk-startup {}",
+            "{private}{}bash -c {} aetherdesk-startup {}",
             script.environment_prefix()?,
             quote(include_str!("session_startup.sh")),
             if shell { "prepare" } else { "exec /bin/true" }
@@ -129,6 +133,29 @@ mod tests {
             format!("ready|{}", work.display())
         );
         assert_eq!(run("false", false, 5).status.code(), Some(1));
+        let collision = Command::new("bash")
+            .args([
+                "-c",
+                include_str!("session_startup.sh"),
+                "fixture",
+                "exec",
+                "bash",
+                "-c",
+                "printf '%s|%s|%s' \"$stage\" \"$script\" \"$environment\"",
+            ])
+            .env("HOME", home.path())
+            .env(
+                "AETHERDESK_STARTUP_COMMANDS",
+                "export stage=flow script=process environment=corner",
+            )
+            .output()
+            .unwrap();
+        assert!(
+            collision.status.success(),
+            "{}",
+            String::from_utf8_lossy(&collision.stderr)
+        );
+        assert_eq!(collision.stdout, b"flow|process|corner");
         assert!(run("false", true, 5).status.success());
         assert!(!run("exit 0", false, 5).status.success());
         let timeout = run("while :; do sleep 1; done", false, 1);

@@ -437,6 +437,21 @@ mod windows {
             Some((rect.right as u32, rect.bottom as u32))
         }
     }
+    pub fn work_area(hwnd: isize) -> Option<PhysicalRect> {
+        let _dpi = DpiScope::physical();
+        let monitor = unsafe { MonitorFromWindow(hwnd as HWND, MONITOR_DEFAULTTONEAREST) };
+        let mut info: MONITORINFO = unsafe { std::mem::zeroed() };
+        info.cbSize = std::mem::size_of::<MONITORINFO>() as u32;
+        if unsafe { GetMonitorInfoW(monitor, &mut info) } == 0 {
+            return None;
+        }
+        Some(PhysicalRect {
+            x: info.rcWork.left,
+            y: info.rcWork.top,
+            width: (info.rcWork.right - info.rcWork.left) as u32,
+            height: (info.rcWork.bottom - info.rcWork.top) as u32,
+        })
+    }
     pub fn screen_origin(hwnd: isize) -> Option<(i32, i32)> {
         let _dpi = DpiScope::physical();
         let mut point = POINT { x: 0, y: 0 };
@@ -479,6 +494,10 @@ pub fn set_owner(_: isize, _: isize) -> Result<(), String> {
 }
 #[cfg(not(windows))]
 pub fn client_size(_: isize) -> Option<(u32, u32)> {
+    None
+}
+#[cfg(not(windows))]
+pub fn work_area(_: isize) -> Option<PhysicalRect> {
     None
 }
 #[cfg(not(windows))]

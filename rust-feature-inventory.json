@@ -6,6 +6,28 @@
   "inventoryMeaning": "Mechanical source coverage plus behavior catalog. Pending entries are not ported; implementation is not live verification.",
   "features": [
     {
+      "id": "connection.remote_applications",
+      "area": "Connections",
+      "behavior": "Terminal-first host-rendered independent X11 application windows; private retained session, launcher, startup environment, multiple views, lossless pixels, input batching, clipboard, SFTP/editor/monitoring reuse, separate recovery identity and explicit session termination",
+      "references": [],
+      "status": "implemented_unverified",
+      "implementation": [
+        "ui/rust/crates/ad-desktop-model/src/profiles.rs",
+        "ui/rust/crates/ad-desktop/src/application_workspace.rs",
+        "ui/rust/crates/ad-desktop/src/connection.rs",
+        "ui/rust/crates/ad-desktop/src/remote_application_worker.rs",
+        "ui/rust/crates/ad-desktop/src/session.rs",
+        "core/rust/crates/agent-supervisor/src/application_session.sh",
+        "core/rust/crates/agent-supervisor/src/supervisor.rs",
+        "core/rust/crates/agent-wayland/src/compositor.rs",
+        "core/rust/crates/agent-wayland/src/window_mirror.rs",
+        "core/rust/crates/ad-stream-protocol/src/window_stream.rs",
+        "core/rust/crates/ad-ssh/src/client.rs",
+        "core/rust/crates/agent-supervisor/src/main.rs"
+      ],
+      "acceptance": "Automated fixtures cover profile round-trip, private launcher validation, actual Xwayland window colours, retained process lifetime and termination, disabled desktop capture/transmission, input batching and small-window layout. Complete native packaging and real EDA/mixed-monitor acceptance are separate; no claim that every application is live-verified."
+    },
+    {
       "id": "display.shared_lossless_tiles",
       "area": "Remote desktop",
       "behavior": "Native shared lossless tile snapshots, exact-colour conversion and partial uploads across skipped frames, bounded capture pacing and cached terminal discovery",
@@ -186,7 +208,10 @@
       ],
       "status": "implemented_unverified",
       "implementation": [
-        "ui/rust/crates/ad-desktop/src/connection.rs"
+        "ui/rust/crates/ad-desktop/src/connection.rs",
+        "core/rust/crates/ad-ssh/src/host_cleanup.rs",
+        "core/rust/crates/ad-ssh/src/host_cleanup.py",
+        "tools/rust-build-kit/test_host_cleanup.py"
       ],
       "acceptance": "R1: gated reconnect until worker cleanup, explicit channel EOF/close, X11 startup cleanup and owned AI/Tools SSH process groups with renewable leases. Ten interpreted cleanup fixtures pass in the cached AlmaLinux/Bash 4.4 build environment, including heartbeat read-boundary and malformed-input checks; compiler and live auth/transfer/process-leak checks remain."
     },
@@ -229,7 +254,9 @@
       "status": "implemented_unverified",
       "implementation": [
         "ui/rust/crates/ad-desktop/src/terminal.rs",
-        "ui/rust/crates/ad-desktop/src/terminal_settings.rs"
+        "ui/rust/crates/ad-desktop/src/terminal_settings.rs",
+        "ui/rust/crates/ad-desktop/src/connection.rs",
+        "core/rust/crates/ad-ssh/src/shell.rs"
       ],
       "acceptance": "R2 adds mouse protocols/motion/wheel, IME commit deduplication, AltGr and saved screen geometry/settings. Compare vim/top, split Unicode, wide cells and focus release live."
     },
@@ -548,7 +575,9 @@
         "ui/rust/crates/ad-desktop/src/session.rs",
         "ui/rust/crates/ad-desktop/src/connection.rs",
         "ui/rust/crates/ad-desktop/src/main.rs",
-        "ui/rust/crates/ad-desktop/src/desktop_recovery.rs"
+        "ui/rust/crates/ad-desktop/src/desktop_recovery.rs",
+        "core/rust/crates/ad-stream-client/src/session.rs",
+        "core/rust/crates/ad-remote-session/tests/lifecycle_integration.rs"
       ],
       "acceptance": "R1: cancellation owns bounded launch/partial handshake, rolls back positively identified fresh agents and preserves existing desktops; unclaimed launches expire. Duplicate IDs persist before launch and reopen through Saved desktop tabs; confirmed End removes records. Compile and validate live cancellation/restart/termination."
     },
@@ -580,11 +609,12 @@
       "status": "implemented_unverified",
       "implementation": [
         "ui/rust/crates/ad-desktop/src/x11.rs",
+        "ui/rust/crates/ad-desktop/src/x11_render_checks.rs",
         "ui/rust/crates/ad-desktop/src/connection.rs",
         "ui/rust/crates/ad-desktop/assets/theme/aetherdesk.ico",
         "tools/rust-build-kit/Build-Worker.ps1"
       ],
-      "acceptance": "R9 adds serialized shared-server leases, per-tab forwarding cookies, last-tab shutdown, old-generation isolation, Windows cleanup jobs and private fallback-icon settings. The production icon helper, clipboard, software GLX and multiwindow mode remain. Stage 4 runs the real bundled-manager regression; compile/package/live verification remains R12."
+      "acceptance": "The real bundled-manager packaging regression covers sharing, authentication, cleanup, required Composite window backing, actual native-window painting, exact TrueColor overlapping copies and repeated edge movement/resizing of owned windows. GLX and application-visible Composite remain available. Only optional Windows per-pixel alpha is disabled; the original crash still needs a matching reproduction or process dump. Full application/live acceptance remains separate."
     },
     {
       "id": "security.vault",
@@ -840,7 +870,8 @@
       "status": "implemented_unverified",
       "implementation": [
         "ui/rust/crates/ad-desktop/src/log_panel.rs",
-        "ui/rust/crates/ad-desktop/src/logging.rs"
+        "ui/rust/crates/ad-desktop/src/logging.rs",
+        "core/rust/crates/agent-supervisor/src/log_capture.rs"
       ],
       "acceptance": "R10 adds rotated-file merge, structured severity/source/case filters, independent host choice, counts, copy/open-folder and asynchronous bounded export/reads. Native disk/redaction/filter fixtures added; compiler/live checks remain R12."
     },

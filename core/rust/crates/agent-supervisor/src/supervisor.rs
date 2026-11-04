@@ -62,6 +62,7 @@ enum CaptureCommand {
 }
 
 pub struct AgentSupervisor {
+    applications_only: bool,
     cursors: watch::Receiver<Option<Arc<agent_wayland::host_cursor::CursorImage>>>,
     session_id: Uuid,
     state: Arc<RwLock<SessionState>>,
@@ -82,6 +83,11 @@ pub struct AgentSupervisor {
 
 impl AgentSupervisor {
     pub async fn start(config: SupervisorConfig) -> Result<Self, SupervisorError> {
+        let applications_only = config
+            .application
+            .environment
+            .iter()
+            .any(|(key, value)| key == "AETHERDESK_APPLICATIONS_ONLY" && value == "1");
         let session_id = config.session_id;
         let state = Arc::new(RwLock::new(SessionState::Starting));
         let clients = Arc::new(Mutex::new(HashSet::new()));
@@ -98,7 +104,11 @@ impl AgentSupervisor {
 
         let mut rate = MediaRate::new(config.encoder.bitrate_kbps, config.encoder.framerate);
         let size = (config.encoder.width, config.encoder.height);
-        let encoder = EncoderPipeline::new(config.encoder)?;
+        let encoder = if applications_only {
+            None
+        } else {
+            Some(EncoderPipeline::new(config.encoder)?)
+        };
         rate.resize(size.0, size.1);
         let (rate_tx, rate_rx) = watch::channel((rate.bitrate, rate.fps));
         let (media_tx, media_rx) = mpsc::channel(3);
@@ -122,16 +132,28 @@ impl AgentSupervisor {
         let packet_output = packets.clone();
         let media_refresh = refresh.clone();
         let media_task = tokio::spawn(async move {
-            if let Err(error) = run_media_loop(
-                encoder,
-                media_rx,
-                frames_rx,
-                packet_output,
-                media_refresh,
-                rate_rx,
-            )
-            .await
-            {
+            let result = if let Some(encoder) = encoder {
+                run_media_loop(
+                    encoder,
+                    media_rx,
+                    frames_rx,
+                    packet_output,
+                    media_refresh,
+                    rate_rx,
+                )
+                .await
+            } else {
+                // Keep the control receiver alive without initializing a video
+                // pipeline that this private application session will never use.
+                let mut commands = media_rx;
+                while let Some(command) = commands.recv().await {
+                    if matches!(command, MediaCommand::Stop) {
+                        break;
+                    }
+                }
+                Ok(())
+            };
+            if let Err(error) = result {
                 error!(%error, "ARPP media pipeline failed");
                 set_state(&media_state, SessionState::Failed);
             }
@@ -162,6 +184,7 @@ impl AgentSupervisor {
         set_state_if_running(&state, SessionState::Detached);
         info!(%session_id, "persistent AetherDesk session started");
         Ok(Self {
+            applications_only,
             cursors,
             session_id,
             state,
@@ -181,6 +204,9 @@ impl AgentSupervisor {
         })
     }
 
+    pub fn applications_only(&self) -> bool {
+        self.applications_only
+    }
     pub fn session_id(&self) -> Uuid {
         self.session_id
     }
@@ -230,7 +256,7 @@ impl AgentSupervisor {
             let inserted = clients.insert(client_id);
             inserted && was_empty
         };
-        if should_resume {
+        if should_resume && !self.applications_only {
             // A retained desktop may carry quality reductions from an old
             // connection. Start the new connection with a fresh video budget.
             if let Ok(mut rate) = self.rate.lock() {

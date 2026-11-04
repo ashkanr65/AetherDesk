@@ -217,6 +217,269 @@ mod tests {
     use std::os::unix::{fs::PermissionsExt, net::UnixStream};
 
     #[test]
+    fn application_session_launches_retains_exact_window_pixels_and_ends_its_children() {
+        use crate::window_mirror::{application_environment, Mirror};
+        use ad_stream_protocol::window_stream::{Reply, Request};
+        struct Environment(Vec<(&'static str, Option<std::ffi::OsString>)>);
+        impl Drop for Environment {
+            fn drop(&mut self) {
+                for (name, value) in &self.0 {
+                    match value {
+                        Some(value) => std::env::set_var(name, value),
+                        None => std::env::remove_var(name),
+                    }
+                }
+            }
+        }
+        let _environment = Environment(
+            ["HOME", "XDG_RUNTIME_DIR"]
+                .into_iter()
+                .map(|name| (name, std::env::var_os(name)))
+                .collect(),
+        );
+        let home = tempfile::Builder::new().prefix("a' ").tempdir().unwrap();
+        let session = format!("00000000-0000-4000-8000-{:012x}", std::process::id());
+        let directory = home.path().join(".aetherdesk/sessions").join(&session);
+        let runtime = directory.join("runtime");
+        std::fs::create_dir_all(&runtime).unwrap();
+        for path in [&directory, &runtime] {
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        std::env::set_var("HOME", home.path());
+        std::env::set_var("XDG_RUNTIME_DIR", &runtime);
+        let mut compositor = HeadlessCompositor::spawn(CompositorConfig {
+            width: 640,
+            height: 480,
+            refresh_millihz: 30_000,
+            runtime_dir: runtime.clone(),
+            enable_xwayland: true,
+            host_window_manager: true,
+        })
+        .unwrap();
+        let mut application = ApplicationSpec::new("dbus-run-session");
+        application.arguments = vec![
+            "--".into(),
+            "bash".into(),
+            "-c".into(),
+            include_str!("../../agent-supervisor/src/application_session.sh").into(),
+        ];
+        application.environment = vec![
+            ("AETHERDESK_APPLICATIONS_ONLY".into(), "1".into()),
+            ("APP_FIXTURE_EXPORT".into(), "retained".into()),
+        ];
+        application.working_directory = Some(home.path().to_path_buf());
+        compositor.launch(application).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(15);
+        let prefix = loop {
+            if let Ok(prefix) = application_environment(&session) {
+                break prefix;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "application session did not publish its private environment"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        };
+        assert!(prefix.starts_with(". '"));
+        assert!(!prefix.contains("MIT-MAGIC-COOKIE"));
+        let mut first = Mirror::connect_session(&session).unwrap();
+        first.handle(Request::Launch("printf '%s|%s' \"$APP_FIXTURE_EXPORT\" \"$PWD\" > \"$HOME/launch-result\"; sleep 60 & echo \"$!\" > \"$HOME/worker-pid\"".into())).unwrap();
+        let result = home.path().join("launch-result");
+        let pid_file = home.path().join("worker-pid");
+        while !pid_file.exists() || std::fs::metadata(&pid_file).unwrap().len() == 0 {
+            assert!(
+                Instant::now() < deadline,
+                "application command did not execute"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert_eq!(
+            std::fs::read_to_string(&result).unwrap(),
+            format!("retained|{}", home.path().display())
+        );
+        let pid: i32 = std::fs::read_to_string(&pid_file)
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        drop(first);
+        assert_eq!(
+            unsafe { libc::kill(pid, 0) },
+            0,
+            "closing an independent view stopped its application"
+        );
+        let mut second = Mirror::connect_session(&session).unwrap();
+
+        let authority = std::fs::read_dir(&runtime)
+            .unwrap()
+            .filter_map(Result::ok)
+            .map(|e| e.path())
+            .find(|p| p.extension().is_some_and(|s| s == "Xauthority"))
+            .unwrap();
+        let auth = std::fs::read(authority).unwrap();
+        let display = prefix
+            .split("DISPLAY=':")
+            .nth(1)
+            .unwrap()
+            .split('\'')
+            .next()
+            .unwrap();
+        let check = std::process::Command::new("bash")
+            .args([
+                "--noprofile",
+                "--norc",
+                "-c",
+                &format!(
+                    "{prefix}; printf '%s|%s|%s' \"$APP_FIXTURE_EXPORT\" \"$PWD\" \"$DISPLAY\""
+                ),
+            ])
+            .env("APP_FIXTURE_EXPORT", "wrong-before-source")
+            .output()
+            .unwrap();
+        assert!(
+            check.status.success(),
+            "private shell environment could not be sourced: {}",
+            String::from_utf8_lossy(&check.stderr)
+        );
+        assert_eq!(
+            String::from_utf8(check.stdout).unwrap(),
+            format!("retained|{}|:{display}", home.path().display())
+        );
+        let stream = DefaultStream::from_unix_stream(
+            UnixStream::connect(format!("/tmp/.X11-unix/X{display}")).unwrap(),
+        )
+        .unwrap()
+        .0;
+        let connection = RustConnection::connect_to_stream_with_auth_info(
+            stream,
+            0,
+            b"MIT-MAGIC-COOKIE-1".to_vec(),
+            auth[auth.len() - 16..].to_vec(),
+        )
+        .unwrap();
+        let screen = &connection.setup().roots[0];
+        let window = connection.generate_id().unwrap();
+        connection
+            .create_window(
+                screen.root_depth,
+                window,
+                screen.root,
+                20,
+                20,
+                64,
+                48,
+                0,
+                WindowClass::INPUT_OUTPUT,
+                screen.root_visual,
+                &CreateWindowAux::new()
+                    .background_pixel(0xff0000)
+                    .event_mask(EventMask::BUTTON_PRESS | EventMask::BUTTON_RELEASE),
+            )
+            .unwrap()
+            .check()
+            .unwrap();
+        connection.map_window(window).unwrap().check().unwrap();
+        connection.flush().unwrap();
+        loop {
+            if matches!(second.handle(Request::List).unwrap(),Reply::Windows(windows) if windows.iter().any(|w|w.id==window))
+            {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "host window was not discoverable"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        second.handle(Request::Select(window)).unwrap();
+        let image = loop {
+            if let Reply::Frame { tiles, .. } = second.handle(Request::Poll).unwrap() {
+                if let Some(tile) = tiles.first() {
+                    break tile.clone().decode().unwrap();
+                }
+            }
+            assert!(
+                Instant::now() < deadline,
+                "independent window did not capture pixels"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        };
+        assert!(
+            image.chunks_exact(4).all(|p| p == [0, 0, 255, 255]),
+            "window colour changed during lossless capture"
+        );
+        // Application-only mode has no primary desktop mouse events. XTEST
+        // clicks must still hit the selected client before any such event.
+        second.handle(Request::Focus).unwrap();
+        for pressed in [true, false] {
+            second
+                .handle(Request::Button {
+                    button: 1,
+                    pressed,
+                    x: 20,
+                    y: 12,
+                })
+                .unwrap();
+        }
+        let input_deadline = Instant::now() + Duration::from_millis(500);
+        let mut buttons = Vec::new();
+        while Instant::now() < input_deadline && buttons.len() < 2 {
+            while let Some(event) = connection.poll_for_event().unwrap() {
+                match event {
+                    smithay::reexports::x11rb::protocol::Event::ButtonPress(e)
+                        if e.event == window =>
+                    {
+                        buttons.push(true)
+                    }
+                    smithay::reexports::x11rb::protocol::Event::ButtonRelease(e)
+                        if e.event == window =>
+                    {
+                        buttons.push(false)
+                    }
+                    _ => {}
+                }
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(
+            buttons,
+            [true, false],
+            "independent clicks missed the host client before desktop pointer initialization"
+        );
+        crate::window_mirror::verify_event_stream(&session, &connection, window);
+        // Drain the possible pre-launch initial frame; subsequent application
+        // changes must not produce full desktop snapshots in this mode.
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let _ = tokio::time::timeout(Duration::from_millis(100), compositor.next_frame()).await;
+            assert!(
+                tokio::time::timeout(Duration::from_millis(150), compositor.next_frame())
+                    .await
+                    .is_err(),
+                "application-only mode copied full desktop pixels"
+            );
+        });
+        drop(second);
+        drop(connection);
+        compositor.shutdown();
+        let deadline = Instant::now() + Duration::from_secs(3);
+        loop {
+            let active = std::fs::read_to_string(format!("/proc/{pid}/stat")).is_ok_and(|s| {
+                s.rsplit_once(')')
+                    .is_some_and(|(_, rest)| !rest.trim_start().starts_with('Z'))
+            });
+            if !active {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "explicit session shutdown left a launched child running"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    #[test]
     fn host_xfwm_draws_decorations_and_handles_input_and_resize() {
         let runtime = tempfile::tempdir().unwrap();
         std::fs::set_permissions(runtime.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
@@ -539,7 +802,7 @@ mod tests {
         let (peer_tx, mut peer_rx) = tokio::sync::mpsc::channel(8);
         let peer = crate::host_clipboard::HostClipboard::start(
             display.trim_start_matches(':').parse().unwrap(),
-            cookie.try_into().unwrap(),
+            cookie.clone().try_into().unwrap(),
             peer_tx,
             tokio::sync::watch::channel(None).0,
         )
@@ -1008,6 +1271,17 @@ mod tests {
                 "return to tab left an application outside the active monitor: frame=({left},{top})-({right},{bottom}), monitors={monitors:?}");
             std::thread::sleep(Duration::from_millis(20));
         }
+        crate::window_mirror::verify_minimized_window(
+            RustConnection::connect_to_stream_with_auth_info(
+                connect(),
+                0,
+                b"MIT-MAGIC-COOKIE-1".to_vec(),
+                cookie.clone(),
+            )
+            .unwrap(),
+            &connection,
+            window,
+        );
         compositor.shutdown();
     }
 }

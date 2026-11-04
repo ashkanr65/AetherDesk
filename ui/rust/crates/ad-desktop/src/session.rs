@@ -31,6 +31,8 @@ pub struct SessionTab {
     pub pending_open: Vec<crate::editor::OpenFile>,
     desktop_id: uuid::Uuid,
     remote: Option<crate::remote_view::RemoteView>,
+    applications: Option<crate::remote_applications::workspace::Workspace>,
+    application_client: Option<Arc<crate::remote::RemoteClient>>,
     connecting: bool,
     connection: Option<Connection>,
     credentials: Credentials,
@@ -96,7 +98,7 @@ impl SessionTab {
             "Enter credentials to connect. Passwords are kept in memory for this attempt only."
         }
         .into();
-        let desktop_id = retained_desktop_id(&profile.id);
+        let desktop_id = retained_session_id(&profile);
         Self {
             tab_id: uuid::Uuid::new_v4(),
             notices: std::collections::VecDeque::new(),
@@ -123,6 +125,8 @@ impl SessionTab {
             pending_open: Vec::new(),
             desktop_id,
             remote: None,
+            applications: None,
+            application_client: None,
             connecting: false,
             connection: None,
             challenge: None,
@@ -202,8 +206,8 @@ impl SessionTab {
                 "Finishing the previous connection. Please wait before reconnecting.".into();
             return;
         }
-        if self.profile.connection_type == ConnectionType::RemoteDesktop
-            && self.desktop_id != retained_desktop_id(&self.profile.id)
+        if self.profile.connection_type.has_host_session()
+            && self.desktop_id != retained_session_id(&self.profile)
         {
             if let Err(error) = crate::desktop_recovery::remember(
                 &self.profile,
@@ -222,6 +226,8 @@ impl SessionTab {
         ) {
             Ok(connection) => {
                 self.remote = None;
+                self.applications = None;
+                self.application_client = None;
                 self.backend = None;
                 self.connection = Some(connection);
                 self.connecting = true;
@@ -318,11 +324,12 @@ impl SessionTab {
         }
         let mut events = Vec::new();
         if let Some(connection) = &mut self.connection {
-            while let Ok(event) = connection.events.try_recv() {
-                events.push(event);
+            events = crate::connection::receive_events(&mut connection.events);
+            if !connection.events.is_empty() {
+                ctx.request_repaint();
             }
-            // If the UI event queue filled, the worker closes instead of losing
-            // terminal bytes silently. Surface the closed worker as a failure.
+            // Output uses backpressure; a closed worker is still reported once
+            // its remaining ordered events have been consumed.
             if connection.events.is_closed()
                 && connection.events.is_empty()
                 && events.is_empty()
@@ -336,8 +343,17 @@ impl SessionTab {
         for event in events {
             match event {
                 Event::Desktop(client) => {
-                    self.remote =
-                        Some(crate::remote_view::RemoteView::new(client, self.desktop_id));
+                    if self.profile.connection_type == ConnectionType::RemoteApplications {
+                        self.applications =
+                            Some(crate::remote_applications::workspace::Workspace::new(
+                                client.clone(),
+                                self.desktop_id,
+                            ));
+                        self.application_client = Some(client);
+                    } else {
+                        self.remote =
+                            Some(crate::remote_view::RemoteView::new(client, self.desktop_id));
+                    }
                 }
                 Event::DesktopEnded => {
                     self.status = "Remote session ended successfully".into();
@@ -345,7 +361,9 @@ impl SessionTab {
                     self.connected = false;
                     self.connecting = false;
                     self.remote = None;
-                    if self.desktop_id != retained_desktop_id(&self.profile.id) {
+                    self.applications = None;
+                    self.application_client = None;
+                    if self.desktop_id != retained_session_id(&self.profile) {
                         if let Err(error) = crate::desktop_recovery::forget(self.desktop_id) {
                             self.status = format!("Remote session ended successfully. Recovery entry could not be removed: {error}");
                         }
@@ -396,6 +414,8 @@ impl SessionTab {
                     self.credentials_open = true;
                     self.master_password.zeroize();
                     self.remote = None;
+                    self.applications = None;
+                    self.application_client = None;
                     self.backend = None;
                     self.error(error);
                     self.failed = true;
@@ -407,6 +427,8 @@ impl SessionTab {
                 }
                 Event::Closed => {
                     self.remote = None;
+                    self.applications = None;
+                    self.application_client = None;
                     self.backend = None;
                     if self.connected || self.connecting {
                         self.status = "Disconnected successfully".into();
@@ -601,10 +623,13 @@ impl SessionTab {
         }
     }
     pub fn capture(&self) -> Option<crate::remote::Image> {
+        if let Some(applications) = &self.applications {
+            return applications.capture();
+        }
         self.remote.as_ref()?.client.frame()
     }
     pub fn log_source(&self) -> Option<(Arc<ad_ssh::SshSession>, uuid::Uuid)> {
-        if self.connected && self.remote.is_some() {
+        if self.connected && (self.remote.is_some() || self.application_client.is_some()) {
             Some((self.backend.as_ref()?.clone(), self.desktop_id))
         } else {
             None
@@ -617,10 +642,7 @@ impl SessionTab {
         }
     }
     pub fn terminal_text(&self) -> Result<String, String> {
-        if !matches!(
-            self.profile.connection_type,
-            ConnectionType::SshTerminal | ConnectionType::SshX11
-        ) {
+        if !self.profile.connection_type.has_terminal() {
             return Err("This connection does not have a terminal".into());
         }
         Ok(self.terminal.visible_text())
@@ -942,7 +964,7 @@ impl SessionTab {
             egui::vec2(ui.available_width(), toolbar_height),
             egui::Layout::right_to_left(egui::Align::Center),
             |ui| {
-                if self.connected && self.profile.connection_type == ConnectionType::RemoteDesktop {
+                if self.connected && self.profile.connection_type.has_host_session() {
                     end_session = crate::ui_icons::button(
                         ui,
                         crate::ui_icons::Icon::EndSession,
@@ -957,7 +979,10 @@ impl SessionTab {
                         crate::ui_icons::Icon::Disconnect,
                         if self.connecting {
                             "Cancel connection"
-                        } else if self.profile.connection_type == ConnectionType::RemoteDesktop {
+                        } else if self.profile.connection_type == ConnectionType::RemoteApplications
+                        {
+                            "Disconnect (keep remote applications running)"
+                        } else if self.profile.connection_type.has_host_session() {
                             "Disconnect (keep remote desktop session)"
                         } else {
                             "Disconnect"
@@ -999,10 +1024,7 @@ impl SessionTab {
                                     }
                                 }
                             }
-                            if matches!(
-                                self.profile.connection_type,
-                                ConnectionType::SshTerminal | ConnectionType::SshX11
-                            ) {
+                            if self.profile.connection_type.has_terminal() {
                                 if self.connected
                                     && self.profile.connection_type == ConnectionType::SshX11
                                     && self.x11_unavailable
@@ -1023,6 +1045,9 @@ impl SessionTab {
                                     });
                                 }
                                 self.terminal.settings_button(ui);
+                            }
+                            if let Some(applications) = &mut self.applications {
+                                applications.controls(ui);
                             }
                             if let Some(remote) = &mut self.remote {
                                 remote.controls(ui);
@@ -1072,10 +1097,10 @@ impl SessionTab {
         if self.profile.connection_type == ConnectionType::SftpOnly && self.connected {
             ui.push_id(("files", self.tab_id), |ui| self.files_ui(ui, runtime));
         }
-        if matches!(
-            self.profile.connection_type,
-            ConnectionType::SshTerminal | ConnectionType::SshX11
-        ) {
+        if let Some(applications) = &mut self.applications {
+            applications.panel(ui);
+        }
+        if self.profile.connection_type.has_terminal() {
             let action = self.terminal.ui(ui, self.connected);
             if self.connected {
                 let size = self.terminal.size();
@@ -1101,6 +1126,9 @@ impl SessionTab {
     }
     /// Fullscreen desktops remain independent of the currently selected tab.
     pub fn remote_window(&mut self, ctx: &egui::Context) -> bool {
+        if let Some(applications) = &mut self.applications {
+            applications.windows(ctx);
+        }
         let mut return_to_tab = false;
         let action = self.remote.as_mut().and_then(|remote| {
             let was_external = remote.is_external();
@@ -1138,6 +1166,7 @@ impl SessionTab {
         }
     }
     fn end_desktop(&mut self) {
+        self.applications = None;
         if let Some(remote) = &mut self.remote {
             remote.release();
         }
@@ -1149,6 +1178,10 @@ impl SessionTab {
         self.remote
             .as_ref()
             .is_some_and(|remote| remote.captures_keyboard())
+            || self
+                .applications
+                .as_ref()
+                .is_some_and(|apps| apps.captures_keyboard())
     }
     fn pending_shell_directory(&mut self) -> Option<String> {
         self.terminal
@@ -1161,10 +1194,7 @@ impl SessionTab {
     ) -> Result<Option<String>, &'static str> {
         if self.navigation_generation.take() == Some(generation)
             && self.sync_directories
-            && matches!(
-                self.profile.connection_type,
-                ConnectionType::SshTerminal | ConnectionType::SshX11
-            )
+            && self.profile.connection_type.has_terminal()
         {
             ad_desktop_model::files::quote_terminal_path(&self.remote_loaded_path).map(Some)
         } else {
@@ -1183,13 +1213,10 @@ impl SessionTab {
         }
     }
     fn directory_sync_ui(&mut self, ui: &mut egui::Ui) {
-        if matches!(
-            self.profile.connection_type,
-            ConnectionType::SshTerminal | ConnectionType::SshX11
-        ) {
+        if self.profile.connection_type.has_terminal() {
             let mut enabled = self.sync_directories;
             if ui.checkbox(&mut enabled, "Synchronize terminal and file folders")
-                .on_hover_text("When enabled, navigating either the terminal or server files changes the other. When disabled, both stay independent.").changed() {
+                .on_hover_text("When enabled, folders follow each other. Terminal folder changes wait for an empty Bash prompt; typing or pasting cancels queued changes. When disabled, both stay independent.").changed() {
                 self.set_directory_sync(enabled);
             }
             ui.separator();
@@ -1902,10 +1929,7 @@ impl SessionTab {
         }
         ui.allocate_rect(bounds, egui::Sense::hover());
         if let Some(path) = insert_path {
-            if matches!(
-                self.profile.connection_type,
-                ConnectionType::SshTerminal | ConnectionType::SshX11
-            ) {
+            if self.profile.connection_type.has_terminal() {
                 match ad_desktop_model::files::quote_terminal_path(&path) {
                     Ok(path) => {
                         self.send(Command::Input(format!("{path} ").into_bytes()));
@@ -2141,6 +2165,13 @@ fn remote_parent(path: &str) -> String {
             Some((parent, _)) => parent.into(),
             None => ".".into(),
         }
+    }
+}
+fn retained_session_id(profile: &SavedSession) -> uuid::Uuid {
+    if profile.connection_type == ConnectionType::RemoteApplications {
+        retained_desktop_id(&format!("applications/{}", profile.id))
+    } else {
+        retained_desktop_id(&profile.id)
     }
 }
 fn retained_desktop_id(profile: &str) -> uuid::Uuid {

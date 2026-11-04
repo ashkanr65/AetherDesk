@@ -163,8 +163,21 @@ function Get-SourceFingerprint {
 }
 function Invoke-StepTool([string]$Program,[string[]]$Arguments) {
     Write-Host ("Running: " + $Program + " " + ($Arguments -join ' '))
-    & $Program @Arguments | Out-Host
-    if ($LASTEXITCODE -ne 0) { throw "$Program failed with exit code $LASTEXITCODE" }
+    $previousErrorPreference = $ErrorActionPreference
+    $toolExitCode = $null
+    try {
+        # Windows PowerShell transcripts otherwise omit native stderr (including
+        # Python's test failures). Merge it explicitly and print as host text.
+        # Native stderr is diagnostic output; the process exit code decides failure.
+        $ErrorActionPreference = 'Continue'
+        $global:LASTEXITCODE = $null
+        & $Program @Arguments 2>&1 | ForEach-Object { Write-Host ($_.ToString()) }
+        $toolExitCode = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $previousErrorPreference
+    }
+    if ($null -eq $toolExitCode) { throw "$Program did not start or return an exit code" }
+    if ($toolExitCode -ne 0) { throw "$Program failed with exit code $toolExitCode" }
 }
 function Get-RustTestWorkspaces {
     # A path dependency is not a member of the UI workspace. Cargo must test

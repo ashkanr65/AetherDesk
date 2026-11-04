@@ -118,6 +118,9 @@ impl server::Handler for Peer {
         session: &mut server::Session,
     ) -> Result<(), Self::Error> {
         session.channel_success(channel)?;
+        if command == b"window-capture" {
+            self.roles.lock().push((self.id, "window-media"));
+        }
         if command.starts_with(b"printf '__AETHERDESK_X11__") {
             session.data(
                 channel,
@@ -342,6 +345,20 @@ async fn blocked_graphics_cannot_block_terminal_or_remote_input() {
     .await
     .unwrap();
     language.stop();
+    let mut capture = session
+        .open_bulk_exec_channel("window-capture")
+        .await
+        .unwrap()
+        .into_stream();
+    let mut capture_ready = Vec::new();
+    timeout(
+        Duration::from_secs(5),
+        capture.read_to_end(&mut capture_ready),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(capture_ready, b"ready\n");
     let media = session.open_bulk_loopback_channel(1).await.unwrap();
     let mut input = session
         .open_remote_loopback_channel(2)
@@ -391,6 +408,8 @@ async fn blocked_graphics_cannot_block_terminal_or_remote_input() {
     let owner = |role| roles.iter().find(|(_, r)| *r == role).unwrap().0;
     assert_eq!(owner("terminal"), owner("input"));
     assert_eq!(owner("x11"), owner("media"));
+    assert_eq!(owner("window-media"), owner("media"));
+    assert_ne!(owner("window-media"), owner("terminal"));
     assert_ne!(owner("x11"), owner("terminal"));
     drop(media);
     drop(input);

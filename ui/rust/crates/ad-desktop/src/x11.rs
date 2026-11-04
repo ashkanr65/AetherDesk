@@ -14,6 +14,13 @@ use tokio::{
     process::{Child, Command},
 };
 
+pub(crate) const RENDERER: &str =
+    "Shadow GDI; software OpenGL; authenticated multiwindow; Composite backing; native alpha disabled";
+
+#[cfg(all(test, windows))]
+#[path = "x11_render_checks.rs"]
+mod render_checks;
+
 struct X11Server {
     #[cfg(windows)]
     job: Option<crate::process_job::ProcessJob>,
@@ -318,6 +325,11 @@ impl X11Server {
                 "1",
                 "-notrayicon",
                 "-noreset",
+                // Multiwindow painting needs its redirected window pixmaps.
+                // Disabling them leaves real Motif/EDA windows blank even
+                // though off-screen pixmap round trips still pass.
+                "-compositewm",
+                "-nocompositealpha",
                 "-clipboard",
                 "-nowgl",
                 "+iglx",
@@ -538,6 +550,20 @@ mod tests {
             .contains("DEFAULTICON \"aetherdesk.ico\""));
         assert!(probe(first.config.local_port, &[0x1a; 16], false).await);
         assert!(fixed_font_works(&first.config).await);
+        let server_pid = first.server.as_ref().unwrap().0.lock().pid;
+        tokio::time::timeout(
+            Duration::from_secs(20),
+            render_checks::exercise(&first.config, server_pid),
+        )
+        .await
+        .expect("X11 drawing regression timed out")
+        .expect("X11 window movement or exact-colour copy failed");
+        let log = std::fs::read_to_string(directory.join("server.log")).unwrap();
+        assert!(
+            log.contains("Using Composite redirection"),
+            "multiwindow painting requires Composite window backing"
+        );
+        assert!(first.is_running().unwrap());
         first.stop().await;
         first.stop().await; // Release is idempotent.
         assert!(second.is_running().unwrap());

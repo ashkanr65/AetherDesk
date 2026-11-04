@@ -1,6 +1,6 @@
 //! Persist duplicate desktop identities before any remote launch. These are
 //! recovery bookmarks, not a claim that the host still has a running desktop.
-use ad_desktop_model::profiles::{ConnectionType, SavedSession};
+use ad_desktop_model::profiles::SavedSession;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -14,6 +14,8 @@ pub struct Entry {
     pub username: String,
     pub account_hash: String,
     pub name: String,
+    #[serde(default)]
+    pub connection_type: Option<String>,
 }
 fn account_hash(profile: &SavedSession, username: &str) -> String {
     let mut context = ring::digest::Context::new(&ring::digest::SHA256);
@@ -43,12 +45,15 @@ fn entry(profile: &SavedSession, username: &str, desktop_id: Uuid) -> Result<Ent
         },
         account_hash: account_hash(profile, username),
         name: profile.name.clone(),
+        connection_type: Some(profile.connection_type.name().into()),
     })
 }
 impl Entry {
     pub fn matches(&self, profile: &SavedSession) -> bool {
         !profile.is_deleted()
-            && profile.connection_type == ConnectionType::RemoteDesktop
+            && profile.connection_type.has_host_session()
+            && self.connection_type.as_deref().unwrap_or("remoteDesktop")
+                == profile.connection_type.name()
             && self.profile_id == profile.id
             && self.host == profile.host.trim()
             && self.port == profile.port
@@ -74,6 +79,9 @@ fn decode(value: serde_json::Value) -> Result<Vec<Entry>, String> {
                 || e.account_hash.len() != 64
                 || !e.account_hash.bytes().all(|b| b.is_ascii_hexdigit())
                 || e.name.len() > 256
+                || e.connection_type
+                    .as_deref()
+                    .is_some_and(|kind| !matches!(kind, "remoteDesktop" | "remoteApplications"))
         })
     {
         return Err("Invalid desktop recovery records; the file has been preserved".into());
@@ -117,6 +125,18 @@ mod tests {
         SavedSession::from_json(&serde_json::json!({"id":"p","name":"Test","host":"server","port":22,"username":"alice","connectionType":"remoteDesktop"})).unwrap()
     }
     #[test]
+    fn application_sessions_keep_their_own_recovery_identity() {
+        let mut p = profile();
+        p.connection_type = ad_desktop_model::profiles::ConnectionType::RemoteApplications;
+        let record = entry(&p, "alice", Uuid::new_v4()).unwrap();
+        assert!(record.matches(&p));
+        let mut desktop = p.clone();
+        desktop.connection_type = ad_desktop_model::profiles::ConnectionType::RemoteDesktop;
+        assert!(!record.matches(&desktop));
+        p.host = "other.example".into();
+        assert!(!record.matches(&p));
+    }
+    #[test]
     fn recovery_round_trip_preserves_independent_ids_and_username() {
         let p = profile();
         let entries = vec![Entry {
@@ -127,6 +147,7 @@ mod tests {
             username: "alice".into(),
             account_hash: account_hash(&p, "alice"),
             name: "Duplicate".into(),
+            connection_type: None,
         }];
         let decoded = decode(serde_json::to_value(&entries).unwrap()).unwrap();
         assert_eq!(entries[0].desktop_id, decoded[0].desktop_id);

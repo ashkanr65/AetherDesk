@@ -1,0 +1,48 @@
+name: Native regression checks
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: native-checks-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  regressions:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, windows-2022]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    env:
+      CARGO_TARGET_DIR: ${{ github.workspace }}/.check-target
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            .check-target
+          key: native-checks-${{ runner.os }}-${{ hashFiles('core/rust/Cargo.lock', 'ui/rust/Cargo.lock') }}
+      - name: Check native formatting
+        run: |
+          cargo fmt --manifest-path core/rust/Cargo.toml -p ad-ssh -p ad-stream-protocol -p ad-qos-controller --check
+          cargo fmt --manifest-path ui/rust/Cargo.toml -p ad-desktop-model -p ad-desktop --check
+      - name: Test connection, protocol and model behavior
+        run: |
+          cargo test --locked --manifest-path core/rust/Cargo.toml -p ad-ssh -p ad-stream-protocol -p ad-qos-controller -- --test-threads=1
+          cargo test --locked --manifest-path ui/rust/Cargo.toml -p ad-desktop-model -- --test-threads=1
+
+# No release credentials, packaging, installer execution or publication here.
+# Complete GUI/agent/package acceptance stays in the existing manual build kit.

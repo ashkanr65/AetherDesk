@@ -6,11 +6,21 @@ use std::{collections::BTreeSet, time::Duration};
 mod worker;
 pub(crate) use worker::Target;
 use worker::{State, Worker};
+#[path = "application_geometry.rs"]
+mod geometry;
+#[path = "application_native.rs"]
+mod native;
 #[path = "remote_application_view.rs"]
 mod view;
+#[path = "application_workspace.rs"]
+pub(crate) mod workspace;
 
 pub(crate) struct Applications {
+    managed: bool,
+    retry_at: std::time::Instant,
     wheel: crate::remote_mouse::Wheel,
+    cursor: crate::remote_cursor::Cursor,
+    cursor_client: Option<std::sync::Arc<crate::remote::RemoteClient>>,
     target: Option<Target>,
     worker: Option<Worker>,
     id: egui::ViewportId,
@@ -19,9 +29,14 @@ pub(crate) struct Applications {
     search: String,
     texture: Option<egui::TextureHandle>,
     sequence: u64,
-    uploaded_image: Option<std::sync::Arc<egui::ColorImage>>,
+    uploaded_image: Option<worker::Frame>,
+    native: native::NativeWindow,
+    popup_native: std::collections::BTreeMap<u32, native::NativeWindow>,
+    stream_active: Option<bool>,
     input_window: Option<isize>,
+    input_epoch: u64,
     sized_window: Option<u32>,
+    content_zoom: f32,
     last_extent: Option<(u32, u32)>,
     resize_environment: Option<(egui::Rect, u32)>,
     resize_due: Option<(std::time::Instant, (u32, u32))>,
@@ -38,7 +53,11 @@ pub(crate) struct Applications {
 impl Applications {
     pub(crate) fn new(target: Option<Target>, session: uuid::Uuid) -> Self {
         Self {
+            managed: false,
+            retry_at: std::time::Instant::now(),
             wheel: Default::default(),
+            cursor: Default::default(),
+            cursor_client: None,
             target,
             worker: None,
             id: egui::ViewportId::from_hash_of(("remote-application", session)),
@@ -48,8 +67,13 @@ impl Applications {
             texture: None,
             sequence: 0,
             uploaded_image: None,
+            native: Default::default(),
+            popup_native: Default::default(),
+            stream_active: None,
             input_window: None,
+            input_epoch: 0,
             sized_window: None,
+            content_zoom: 1.0,
             last_extent: None,
             resize_environment: None,
             resize_due: None,
@@ -63,10 +87,43 @@ impl Applications {
             title: format!("AetherDesk Remote Application {session}"),
         }
     }
+    pub(crate) fn open_window(&mut self, ctx: &egui::Context, window: u32) {
+        if self.managed && !self.view {
+            if let Some(client) = &self.cursor_client {
+                // Also initialize wl_pointer on retained application-only
+                // sessions whose older compositor never sent the first enter.
+                // No button or modifier is injected, and existing views do not
+                // repeatedly reposition the host pointer.
+                if let Err(error) = client.send(crate::remote::Request::Input {
+                    event: ad_stream_protocol::InputMessage::PointerMove {
+                        x: 0,
+                        y: 0,
+                        monitor: 0,
+                    },
+                }) {
+                    self.error = Some(error);
+                    return;
+                }
+            }
+        }
+        self.start(ctx);
+        self.send(Request::Select(window));
+        self.view = true;
+    }
+    pub(crate) fn is_open(&self) -> bool {
+        self.view
+    }
+    pub(crate) fn focus_view(&self, ctx: &egui::Context) {
+        ctx.send_viewport_cmd_to(self.id, egui::ViewportCommand::Focus);
+    }
     fn start(&mut self, ctx: &egui::Context) {
         if self.worker.as_ref().is_some_and(|w| w.state.lock().alive) {
             return;
         }
+        if self.worker.is_some() && std::time::Instant::now() < self.retry_at {
+            return;
+        }
+        self.retry_at = std::time::Instant::now() + Duration::from_secs(3);
         let Some(target) = self.target.clone() else {
             self.error = Some("Remote application connection is unavailable".into());
             return;
@@ -100,11 +157,11 @@ impl Applications {
     pub(crate) fn captures_keyboard(&self) -> bool {
         let foreground = crate::remote_geometry::foreground();
         self.focused
-            && (crate::remote_geometry::window(&self.title).is_some_and(|w| foreground == Some(w))
-                || self.popup_textures.keys().any(|id| {
-                    crate::remote_geometry::window(&self.popup_title(*id))
-                        .is_some_and(|w| foreground == Some(w))
-                }))
+            && (self.native.handle().is_some_and(|w| foreground == Some(w))
+                || self
+                    .popup_native
+                    .values()
+                    .any(|window| window.handle().is_some_and(|w| foreground == Some(w))))
     }
     pub(crate) fn button(&mut self, ui: &mut egui::Ui) {
         if crate::ui_icons::button(
@@ -128,10 +185,14 @@ impl Applications {
             .as_ref()
             .map(|w| w.state.lock().clone())
             .unwrap_or_default();
+        if state.input_epoch != self.input_epoch {
+            self.input_epoch = state.input_epoch;
+            self.release();
+        }
         if self.view && state.selected.is_none() && state.error.is_some() {
             self.release();
             self.view = false;
-            self.chooser = true;
+            self.chooser = !self.managed;
         }
         if self.chooser {
             let mut open = true;
@@ -221,6 +282,84 @@ fn point(pos: egui::Pos2, rect: egui::Rect, window: &WindowInfo) -> (i32, i32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn retained_application_view_initializes_pointer_without_clicks_or_modifiers() {
+        let ctx = egui::Context::default();
+        let client = crate::remote::RemoteClient::test_stub(ctx.clone());
+        let (commands, mut requests) = tokio::sync::mpsc::channel(16);
+        let mut app = Applications::new(None, uuid::Uuid::new_v4());
+        app.managed = true;
+        app.cursor_client = Some(client.clone());
+        app.worker = Some(Worker {
+            commands,
+            state: std::sync::Arc::new(parking_lot::Mutex::new(State {
+                alive: true,
+                ..Default::default()
+            })),
+            cancel: tokio_util::sync::CancellationToken::new(),
+        });
+        app.open_window(&ctx, 42);
+        assert!(matches!(requests.try_recv(), Ok(Request::Select(42))));
+        assert!(matches!(
+            client.test_next_input().await,
+            ad_stream_protocol::ArppMessage::Input(ad_stream_protocol::InputMessage::PointerMove {
+                x: 0,
+                y: 0,
+                monitor: 0
+            })
+        ));
+        // Re-selecting an already-open view must not jump the host cursor.
+        app.open_window(&ctx, 42);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(20), client.test_next_input())
+                .await
+                .is_err()
+        );
+        assert!(app.keys.is_empty() && app.buttons.is_empty() && !app.modifiers.any());
+    }
+    #[test]
+    fn silent_focus_recovery_resets_owned_modifiers_and_buttons_before_new_input() {
+        let (commands, mut requests) = tokio::sync::mpsc::channel(16);
+        let mut app = Applications::new(None, uuid::Uuid::new_v4());
+        app.worker = Some(Worker {
+            commands,
+            state: std::sync::Arc::new(parking_lot::Mutex::new(State {
+                input_epoch: 1,
+                ..Default::default()
+            })),
+            cancel: tokio_util::sync::CancellationToken::new(),
+        });
+        app.focused = true;
+        app.modifiers.ctrl = true;
+        app.modifiers.shift = true;
+        app.keys.extend([29, 42]);
+        app.buttons.insert(1);
+        app.ui(&egui::Context::default());
+        assert!(app.keys.is_empty() && app.buttons.is_empty());
+        assert!(!app.modifiers.any());
+        assert!(!app.focused);
+        assert!(app.error.is_none());
+        assert!(matches!(requests.try_recv(), Ok(Request::Release)));
+        app.sync_modifiers(egui::Modifiers {
+            ctrl: true,
+            shift: true,
+            ..Default::default()
+        });
+        assert!(matches!(
+            requests.try_recv(),
+            Ok(Request::Key {
+                evdev: 29,
+                pressed: true
+            })
+        ));
+        assert!(matches!(
+            requests.try_recv(),
+            Ok(Request::Key {
+                evdev: 42,
+                pressed: true
+            })
+        ));
+    }
     #[test]
     fn application_view_stays_registered_and_close_only_stops_viewing() {
         use std::{

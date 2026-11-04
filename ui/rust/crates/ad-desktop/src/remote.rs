@@ -138,7 +138,11 @@ impl RemoteClient {
         let runtime = AgentRuntimeBundle::inspect(&bundle)
             .await
             .map_err(|e| e.to_string())?;
-        let decoder = VideoDecoder::new(DecoderConfig::default()).map_err(|e| e.to_string())?;
+        let decoder = if desktop_environment == "applications" {
+            None
+        } else {
+            Some(VideoDecoder::new(DecoderConfig::default()).map_err(|e| e.to_string())?)
+        };
         let (width, height) = (1280, 720);
         let presentation = RemotePresentation::new(width, height, CacheLimits::default())
             .map_err(|e| e.to_string())?;
@@ -172,7 +176,12 @@ impl RemoteClient {
                 tracing::warn!(%session_id, elapsed_ms = started.elapsed().as_millis() as u64,
                     error = %error, "remote desktop startup failed");
                 if !cancel.is_cancelled() {
-                    log_agent_failure(&host, session_id, "startup").await;
+                    if let Some(text) = lifecycle.startup_diagnostic() {
+                        let diagnostic = crate::logging::redact("agent_diagnostic", text);
+                        tracing::warn!(session = %session_id, phase = "startup-before-cleanup", %diagnostic, "remote agent failure evidence");
+                    } else {
+                        log_agent_failure(&host, session_id, "startup").await;
+                    }
                 }
                 return Err(error.to_string());
             }
@@ -384,7 +393,7 @@ async fn run_session(
     input: Arc<InputQueue>,
     status: Arc<Mutex<Status>>,
     latest: Arc<FrameSlot>,
-    decoder: VideoDecoder,
+    decoder: Option<VideoDecoder>,
     presentation: RemotePresentation,
     framebuffer: Framebuffer,
 ) -> Result<(), String> {
@@ -591,7 +600,7 @@ async fn run_display(
     receipts: watch::Sender<u64>,
     status: Arc<Mutex<Status>>,
     latest: Arc<FrameSlot>,
-    mut decoder: VideoDecoder,
+    mut decoder: Option<VideoDecoder>,
     mut presentation: RemotePresentation,
     mut framebuffer: Framebuffer,
     frame_updates: watch::Sender<Option<Image>>,
@@ -621,6 +630,7 @@ async fn run_display(
                     lossless.push(message).map_err(str::to_owned)?.map(Work::Lossless)
                 } else { match presentation.handle(message).map_err(|e| e.to_string())? {
                     PresentationUpdate::Decode { message, damage } => {
+                        let decoder=decoder.as_mut().ok_or("Unexpected video data in an application-only session")?;
                         if let ad_stream_protocol::DisplayMessage::EncodedFrame { width, height, .. } = &message {
                             decoder.prepare_dimensions(*width, *height).map_err(|e| e.to_string())?;
                         }
@@ -630,7 +640,7 @@ async fn run_display(
                     update => Some(Work::Legacy(update)),
                 } }
             }
-            frame = decoder.next_frame() => Some(Work::Legacy(presentation.accept_decoded(frame.map_err(|e| e.to_string())?).map_err(|e| e.to_string())?)),
+            frame = async { decoder.as_mut().expect("guarded video decoder").next_frame().await }, if decoder.is_some() => Some(Work::Legacy(presentation.accept_decoded(frame.map_err(|e| e.to_string())?).map_err(|e| e.to_string())?)),
         };
         if let Some(update) = update {
             let started = std::time::Instant::now();

@@ -164,6 +164,35 @@ $temporary = Join-Path ([IO.Path]::GetTempPath()) ('aetherdesk-rust-kit-test-' +
 try {
     $stateRoot = Join-Path $temporary 'state'
     New-Item -ItemType Directory -Path $temporary | Out-Null
+    $outputFixture = Join-Path $temporary 'native-output.ps1'
+    @'
+param([int]$Result)
+[Console]::Out.WriteLine('AETHERDESK_TEST_STDOUT')
+[Console]::Error.WriteLine('AETHERDESK_TEST_STDERR')
+exit $Result
+'@ | Set-Content -LiteralPath $outputFixture -Encoding UTF8
+    $outputTranscript = Join-Path $temporary 'native-output.log'
+    $testShell = (Get-Process -Id $PID).Path
+    $previousPreference = $ErrorActionPreference
+    Start-Transcript -LiteralPath $outputTranscript | Out-Null
+    try {
+        Invoke-StepTool $testShell @('-NoProfile','-ExecutionPolicy','Bypass','-File',$outputFixture,'-Result','0')
+        $nativeFailed = $false
+        try { Invoke-StepTool $testShell @('-NoProfile','-ExecutionPolicy','Bypass','-File',$outputFixture,'-Result','17') } catch {
+            if ($_.Exception.Message -notlike '*exit code 17*') { throw }
+            $nativeFailed = $true
+        }
+        if (!$nativeFailed) { throw 'Native stderr failure lost its real exit code.' }
+        if ($ErrorActionPreference -ne $previousPreference) { throw 'Native output capture changed the caller error preference.' }
+    } finally { Stop-Transcript | Out-Null }
+    $nativeOutput = [IO.File]::ReadAllText($outputTranscript)
+    if (!$nativeOutput.Contains('AETHERDESK_TEST_STDOUT') -or !$nativeOutput.Contains('AETHERDESK_TEST_STDERR')) {
+        throw 'Build transcript omitted a native output stream.'
+    }
+    $missingRejected = $false
+    try { Invoke-StepTool ('aetherdesk-missing-fixture-'+[guid]::NewGuid().ToString('N')) @() } catch { $missingRejected = $true }
+    if (!$missingRejected) { throw 'An unavailable native tool was accepted after a successful command.' }
+    Write-Host 'PASS: native stdout/stderr are transcribed and failure/startup exit handling is preserved.'
     if ((Format-BuildDuration ([TimeSpan]::Zero)) -ne '00:00:00' -or
         (Format-BuildDuration ([TimeSpan]::FromSeconds(183845))) -ne '51:04:05') {
         throw 'Build duration formatting wraps or loses elapsed hours.'

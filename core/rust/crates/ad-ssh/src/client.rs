@@ -11,6 +11,8 @@ mod remote_file;
 mod resumable_file;
 pub use remote_file::{FileProgress, RemoteFileMetadata, RemoteFileRequest, RemoteFileResult};
 pub use resumable_file::{rename_local_noclobber, ResumableTransferFile};
+#[path = "host_cleanup.rs"]
+mod host_cleanup;
 #[path = "language_server.rs"]
 mod language_server;
 pub use language_server::{LanguageServer, LanguageServerConfig};
@@ -457,6 +459,8 @@ pub struct SshSession {
     lifetime: Arc<SessionLifetime>,
     bulk: Option<Arc<SshSession>>,
     host_identity: HostIdentity,
+    temporary_root: Arc<parking_lot::Mutex<Option<String>>>,
+    cleanup_task: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
 }
 
 impl SshSession {
@@ -476,6 +480,8 @@ impl SshSession {
             lifetime,
             bulk: None,
             host_identity,
+            temporary_root: Default::default(),
+            cleanup_task: Default::default(),
         }
     }
 
@@ -649,9 +655,13 @@ impl SshSession {
 
     async fn prepare_x11_icons(&self) -> CoreResult<Option<String>> {
         let source = include_str!("../../../../../tools/x11-icons.py").replace('\'', "'\\''");
+        let temporary = self
+            .temporary_root()
+            .map(|root| crate::startup::quote(&format!("{root}/x11.XXXXXXXX")))
+            .unwrap_or_else(|| "/tmp/aetherdesk-x11-XXXXXXXX".into());
         let install = format!(
             "command -v python3 >/dev/null 2>&1 || exit 0; umask 077; \
-             d=$(mktemp -d /tmp/aetherdesk-x11-XXXXXXXX) || exit 0; \
+             d=$(mktemp -d {temporary}) || exit 0; \
              printf '%s' '{source}' >\"$d/icons.py\" && printf '%s' \"$d/icons.py\""
         );
         let output = self
@@ -659,7 +669,10 @@ impl SshSession {
             .await?;
         let path = output.stdout_text().trim().to_owned();
         if output.exit_status != 0
-            || !path.starts_with("/tmp/aetherdesk-x11-")
+            || !(path.starts_with("/tmp/aetherdesk-x11-")
+                || self
+                    .temporary_root()
+                    .is_some_and(|root| path.starts_with(&format!("{root}/x11."))))
             || !path.ends_with("/icons.py")
         {
             return Ok(None);
@@ -683,6 +696,23 @@ impl SshSession {
             warn!("No channel open, cannot send data");
             Err(CoreError::ConnectionError("No channel open".to_string()))
         }
+    }
+
+    /// Wait for terminal output or a terminal-channel failure without polling.
+    pub async fn wait_for_terminal_output(&self) -> CoreResult<()> {
+        // Never hold the synchronous channel lock across an await. Notify
+        // retains a permit if data arrives between this check and the wait.
+        let (pending, signal) = {
+            let channel = self.channel.lock();
+            channel
+                .as_ref()
+                .ok_or_else(|| CoreError::ConnectionError("No channel open".into()))?
+                .output_readiness()
+        };
+        if !pending {
+            signal.notified().await;
+        }
+        Ok(())
     }
 
     /// Read all terminal data currently available without blocking the caller.
@@ -729,6 +759,11 @@ impl SshSession {
     async fn close_single(&self) -> CoreResult<()> {
         debug!("Closing SSH session");
         self.lifetime.0.cancel();
+        if let Some(mut task) = self.cleanup_task.lock().await.take() {
+            if timeout(Duration::from_secs(2), &mut task).await.is_err() {
+                task.abort();
+            }
+        }
         self.channel.lock().take();
         for task in self.forward_tasks.lock().await.drain(..) {
             task.abort();
@@ -953,6 +988,19 @@ impl SshSession {
         let channel = OwnedChannel(Some(self.session.channel_open_session().await?));
         channel.exec(true, command).await?;
         Ok(channel.into_inner())
+    }
+
+    /// Window images must not occupy the interactive transport's packet reader.
+    /// The second link uses this same tab's authentication and private VPN.
+    pub async fn open_bulk_exec_channel(
+        &self,
+        command: &str,
+    ) -> CoreResult<russh::Channel<ssh_client::Msg>> {
+        self.bulk
+            .as_deref()
+            .unwrap_or(self)
+            .open_exec_channel(command)
+            .await
     }
 
     /// Open a direct TCP channel through SSH. Remote agent endpoints are
@@ -1855,10 +1903,20 @@ where
     ssh_x11_stream.read_exact(&mut authorization).await?;
 
     rewrite_x11_authorization(&mut authorization, protocol_length, cookie_length, &config)?;
-    local_x_server.write_all(&header).await?;
-    local_x_server.write_all(&authorization).await?;
+    let mut setup = Vec::with_capacity(header.len() + authorization.len());
+    setup.extend_from_slice(&header);
+    setup.extend_from_slice(&authorization);
+    local_x_server.write_all(&setup).await?;
     local_x_server.flush().await?;
-    tokio::io::copy_bidirectional(&mut ssh_x11_stream, &mut local_x_server).await?;
+    // Four SSH packets fit in the graphics direction. Small replies remain
+    // eager: capacity is a maximum, never a batching delay or a fill target.
+    tokio::io::copy_bidirectional_with_sizes(
+        &mut ssh_x11_stream,
+        &mut local_x_server,
+        128 * 1024,
+        16 * 1024,
+    )
+    .await?;
     Ok(())
 }
 
@@ -2101,6 +2159,79 @@ impl ssh_client::Handler for ClientHandler {
 #[cfg(test)]
 mod x11_tests {
     use super::*;
+
+    #[tokio::test]
+    async fn x11_proxy_preserves_large_redraws_small_replies_and_half_close() {
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let address = listener.local_addr().unwrap();
+        let local = TcpStream::connect(address).await.unwrap();
+        local.set_nodelay(true).unwrap();
+        let (mut server, _) = listener.accept().await.unwrap();
+        let (mut remote, ssh) = tokio::io::duplex(4096);
+        let config = config();
+        let expected =
+            authorization(&decode_x11_cookie(&config.local_authentication_cookie).unwrap());
+        let mut setup = vec![0u8; 12];
+        setup[0] = b'l';
+        setup[2..4].copy_from_slice(&11u16.to_le_bytes());
+        setup[6..8].copy_from_slice(&18u16.to_le_bytes());
+        setup[8..10].copy_from_slice(&16u16.to_le_bytes());
+        setup.extend(authorization(
+            &decode_x11_cookie(&config.authentication_cookie).unwrap(),
+        ));
+        let proxy = tokio::spawn(proxy_authenticated_x11(ssh, local, config));
+        tokio::time::timeout(Duration::from_secs(5), async {
+            // Arbitrary channel fragmentation must not change authentication.
+            for chunk in setup.chunks(3) {
+                remote.write_all(chunk).await.unwrap();
+            }
+            let mut received = vec![0u8; setup.len()];
+            server.read_exact(&mut received).await.unwrap();
+            assert_eq!(&received[12..], expected);
+            server.write_all(b"ready").await.unwrap();
+            let mut tiny = [0u8; 5];
+            tokio::time::timeout(Duration::from_millis(250), remote.read_exact(&mut tiny))
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                &tiny, b"ready",
+                "a small reply waited for the larger copy buffer to fill"
+            );
+            let redraw: Vec<u8> = (0..2 * 1024 * 1024).map(|i| (i % 251) as u8).collect();
+            let events: Vec<u8> = (0..300_000).map(|i| (i % 239) as u8).collect();
+            let (mut rr, mut rw) = tokio::io::split(remote);
+            let (mut sr, mut sw) = tokio::io::split(server);
+            let (a, b, c, d) = tokio::join!(
+                async {
+                    rw.write_all(&redraw).await.unwrap();
+                    rw.shutdown().await.unwrap();
+                },
+                async {
+                    let mut b = Vec::new();
+                    sr.read_to_end(&mut b).await.unwrap();
+                    b
+                },
+                async {
+                    sw.write_all(&events).await.unwrap();
+                    sw.shutdown().await.unwrap();
+                },
+                async {
+                    let mut b = Vec::new();
+                    rr.read_to_end(&mut b).await.unwrap();
+                    b
+                }
+            );
+            let _ = (a, c);
+            assert_eq!(b, redraw);
+            assert_eq!(d, events);
+            proxy.await.unwrap().unwrap();
+        })
+        .await
+        .expect("X11 proxy stalled under simultaneous redraw/input or half-close");
+    }
 
     #[test]
     fn x11_compresses_only_after_authentication_with_an_uncompressed_fallback() {

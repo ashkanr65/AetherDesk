@@ -62,6 +62,8 @@ pub struct Updates {
     confirm: bool,
     restored: bool,
     health_pending: Option<PathBuf>,
+    health_gate: LaunchHealth,
+    health_result: Option<mpsc::Receiver<(PathBuf, Result<(), String>)>>,
     exit_attempted: bool,
     #[cfg(not(test))]
     maintenance_done: bool,
@@ -89,11 +91,35 @@ impl Default for Updates {
             open: false,
             confirm: false,
             restored: false,
-            health_pending: None,
+            health_pending: if std::env::args().nth(1).as_deref() == Some("--update-health") {
+                std::env::args_os().nth(2).map(PathBuf::from)
+            } else {
+                None
+            },
+            health_gate: LaunchHealth {
+                legacy_helper: std::env::args().nth(1).as_deref() == Some("--update-health")
+                    && std::env::var(crate::update_apply::HEALTH_GRACE_ENV).as_deref() != Ok("1"),
+                ..Default::default()
+            },
+            health_result: None,
             exit_attempted: false,
             #[cfg(not(test))]
             maintenance_done: false,
         }
+    }
+}
+#[derive(Default)]
+struct LaunchHealth {
+    first: Option<Instant>,
+    frames: u8,
+    legacy_helper: bool,
+}
+impl LaunchHealth {
+    fn rendered(&mut self, now: Instant) -> bool {
+        let first = *self.first.get_or_insert(now);
+        self.frames = self.frames.saturating_add(1);
+        self.legacy_helper
+            || (self.frames >= 3 && now.saturating_duration_since(first) >= Duration::from_secs(20))
     }
 }
 fn client() -> Result<reqwest::Client, String> {
@@ -287,9 +313,27 @@ fn discard_stage(stage: &std::path::Path) -> Result<(), String> {
 fn clean_completed() {
     if let Ok(root) = cache() {
         if let Ok(entries) = std::fs::read_dir(root) {
-            for entry in entries.flatten() {
-                if entry.path().join("complete").is_file() {
-                    let _ = discard_stage(&entry.path());
+            let mut completed: Vec<_> = entries
+                .flatten()
+                .filter_map(|entry| {
+                    entry
+                        .path()
+                        .join("complete")
+                        .metadata()
+                        .ok()
+                        .and_then(|meta| meta.modified().ok())
+                        .map(|time| (time, entry.path()))
+                })
+                .collect();
+            completed.sort_by(|a, b| b.0.cmp(&a.0));
+            for (index, (time, path)) in completed.into_iter().enumerate() {
+                // Keep at most one recent recovery set, rather than deleting
+                // it ten seconds after the first rendered frame.
+                let recent = time
+                    .elapsed()
+                    .map_or(true, |age| age < Duration::from_secs(24 * 3600));
+                if index != 0 || !recent {
+                    let _ = discard_stage(&path);
                 }
             }
         }
@@ -617,8 +661,14 @@ impl Updates {
     }
     /// Called after a normal GUI frame, never merely because the process loaded.
     pub fn rendered(&mut self) {
-        if let Some(stage) = self.health_pending.take() {
-            match crate::update_apply::mark_healthy(&stage) {
+        if let Some(result) = self
+            .health_result
+            .as_ref()
+            .and_then(|rx| rx.try_recv().ok())
+        {
+            self.health_result = None;
+            let (stage, result) = result;
+            match result {
                 Ok(()) => {
                     if self.prefs.pending.as_ref() == Some(&stage) {
                         self.prefs.pending = None;
@@ -629,6 +679,18 @@ impl Updates {
                     self.error = Some(error);
                 }
             }
+        }
+        if self.health_pending.is_some()
+            && self.health_result.is_none()
+            && self.health_gate.rendered(Instant::now())
+        {
+            let stage = self.health_pending.take().unwrap();
+            let (tx, rx) = mpsc::channel();
+            self.health_result = Some(rx);
+            std::thread::spawn(move || {
+                let result = crate::update_apply::mark_healthy(&stage);
+                let _ = tx.send((stage, result));
+            });
         }
     }
     /// Do not wait for downloads or install on an unconfirmed/forced shutdown.
@@ -758,6 +820,27 @@ impl Updates {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn update_health_waits_for_multiple_frames_and_a_startup_grace_period() {
+        let start = Instant::now();
+        let mut health = LaunchHealth::default();
+        assert!(!health.rendered(start));
+        assert!(!health.rendered(start + Duration::from_secs(1)));
+        assert!(!health.rendered(start + Duration::from_secs(19)));
+        assert!(health.rendered(start + Duration::from_secs(20)));
+        let mut two_frames = LaunchHealth::default();
+        assert!(!two_frames.rendered(start));
+        assert!(!two_frames.rendered(start + Duration::from_secs(60)));
+        assert!(two_frames.rendered(start + Duration::from_secs(61)));
+        let mut legacy = LaunchHealth {
+            legacy_helper: true,
+            ..Default::default()
+        };
+        assert!(
+            legacy.rendered(start),
+            "an older updater must not hit its fixed deadline waiting for a new health protocol"
+        );
+    }
     fn ready_update() -> Candidate {
         Candidate {
             manifest: Manifest {

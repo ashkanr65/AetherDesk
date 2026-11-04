@@ -42,6 +42,11 @@ impl SshAgentHost {
 
 #[async_trait]
 impl RemoteAgentHost for SshAgentHost {
+    async fn cache_verified(&self, version: &str) {
+        if let Err(error) = self.session.mark_host_cache(version).await {
+            tracing::debug!(%error, "optional agent cache ownership marker unavailable");
+        }
+    }
     async fn command(
         &self,
         command: &str,
@@ -76,6 +81,10 @@ impl RemoteAgentHost for SshAgentHost {
 
 #[async_trait]
 impl AgentConnection for SshAgentHost {
+    async fn startup_diagnostic(&self, session_id: Uuid) -> Result<String, LifecycleError> {
+        let output = self.session.execute_command_output(&format!("tail -c 7680 -- \"$HOME/.aetherdesk/sessions/{session_id}/agent.log\" 2>/dev/null; if [ -f \"$HOME/.aetherdesk/sessions/{session_id}/agent-exit\" ]; then printf '\\n'; head -c 512 -- \"$HOME/.aetherdesk/sessions/{session_id}/agent-exit\"; fi"), Duration::from_secs(2)).await.map_err(|e| LifecycleError::Launch(e.to_string()))?;
+        Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+    }
     fn launch_timeout(&self) -> Duration {
         self.startup.as_ref().map_or(Duration::from_secs(65), |s| {
             LAUNCH_TIMEOUT + s.timeout() + Duration::from_secs(5)

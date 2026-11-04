@@ -1,6 +1,6 @@
 use std::ffi::OsString;
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
@@ -36,6 +36,20 @@ enum Mode {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    if std::env::args().nth(1).as_deref() == Some("--application-environment") {
+        let args: Vec<_> = std::env::args().skip(2).collect();
+        if args.len() != 2 || args[0] != "--session-id" {
+            return Err("usage: ad-agent --application-environment --session-id UUID".into());
+        }
+        let session = Uuid::parse_str(&args[1])?.to_string();
+        // This verifies ownership, permissions, authentication and readiness.
+        println!(
+            "{}",
+            agent_wayland::window_mirror::application_environment(&session)
+                .map_err(|e| e.to_string())?
+        );
+        return Ok(());
+    }
     if std::env::args().nth(1).as_deref() == Some("--window-mirror") {
         let args: Vec<_> = std::env::args().skip(2).collect();
         if args.len() != 2 || args[0] != "--session-id" {
@@ -114,12 +128,6 @@ async fn launch(options: Options) -> Result<(), Box<dyn std::error::Error>> {
 
     let executable = std::env::current_exe()?;
     let log_path = session_directory.join("agent.log");
-    let stdout = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .mode(0o600)
-        .open(&log_path)?;
-    let stderr = stdout.try_clone()?;
     let mut command = Command::new(executable);
     command
         .arg("--watch")
@@ -138,8 +146,8 @@ async fn launch(options: Options) -> Result<(), Box<dyn std::error::Error>> {
         .arg("--codec")
         .arg(codec_name(options.codec))
         .stdin(Stdio::null())
-        .stdout(stdout)
-        .stderr(stderr);
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
     // A separate session, rather than just a process group, survives the SSH
     // command's logout/HUP. Its small watcher also survives a broker crash.
     detach_from_login(&mut command);
@@ -223,6 +231,10 @@ async fn serve(options: Options) -> Result<(), Box<dyn std::error::Error>> {
 async fn watch(options: Options) -> Result<(), Box<dyn std::error::Error>> {
     use std::os::unix::process::ExitStatusExt;
     let executable = std::env::current_exe()?;
+    let directory = session_directory(options.session_id)?;
+    let log = std::sync::Arc::new(std::sync::Mutex::new(
+        agent_supervisor::log_capture::HostLog::open(&directory)?,
+    ));
     let startup = std::env::var("AETHERDESK_STARTUP_COMMANDS")
         .ok()
         .is_some_and(|s| !s.trim().is_empty());
@@ -249,25 +261,47 @@ async fn watch(options: Options) -> Result<(), Box<dyn std::error::Error>> {
     }));
     command
         .stdin(Stdio::null())
-        .stdout(Stdio::inherit())
-        .stderr(Stdio::inherit());
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .env("AETHERDESK_TEMP_DIR", &directory);
     let mut child = command.spawn()?;
+    let readers = [
+        agent_supervisor::log_capture::drain(
+            child.stdout.take().expect("worker stdout"),
+            log.clone(),
+        ),
+        agent_supervisor::log_capture::drain(
+            child.stderr.take().expect("worker stderr"),
+            log.clone(),
+        ),
+    ];
     let pid = child.id().unwrap_or(0);
     let status = child.wait().await?;
-    let directory = session_directory(options.session_id)?;
+    for mut reader in readers {
+        if tokio::time::timeout(Duration::from_secs(1), &mut reader)
+            .await
+            .is_err()
+        {
+            reader.abort();
+        }
+    }
+    let record = format!(
+        "AETHERDESK_AGENT_EXIT_V1 pid={pid} code={:?} signal={:?} core_dump={}\n",
+        status.code(),
+        status.signal(),
+        status.core_dumped()
+    );
+    if let Ok(mut log) = log.lock() {
+        let _ = log.append(record.as_bytes());
+        if let Some(root) = directory.parent().and_then(|p| p.parent()) {
+            let _ = log.archive(&root.join("diagnostics"), options.session_id, &record);
+        }
+    }
     // Orderly end-session removes this directory. Never recreate ended sessions.
     if directory.is_dir() {
-        let record = format!(
-            "AETHERDESK_AGENT_EXIT_V1 pid={pid} code={:?} signal={:?} core_dump={}\n",
-            status.code(),
-            status.signal(),
-            status.core_dumped()
-        );
         let recorded = agent_supervisor::endpoint::record_process_exit(&directory, &record).await;
         // A full or size-limited agent.log must not panic the watcher before
         // its independent exit record has been written.
-        use std::io::Write;
-        let _ = writeln!(std::io::stderr(), "{}", record.trim_end());
         recorded?;
     }
     Ok(())
@@ -340,12 +374,34 @@ fn parse_range(value: &str, minimum: u32, maximum: u32, name: &str) -> Result<u3
 
 fn validate_desktop(value: &str) -> Result<&str, String> {
     match value.to_ascii_lowercase().as_str() {
-        "xfce" | "kde" | "gnome" | "mate" | "cinnamon" | "lxqt" => Ok(value),
+        "xfce" | "kde" | "gnome" | "mate" | "cinnamon" | "lxqt" | "applications" => Ok(value),
         _ => Err("unsupported desktop environment".into()),
     }
 }
 
 fn desktop_application(desktop: &str) -> Result<ApplicationSpec, String> {
+    if desktop.eq_ignore_ascii_case("applications") {
+        let mut application = ApplicationSpec::new("dbus-run-session");
+        application.arguments = vec![
+            "--".into(),
+            "bash".into(),
+            "-c".into(),
+            include_str!("application_session.sh").into(),
+        ];
+        // Startup exports/cwd belong to this newly created session; reconnects
+        // source its private snapshot instead of running the commands again.
+        let executable = std::env::current_exe().map_err(|e| e.to_string())?;
+        let libs = executable
+            .parent()
+            .ok_or("Agent executable directory unavailable")?
+            .join("libs");
+        application.environment = application_exports(std::env::vars_os(), &libs);
+        application
+            .environment
+            .push(("AETHERDESK_APPLICATIONS_ONLY".into(), "1".into()));
+        application.working_directory = std::env::current_dir().ok();
+        return Ok(application);
+    }
     let program = match desktop.to_ascii_lowercase().as_str() {
         "xfce" => "startxfce4",
         "kde" => "startplasma-x11",
@@ -382,6 +438,49 @@ fn session_directory(session_id: Uuid) -> Result<PathBuf, String> {
         .join(session_id.to_string()))
 }
 
+fn application_exports(
+    values: impl Iterator<Item = (OsString, OsString)>,
+    libs: &Path,
+) -> Vec<(OsString, OsString)> {
+    values
+        .filter_map(|(key, value)| {
+            let name = key.to_string_lossy();
+            if name.starts_with("AETHERDESK_STARTUP_")
+                || matches!(
+                    name.as_ref(),
+                    "DISPLAY"
+                        | "XAUTHORITY"
+                        | "XDG_RUNTIME_DIR"
+                        | "WAYLAND_DISPLAY"
+                        | "DBUS_SESSION_BUS_ADDRESS"
+                )
+            {
+                return None;
+            }
+            if matches!(
+                name.as_ref(),
+                "LD_LIBRARY_PATH" | "GST_PLUGIN_PATH" | "GST_PLUGIN_SYSTEM_PATH_1_0"
+            ) {
+                // Keep explicit host/application exports, excluding only our own
+                // runtime libraries. Their GLib/Qt/OpenGL versions belong to the
+                // agent and must not be injected into Cadence or other host apps.
+                let paths: Vec<_> = std::env::split_paths(&value)
+                    .filter(|path| path != libs)
+                    .collect();
+                if paths.is_empty() {
+                    return None;
+                }
+                return std::env::join_paths(paths).ok().map(|value| (key, value));
+            }
+            if name == "GST_PLUGIN_SCANNER" && Path::new(&value) == libs.join("gst-plugin-scanner")
+            {
+                return None;
+            }
+            Some((key, value))
+        })
+        .collect()
+}
+
 fn codec_name(codec: VideoCodec) -> &'static str {
     match codec {
         VideoCodec::H264 => "h264",
@@ -393,6 +492,74 @@ fn codec_name(codec: VideoCodec) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn application_exports_preserve_host_values_without_injecting_agent_libraries() {
+        use std::os::unix::ffi::OsStringExt;
+        let opaque = OsString::from_vec(vec![b'v', 0xff]);
+        let values = vec![
+            (
+                "LD_LIBRARY_PATH".into(),
+                "/private/agent/libs:/opt/tool/lib".into(),
+            ),
+            ("GST_PLUGIN_PATH".into(), "/private/agent/libs".into()),
+            (
+                "GST_PLUGIN_SYSTEM_PATH_1_0".into(),
+                "/opt/host/plugins:/private/agent/libs".into(),
+            ),
+            (
+                "GST_PLUGIN_SCANNER".into(),
+                "/private/agent/libs/gst-plugin-scanner".into(),
+            ),
+            ("APP_EXPORT".into(), opaque.clone()),
+            (
+                "AETHERDESK_STARTUP_COMMANDS".into(),
+                "private commands".into(),
+            ),
+            ("DISPLAY".into(), ":other".into()),
+        ];
+        let exported = application_exports(values.into_iter(), Path::new("/private/agent/libs"));
+        assert!(exported
+            .iter()
+            .any(|(key, value)| key == "LD_LIBRARY_PATH" && value == "/opt/tool/lib"));
+        assert!(exported.iter().any(
+            |(key, value)| key == "GST_PLUGIN_SYSTEM_PATH_1_0" && value == "/opt/host/plugins"
+        ));
+        assert!(exported
+            .iter()
+            .any(|(key, value)| key == "APP_EXPORT" && value == &opaque));
+        for name in [
+            "GST_PLUGIN_PATH",
+            "GST_PLUGIN_SCANNER",
+            "DISPLAY",
+            "AETHERDESK_STARTUP_COMMANDS",
+        ] {
+            assert!(!exported.iter().any(|(key, _)| key == name));
+        }
+    }
+    #[test]
+    fn application_mode_uses_the_private_launcher_instead_of_a_full_desktop() {
+        for name in ["applications", "Applications"] {
+            assert!(validate_desktop(name).is_ok());
+            let application = desktop_application(name).unwrap();
+            assert_eq!(application.program, OsString::from("dbus-run-session"));
+            assert!(application
+                .environment
+                .iter()
+                .any(|(key, value)| key == "AETHERDESK_APPLICATIONS_ONLY" && value == "1"));
+            assert!(application
+                .arguments
+                .iter()
+                .any(|value| value.to_string_lossy().contains("application-launch.fifo")));
+            assert!(!application
+                .arguments
+                .iter()
+                .any(|value| value == "startxfce4"));
+            assert!(!application
+                .environment
+                .iter()
+                .any(|(key, _)| key.to_string_lossy().starts_with("AETHERDESK_STARTUP_")));
+        }
+    }
     #[test]
     fn watcher_has_a_separate_login_session_and_its_exit_signal_is_observable() {
         use std::os::unix::process::ExitStatusExt;

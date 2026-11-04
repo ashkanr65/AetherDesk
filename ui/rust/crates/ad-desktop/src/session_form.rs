@@ -168,7 +168,7 @@ impl Draft {
                         ui.label("Username"); ui.text_edit_singleline(&mut p.username); ui.end_row();
                         ui.label("Connection");
                         egui::ComboBox::from_id_salt("connection-kind").selected_text(p.connection_type.label()).show_ui(ui, |ui| {
-                            for kind in [ConnectionType::SshTerminal, ConnectionType::SftpOnly, ConnectionType::SshX11, ConnectionType::RemoteDesktop] {
+                            for kind in [ConnectionType::SshTerminal, ConnectionType::SftpOnly, ConnectionType::SshX11, ConnectionType::RemoteDesktop, ConnectionType::RemoteApplications] {
                                 ui.selectable_value(&mut p.connection_type, kind, kind.label());
                             }
                         }); ui.end_row();
@@ -228,7 +228,7 @@ impl Draft {
                         });
                         ui.checkbox(&mut self.profile.startup_continue_on_error, "Continue connecting if commands fail");
                     });
-                    ui.add(egui::Label::new("Runs Bash on this host for each new connection. A retained remote desktop runs it only when first created. Exports and the working directory are inherited. Commands are saved with this connection.").wrap());
+                    ui.add(egui::Label::new("Runs Bash on this host for each new connection. A retained desktop or application session runs it only when first created. Exports and the working directory are inherited. Commands are saved with this connection.").wrap());
                     ui.separator();
                     ui.checkbox(&mut self.profile.remember_username, "Remember username");
                     ui.checkbox(&mut self.profile.remember_password, "Save password / key passphrase securely");

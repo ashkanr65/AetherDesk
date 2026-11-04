@@ -231,8 +231,9 @@ impl Theme {
                 (ConnectionType::SftpOnly, "SFTP Workspace", "Local and remote files beside every live session.", 1),
                 (ConnectionType::RemoteDesktop, "Remote Desktop", "Linux desktops streamed inside AetherDesk.", 2),
                 (ConnectionType::SshX11, "SSH + X11", "Launch individual Linux GUI applications securely.", 3),
+                (ConnectionType::RemoteApplications, "Remote Applications", "A terminal with independent, host-rendered application windows.", 12),
             ];
-            let columns = if ui.available_width() >= font * 36.0 { 2 } else { 1 };
+            let columns = if ui.available_width() >= font * 70.0 { 3 } else if ui.available_width() >= font * 36.0 { 2 } else { 1 };
             for row in cards.chunks(columns) {
                 ui.columns(columns, |columns| {
                     for (column, &(kind, title, description, index)) in columns.iter_mut().zip(row) {
@@ -429,6 +430,7 @@ pub fn icon(p: &egui::Painter, rect: Rect, index: usize, color: Color32) {
         p.line_segment([point(a.0, a.1), point(b.0, b.1)], stroke);
     };
     match index {
+        12 => crate::ui_icons::draw(p, rect, crate::ui_icons::Icon::Applications, color),
         11 => {
             // An open wrench head and diagonal handle, distinct from AI sparkle.
             p.add(egui::Shape::line(

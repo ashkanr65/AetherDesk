@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use ad_core::{CoreError, Result};
 use parking_lot::Mutex;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, Notify};
 use tokio_util::sync::CancellationToken;
 
 const OUTPUT_LIMIT: usize = 8 * 1024 * 1024;
@@ -18,6 +18,22 @@ enum Command {
 struct Output {
     bytes: VecDeque<u8>,
     error: Option<String>,
+    ready: Arc<Notify>,
+}
+impl Output {
+    fn append(&mut self, bytes: &[u8]) -> bool {
+        if self.bytes.len().saturating_add(bytes.len()) > OUTPUT_LIMIT {
+            self.fail("Terminal output exceeded its buffer; reconnect the terminal".into());
+            return false;
+        }
+        self.bytes.extend(bytes.iter().copied());
+        self.ready.notify_one();
+        true
+    }
+    fn fail(&mut self, error: String) {
+        self.error = Some(error);
+        self.ready.notify_one();
+    }
 }
 
 pub(crate) struct ShellIo {
@@ -44,17 +60,12 @@ impl ShellIo {
                         russh::ChannelMsg::Data { data }
                         | russh::ChannelMsg::ExtendedData { data, .. },
                     ) => {
-                        if output.bytes.len() + data.len() > OUTPUT_LIMIT {
-                            output.error = Some(
-                                "Terminal output exceeded its buffer; reconnect the terminal"
-                                    .into(),
-                            );
+                        if !output.append(&data) {
                             break;
                         }
-                        output.bytes.extend(data.iter().copied());
                     }
                     Some(russh::ChannelMsg::Eof | russh::ChannelMsg::Close) | None => {
-                        output.error = Some("The remote shell closed the terminal channel".into());
+                        output.fail("The remote shell closed the terminal channel".into());
                         break;
                     }
                     _ => {}
@@ -63,6 +74,7 @@ impl ShellIo {
             // A stopped reader must stop the writer too (including overflow),
             // releasing the PTY instead of leaving a shell with no consumer.
             reader_cancel.cancel();
+            reader_output.lock().ready.notify_one();
         });
         let writer_output = output.clone();
         tokio::spawn(async move {
@@ -80,7 +92,7 @@ impl ShellIo {
                 match result {
                     Some(Ok(())) => {}
                     Some(Err(error)) => {
-                        writer_output.lock().error = Some(error.to_string());
+                        writer_output.lock().fail(error.to_string());
                         break;
                     }
                     None => break,
@@ -127,11 +139,47 @@ impl ShellIo {
         let len = output.bytes.len().min(limit);
         Ok(output.bytes.drain(..len).collect())
     }
+
+    pub(crate) fn output_readiness(&self) -> (bool, Arc<Notify>) {
+        let output = self.output.lock();
+        (
+            !output.bytes.is_empty() || output.error.is_some(),
+            output.ready.clone(),
+        )
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn output_notification_survives_arrival_before_wait_and_drains_before_close() {
+        let (commands, _receive) = mpsc::channel(2);
+        let shell = ShellIo {
+            commands,
+            output: Arc::new(Mutex::new(Output::default())),
+        };
+        let (pending, signal) = shell.output_readiness();
+        assert!(!pending);
+        // Bytes may arrive between the consumer's poll and awaiting the signal.
+        assert!(shell.output.lock().append(b"first second"));
+        tokio::time::timeout(std::time::Duration::from_secs(1), signal.notified())
+            .await
+            .unwrap();
+        assert_eq!(shell.read(6).unwrap(), b"first ");
+        assert!(
+            shell.output_readiness().0,
+            "partial drains must not wait for another packet"
+        );
+        shell.output.lock().fail("closed".into());
+        assert_eq!(shell.read(100).unwrap(), b"second");
+        assert!(shell.read(100).is_err());
+        assert!(
+            shell.output_readiness().0,
+            "closure must wake a waiting terminal"
+        );
+    }
 
     #[test]
     fn preserves_binary_input_and_output_before_reporting_close() {

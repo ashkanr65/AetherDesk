@@ -6,10 +6,21 @@ pub enum ConnectionType {
     RemoteDesktop,
     SshX11,
     SftpOnly,
+    RemoteApplications,
 }
 impl ConnectionType {
+    pub fn has_terminal(self) -> bool {
+        matches!(
+            self,
+            Self::SshTerminal | Self::SshX11 | Self::RemoteApplications
+        )
+    }
+    pub fn has_host_session(self) -> bool {
+        matches!(self, Self::RemoteDesktop | Self::RemoteApplications)
+    }
     pub fn from_name(name: &str) -> Self {
         match name {
+            "remoteApplications" => Self::RemoteApplications,
             "remoteDesktop" => Self::RemoteDesktop,
             "sshX11" => Self::SshX11,
             "sftpOnly" => Self::SftpOnly,
@@ -20,6 +31,7 @@ impl ConnectionType {
         match self {
             Self::SshTerminal => "sshTerminal",
             Self::RemoteDesktop => "remoteDesktop",
+            Self::RemoteApplications => "remoteApplications",
             Self::SshX11 => "sshX11",
             Self::SftpOnly => "sftpOnly",
         }
@@ -28,6 +40,7 @@ impl ConnectionType {
         match self {
             Self::SshTerminal => "SSH Terminal",
             Self::RemoteDesktop => "Remote Desktop",
+            Self::RemoteApplications => "Remote Applications",
             Self::SshX11 => "SSH + X11",
             Self::SftpOnly => "SFTP Only",
         }
@@ -194,6 +207,25 @@ pub fn decode_sessions(bytes: &[u8]) -> Result<Vec<SavedSession>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn remote_applications_round_trip_without_changing_existing_connection_types() {
+        for kind in [
+            ConnectionType::SshTerminal,
+            ConnectionType::SftpOnly,
+            ConnectionType::SshX11,
+            ConnectionType::RemoteDesktop,
+            ConnectionType::RemoteApplications,
+        ] {
+            let profile=SavedSession::from_json(&json!({"id":"apps", "name":"Applications", "host":"example.test", "connectionType":kind.name(), "startupEnabled":true, "startupCommands":"export TOOL_HOME=/opt/tools", "wireguardConfigPath":"private.conf", "wireguardEnabled":true})).unwrap();
+            let restored = SavedSession::from_json(&profile.to_json()).unwrap();
+            assert_eq!(restored, profile);
+            assert_eq!(ConnectionType::from_name(kind.name()), kind);
+        }
+        assert!(ConnectionType::RemoteApplications.has_terminal());
+        assert!(ConnectionType::RemoteApplications.has_host_session());
+        assert!(!ConnectionType::SftpOnly.has_terminal());
+        assert!(!ConnectionType::SshX11.has_host_session());
+    }
     #[test]
     fn startup_commands_are_opt_in_bounded_and_round_trip_with_the_connection() {
         let mut session = SavedSession::from_json(

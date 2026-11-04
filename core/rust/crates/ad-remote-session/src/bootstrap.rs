@@ -32,6 +32,7 @@ impl RemoteCommandResult {
 
 #[async_trait]
 pub trait RemoteAgentHost: Send + Sync {
+    async fn cache_verified(&self, _version: &str) {}
     async fn command(
         &self,
         command: &str,
@@ -179,6 +180,7 @@ impl<H: RemoteAgentHost> AgentBootstrap<H> {
             }
             self.verify_runtime(&command_path, &artifact.version)
                 .await?;
+            self.host.cache_verified(&artifact.version).await;
             return Ok(AgentDeployment {
                 version: artifact.version.clone(),
                 remote_path: final_path,
@@ -217,6 +219,7 @@ impl<H: RemoteAgentHost> AgentBootstrap<H> {
         }
         self.verify_runtime(&command_path, &artifact.version)
             .await?;
+        self.host.cache_verified(&artifact.version).await;
 
         Ok(AgentDeployment {
             version: artifact.version.clone(),

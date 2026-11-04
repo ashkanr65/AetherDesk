@@ -1,4 +1,58 @@
-# AetherDesk 0.1.3 - build 6
+# AetherDesk 0.1.3 - build 7
+
+Build 7 improves connection startup, SSH terminal responsiveness and X11 painting checks, preserves startup diagnostics and introduces connection-scoped host cleanup. This build number remains the current development candidate until its verified packages are published.
+
+## Changes in build 7
+
+- **Live minimized independent windows:** keep an explicitly viewed application rendering in a private capture holder when its original desktop window is minimized. Preserve real modified clicks and menu input, return it to the host window manager when viewing stops, and use the X11 server save-set to protect it if its viewing helper disappears. Real Cadence dialog families still need acceptance testing.
+- **Reliability diagnostics:** probe visible GUI windows, record bounded health checkpoints and collect metadata-only Windows wait chains after repeated failed probes. Do not collect process memory or user text. The reported idle hang's root cause remains unconfirmed.
+- **Safer maintenance and editor reconnect:** repair permissions on owned legacy AetherDesk maintenance directories, distinguish storage/permission/unsafe-state failures, and allow an open editor to reconnect only to the original authenticated host/account and unchanged canonical file revision. Saving remains explicit.
+- **AI response limits:** configure Maximum response time in AI Assistant settings for each service; the default is ten minutes. Separate connection and streaming-idle handling, preserve partial output and do not replay timed-out requests. Keep the new option in service settings so older clients can still read application preferences after rollback.
+- **Update recovery:** new helpers acknowledge startup health after multiple frames and a 20-second grace period, while retaining compatibility with older helpers. Perform acknowledgement off the interface thread and retain the latest completed recovery set for 24 hours. Closing normally during the grace period defers confirmation to the next launch instead of rolling back a successful installation.
+- **Build provenance:** embed the release build in Windows file-version metadata, include the source fingerprint in build-kit startup logs, and include the UI dependency lock in the source. Add read-only regression workflows and public security/contribution guidance; publication remains manual.
+
+- **Independent application responsiveness:** negotiate event-driven image updates with independent ordered input, bounded image backpressure, foreground priority, damage-region capture, reusable menu metadata and partial Windows texture uploads. Preserve lossless colours and complete updates across skipped UI paints. Retained older helpers have a clean legacy fallback.
+- **Source application titles:** use the real application/document title and follow renames. Private native bindings keep duplicate captions separate for keyboard focus, menus and monitor placement.
+
+- **Cadence application menus:** initialize the host's Wayland pointer focus before independent-window input. This restores toolbar and dropdown hit testing in application-only sessions, including retained sessions started with an older agent, without injecting mouse clicks or modifier keys.
+
+- **Terminal selection across history:** keep the text anchor while scrolling with the wheel or dragging above/below the terminal. Edge scrolling accelerates with pointer distance and stops on button release/focus loss. Copy selections spanning multiple screens with correct Unicode, blank lines and soft wrapping; preserve terminal-application mouse reporting and Shift-drag override.
+
+- **Terminal folder synchronization:** wait for a private Bash prompt confirmation before sending a folder change. Typing/pasting cancels unsent changes, busy foreground commands receive no navigation input, and an unconfirmed helper stops further synchronization until reconnect. Preserve genuine command output/errors and user command history. Support Bash 4.4 prompt hooks as well as newer Bash arrays, including existing comments and repeated initialization.
+
+- **Moving between monitors:** coalesce native Windows DPI changes until the title-bar drag finishes, then apply the destination DPI once. This shared handling covers the main window, files/editor windows and independent application views, avoiding competing framework resizes while straddling monitors.
+
+- **SSH+X11 painting:** retain the Composite window backing required for visible application/dialog content, disable only optional Windows per-pixel alpha, and preserve software OpenGL and normal TrueColor rendering. Packaging now checks actual native-window pixels as well as off-screen colours, overlapping copies and repeated movement/resizing. The earlier VcXsrv crash's exact trigger remains unconfirmed; these changes are not a proven source-level fix for that crash.
+- **SSH terminal responsiveness:** notify the client when shell output arrives instead of waiting for the 10 ms output-polling tick. Apply bounded UI batches and output backpressure, preserving byte order and terminal closure. Avoid drawing default-background rectangles or text layouts for empty cells while retaining ANSI backgrounds, underlines, selection and cursor rendering. These changes do not establish an end-to-end speed advantage over another terminal application.
+- **End remote session:** use the theme's red error colour for the power icon in both themes, with a subtle red hover background/outline across tab, fullscreen and all-monitor controls. Disconnect retains its normal icon treatment.
+- **Remote-desktop handshake:** preserve early cursor, clipboard and display notifications while waiting for the required startup response. Replay them to the normal consumer after startup instead of rejecting the connection or discarding the notifications. Buffering is bounded by count, size and the handshake deadline. Unexpected control responses, session identity mismatches and incompatible protocol versions still fail explicitly.
+- **Startup failure evidence:** capture a bounded server-log snapshot before rolling back a newly created desktop. Retained desktops remain resumable. Unexpected responses record the handshake phase and message type without logging nonces, endpoint tokens or clipboard contents.
+- **Host cleanup for all connection types:** SSH, SSH+X11, SFTP and remote-desktop connections receive independent private temporary folders on Linux hosts with Python 3. Closing the connection, losing its SSH channel or receiving HUP removes only that connection's owned temporary files. Later connections retry abandoned, unlocked folders.
+- **Preserved work:** disconnecting a remote desktop keeps its applications and runtime. Ending it first stops the desktop, then removes its session files. Cleanup preserves other tabs, unrecognized files, mounted paths and resumable SFTP transfer data.
+- **Shared agent-cache retention:** retain the current version, the two newest versions and versions referenced by live processes or connection leases. Remove only explicitly marked, manifest-checked, unused caches older than seven days. If process ownership/use cannot be established, preserve the cache.
+- **Bounded host logs:** limit each desktop's agent log to 4 MiB plus two rotations, including trimming oversized legacy logs when the new watcher takes ownership. Keep draining worker output if a log write fails, so a full disk does not block the desktop's output pipe.
+- **Diagnostic history:** retain at most twenty small session diagnostic archives for seven days, separately from removed runtime folders. Failed cleanup remains eligible for a later safe retry; unknown legacy state is preserved.
+
+## Remote Applications and X11 forwarding
+
+- **Independent application views:** follow per-monitor Windows display scaling, add a separate application zoom control, and keep menus within the local monitor work area. Moving between monitors does not request a server application resize. Recover transient application focus changes silently while preserving input-release safeguards.
+
+- Add **Remote Applications** as a separate connection type: a terminal and searchable application launcher, with up to eight independent host-rendered views. New top-level windows open automatically; closing a view keeps its application running.
+- Use a private graphical session with a lightweight host window manager, inherited startup exports/cwd and D-Bus environment. Keep applications launched through the panel on disconnect; explicit End session stops the launcher process group. Desktop and application profiles use separate retained/recovery identities.
+- Reuse existing lossless window/menu capture, monitor/DPI placement, cursor shapes, modifier release, AltGr/keypad/wheel handling, clipboard worker, SFTP/editor transfers, monitoring and logs. Do not copy, encode or transmit an unused full desktop image in this mode; preserve normal repaint callbacks.
+- Route independent-window image helpers through the dedicated graphics SSH transport, keeping terminal/control traffic independent of large window images. Both links use the same connection-scoped authentication and VPN.
+- Batch already-queued independent-window input in bounded, ordered packets, preserving modifier and release order without waiting to fill a batch. Prevent failed helper retries from launching a new SSH process every UI frame.
+- Optimize SSH+X11 forwarding with one authenticated setup write and asymmetric copy buffers for larger redraws and prompt small replies. Preserve cookie validation, lossless compression, separate terminal/graphics connections, half-close behaviour, cancellation and Cadence's pixel colours. These changes do not remove X11's inherent synchronous network round trips.
+
+## Validation and deployment
+
+Native regressions cover reordered startup notifications, bounded buffering, strict control/session validation, evidence captured before rollback, cleanup isolation, abandoned leases, HUP, cache retention, log rotation and failed log writes. Complete Build 7 packaging and live installation/update acceptance must be completed before publishing. These changes do not by themselves establish that every cause of intermittent handshake failure has been reproduced or eliminated.
+
+The host-maintenance helper is optional and requires Python 3 on Linux. Without it, connections continue and maintenance is reported as unavailable. Existing retained desktops continue using their running host agent; save remote work and end/start that desktop to use the new host-side code. Updating or disconnecting the Windows client does not itself end retained applications.
+
+## Earlier release notes (historical)
+
+## AetherDesk 0.1.3 - build 6
 
 AetherDesk 0.1.3 build 6 improves remote-desktop rendering, keyboard and wheel handling, SFTP transfers and connection setup.
 

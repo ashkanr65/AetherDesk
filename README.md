@@ -1,7 +1,8 @@
 # AetherDesk
 
 AetherDesk is a Windows workspace for SSH terminals, SFTP file transfers,
-Linux desktop connections, SSH with X11 applications, editing and AI assistance.
+Linux desktop connections, SSH with X11 applications, host-rendered independent
+applications, editing and AI assistance.
 Connections open in independent tabs, with files and editors available in
 separate windows.
 
@@ -31,6 +32,15 @@ colour pickers, hexadecimal values, import/export, contrast warnings and reset.
 Changes stay in the preview until **Apply and save**. See
 [Preferences](PREFERENCES.md) for usage and storage details.
 
+## Remote Applications
+
+Select **Remote Applications** for a terminal and independent Linux application
+windows rendered on the host. The private session reuses startup commands,
+credentials, per-connection VPN, SFTP/editor and monitoring features. Disconnect
+keeps launcher applications running; **End session** stops them. See
+[Remote Applications](docs/remote-applications.md) for usage, requirements and
+validation scope. SSH+X11 remains available as a separate compatibility mode.
+
 ## Connection startup and transfers
 
 Edit a saved connection and enable **Run startup commands** to prepare that
@@ -52,6 +62,27 @@ records the exit code or signal in the private session's `agent-exit` file and
 invalidates stale ready status. Client failure diagnostics collect that record
 alongside the bounded agent log; this cannot recover unsaved work from a crashed
 host application.
+
+## Host temporary-file cleanup
+
+SSH, SSH+X11, SFTP and remote-desktop connections use separate private temporary
+folders. On Linux hosts with Python 3, an SSH lifetime lease removes only its
+connection's owned files on close or connection loss. The next connection retries
+abandoned, unlocked folders. Maintenance is optional: an unavailable helper does
+not prevent an ordinary SSH connection.
+
+Disconnecting a remote desktop preserves its applications. **End remote session**
+stops that desktop before removing its runtime state. Cleanup never targets
+project files or unfinished SFTP transfer stages. Unknown legacy folders and
+mounted paths are left alone rather than guessed to be safe.
+
+Shared agent caches retain versions referenced by live processes or connections,
+the current version and the two newest versions. Only marked, manifest-checked,
+unused caches older than seven days are eligible for removal. Server logs are
+limited to 4 MiB plus two rotations per desktop; at most twenty small diagnostic
+archives are retained for seven days. Startup evidence is collected before
+rollback, and unexpected handshake logs record the phase and message kind without
+recording tokens or clipboard data.
 
 ## Remote desktop performance
 

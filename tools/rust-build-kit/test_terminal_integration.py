@@ -42,10 +42,13 @@ class TerminalIntegration(unittest.TestCase):
                     fcntl.ioctl(slave, termios.TIOCSCTTY, 0)
 
                 environment = os.environ.copy()
+                prompt_token = "feedface0123456789abcdef01234567"
+                ready_marker = ("\x1b]777;" + prompt_token + ";prompt\x07").encode()
                 environment.update(HOME=folder, HISTFILE=str(history), HISTSIZE="1000",
                                    HISTFILESIZE="1000", HISTCONTROL=control,
                                    HISTIGNORE="*__aetherdesk_emit_cwd*:ignore-fixture*",
-                                   PS1="[PTY]$ ", PROMPT_COMMAND="", TERM="xterm-256color")
+                                   PS1='$(printf "__PROMPT_EXPANSION__")[PTY]$ ', PROMPT_COMMAND="printf '__EXISTING_PROMPT__\\n'", TERM="xterm-256color",
+                                   __aetherdesk_prompt_token=prompt_token)
                 child = subprocess.Popen(["bash", "--noprofile", "--norc", "-i"],
                                          stdin=slave, stdout=slave, stderr=slave,
                                          env=environment, preexec_fn=controlling_terminal,
@@ -59,16 +62,47 @@ class TerminalIntegration(unittest.TestCase):
                             ready, _, _ = select.select([master], [], [], 0.1)
                             if ready:
                                 output.extend(os.read(master, 65536))
-                                if output.endswith(b"[PTY]$ "):
+                                if output.endswith(b"[PTY]$ ") or output.endswith(b"[PTY]$ " + ready_marker):
                                     return bytes(output)
                         self.fail(f"terminal did not produce a prompt: {bytes(output)!r}")
 
                     initial = prompt()
                     self.assertEqual(initial.count(b"[PTY]$ "), 1)
-                    os.write(master, (script + "\n").encode())
+                    setup_script = script
+                    if control == "ignoredups":
+                        setup_script = "PROMPT_COMMAND=('printf \"__EXISTING_PROMPT__\\n\"; # keep array hook comment' 'printf \"__SECOND_PROMPT__\\n\"'); " + script
+                    elif control == "ignorespace":
+                        setup_script = "PROMPT_COMMAND='printf \"__EXISTING_PROMPT__\\n\"; # keep string hook comment'; " + script
+                    os.write(master, (setup_script + "\n").encode())
                     setup = prompt()
                     self.assertIn(b"\r\x1b[2K", setup, "initial prompt must be erased before its replacement")
                     self.assertIn(b"\x1b]7;file://", setup, "folder reports remain enabled")
+                    self.assertEqual(setup.count(ready_marker), 1, "readiness must be emitted once at the actual prompt")
+                    self.assertLess(setup.index(b"__EXISTING_PROMPT__"), setup.index(ready_marker), "existing prompt hooks must finish before readiness")
+                    self.assertIn(b"__PROMPT_EXPANSION__", setup)
+                    self.assertLess(setup.index(ready_marker), setup.index(b"[PTY]$ "), "readiness must arrive before the visible prompt so immediate typing cannot race a split marker")
+                    if control == "ignoredups":
+                        self.assertEqual(setup.count(b"__SECOND_PROMPT__"), 1, "every array hook must survive on older Bash")
+                    os.write(master, (script + "\n").encode())
+                    repeated = prompt()
+                    self.assertEqual(repeated.count(ready_marker), 1, "repeated initialization duplicated prompt readiness")
+                    self.assertEqual(repeated.count(b"__EXISTING_PROMPT__"), 1)
+                    # A real foreground stdin consumer must not announce prompt
+                    # readiness. Folder requests queued by the native client
+                    # must wait until this program returns to Bash.
+                    os.write(master, b"python3 -c 'import sys; print(\"READER_READY\", flush=True); print(\"RECEIVED:\" + sys.stdin.readline(), flush=True)'\n")
+                    waiting = bytearray()
+                    deadline = time.monotonic() + 5
+                    while b"READER_READY" not in waiting and time.monotonic() < deadline:
+                        if select.select([master], [], [], 0.1)[0]:
+                            waiting.extend(os.read(master, 65536))
+                    self.assertIn(b"READER_READY", waiting)
+                    self.assertNotIn(ready_marker, waiting, "busy foreground program falsely enabled folder injection")
+                    self.assertFalse(select.select([master], [], [], 0.2)[0], "a prompt appeared while foreground stdin was blocked")
+                    os.write(master, b"ONLY_USER_INPUT\n")
+                    resumed = prompt()
+                    self.assertIn(b"RECEIVED:ONLY_USER_INPUT", resumed)
+                    self.assertEqual(resumed.count(ready_marker), 1)
                     os.write(master, b"printf 'USER_COMMAND_OK\\n'\n")
                     self.assertIn(b"USER_COMMAND_OK", prompt())
                     quoted = "'" + str(destination).replace("'", "'\\''") + "'"

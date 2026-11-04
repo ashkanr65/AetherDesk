@@ -75,7 +75,7 @@ pub fn preserve(
         let record = serde_json::json!({"ts":chrono::Utc::now().to_rfc3339(),"level":"warn","source":"local.x11",
             "target":"x11.runtime", "msg":"Bundled X11 server exited", "pid":pid,"display":display,
             "exit_status":failure.status, "display_configuration":crate::update_exit::display_description(),
-            "renderer":"Shadow GDI; software OpenGL; authenticated multiwindow",
+            "renderer":crate::x11::RENDERER,
             "diagnostic":sanitize(&String::from_utf8_lossy(&bytes), secrets)});
         use std::io::Write;
         let mut file = std::fs::OpenOptions::new()
