@@ -1977,6 +1977,9 @@ impl SessionTab {
             crate::transfers::ui(&mut footer, session, runtime);
             ui.allocate_rect(area, egui::Sense::hover());
         }
+        if let Some(session) = &self.backend {
+            crate::transfers::notices_ui(ui, session);
+        }
         for pending in self.pending.values() {
             if let Pending::Operation(progress) = pending {
                 ui.horizontal(|ui| {

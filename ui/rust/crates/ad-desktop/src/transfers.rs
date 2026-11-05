@@ -6,12 +6,13 @@ use ad_ssh::{
 use eframe::egui;
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{HashMap, HashSet, VecDeque},
     path::{Path, PathBuf},
     sync::{
         atomic::{AtomicBool, AtomicU64, Ordering},
         Arc, Mutex, OnceLock,
     },
+    time::{Duration, Instant},
 };
 use tokio::sync::mpsc;
 use uuid::Uuid;
@@ -140,6 +141,95 @@ struct Queue {
     show: bool,
     changed: u64,
     dirty: bool,
+    notices: VecDeque<CompletionNotice>,
+}
+struct CompletionNotice {
+    account: String,
+    text: String,
+    created: Instant,
+}
+const NOTICE_LIFETIME: Duration = Duration::from_secs(5);
+fn retire_completed(q: &mut Queue, now: Instant) {
+    let completed: Vec<_> = q
+        .jobs
+        .iter()
+        .filter(|job| job.state == State::Complete)
+        .cloned()
+        .collect();
+    if completed.is_empty() {
+        return;
+    }
+    q.jobs.retain(|job| job.state != State::Complete);
+    q.dirty = true;
+    for job in completed {
+        let source = if job.upload {
+            job.local.as_str()
+        } else {
+            job.remote.as_str()
+        };
+        let name = source
+            .rsplit(['/', '\\'])
+            .find(|part| !part.is_empty())
+            .unwrap_or(source);
+        let skipped = if job.progress.skipped_links > 0 {
+            format!(" · {} symbolic links skipped", job.progress.skipped_links)
+        } else {
+            String::new()
+        };
+        let text = format!(
+            "{} complete · {name} · {}{skipped}",
+            if job.upload { "Upload" } else { "Download" },
+            byte_size(job.progress.done)
+        );
+        tracing::info!(target:"sftp.transfer",message=%text,"Transfer completed");
+        if q.notices.len() == 8 {
+            q.notices.pop_front();
+        }
+        q.notices.push_back(CompletionNotice {
+            account: job.account,
+            text,
+            created: now,
+        });
+        // These are only our UUID-named resume manifests. Published files are
+        // never removed when a finished report is retired.
+        if let Ok(path) = plan_path(job.id) {
+            let _ = std::fs::remove_file(path);
+        }
+        if let Ok(path) = plan_notes_path(job.id) {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+}
+fn current_notice(q: &mut Queue, account: &str, now: Instant) -> Option<String> {
+    q.notices
+        .retain(|notice| now.saturating_duration_since(notice.created) < NOTICE_LIFETIME);
+    q.notices
+        .iter()
+        .rev()
+        .find(|notice| notice.account == account)
+        .map(|notice| notice.text.clone())
+}
+pub fn notices_ui(ui: &egui::Ui, session: &SshSession) {
+    let account = crate::working_copies::identity(session);
+    let text = current_notice(
+        &mut queue().lock().unwrap_or_else(|e| e.into_inner()),
+        &account,
+        Instant::now(),
+    );
+    let Some(text) = text else {
+        return;
+    };
+    egui::Area::new(egui::Id::new(("sftp-transfer-complete", account)))
+        .anchor(egui::Align2::CENTER_BOTTOM, egui::vec2(0.0, -16.0))
+        .order(egui::Order::Foreground)
+        .interactable(false)
+        .show(ui.ctx(), |ui| {
+            egui::Frame::popup(ui.style()).show(ui, |ui| {
+                ui.set_max_width((ui.ctx().content_rect().width() - 32.0).clamp(1.0, 480.0));
+                ui.add(egui::Label::new(text).truncate());
+            });
+        });
+    ui.ctx().request_repaint_after(Duration::from_millis(100));
 }
 static QUEUE: OnceLock<Mutex<Queue>> = OnceLock::new();
 fn destination_lock(key: String) -> Arc<tokio::sync::Mutex<()>> {
@@ -174,6 +264,8 @@ fn queue() -> &'static Mutex<Queue> {
             Err(e) => (vec![], false, Some(e)),
         };
         restore_progress(&mut jobs);
+        // Do not resurrect old success reports on startup.
+        jobs.retain(|job| job.state != State::Complete);
         for job in &mut jobs {
             if matches!(job.state, State::Queued | State::Preparing | State::Running) {
                 job.state = State::Paused;
@@ -190,6 +282,7 @@ fn queue() -> &'static Mutex<Queue> {
             show: false,
             changed: 0,
             dirty: valid,
+            notices: VecDeque::new(),
         })
     })
 }
@@ -391,6 +484,7 @@ pub fn poll(
         q.dirty = true;
     }
     q.jobs.retain(|j| !remove.contains(&j.id));
+    retire_completed(&mut q, Instant::now());
     let pending: Vec<_> = q
         .jobs
         .iter()
@@ -1285,6 +1379,64 @@ fn skip_download_link(
 mod tests {
     use super::*;
     #[test]
+    fn completed_reports_leave_the_file_list_and_notices_expire_per_account() {
+        let folder = tempfile::tempdir().unwrap();
+        crate::storage::with_test_root(folder.path(), || {
+            let published = folder.path().join("published.txt");
+            std::fs::write(&published, b"keep these bytes").unwrap();
+            let mut complete = progress_job(false);
+            complete.state = State::Complete;
+            complete.local = published.display().to_string();
+            complete.progress.done = 15;
+            complete.progress.skipped_links = 2;
+            let mut failed = progress_job(true);
+            failed.state = State::Failed;
+            failed.error = Some("Retry remains available".into());
+            let manifest = plan_path(complete.id).unwrap();
+            std::fs::create_dir_all(manifest.parent().unwrap()).unwrap();
+            std::fs::write(&manifest, b"private resume plan").unwrap();
+            let account = complete.account.clone();
+            let mut q = Queue {
+                jobs: vec![complete, failed.clone()],
+                active: HashMap::new(),
+                valid: true,
+                error: None,
+                show: false,
+                changed: 0,
+                dirty: false,
+                notices: VecDeque::new(),
+            };
+            let now = Instant::now();
+            retire_completed(&mut q, now);
+            assert_eq!(q.jobs.len(), 1);
+            assert_eq!(q.jobs[0].id, failed.id);
+            assert_eq!(q.jobs[0].state, State::Failed);
+            assert!(!manifest.exists());
+            assert_eq!(std::fs::read(&published).unwrap(), b"keep these bytes");
+            let notice = current_notice(&mut q, &account, now).unwrap();
+            assert!(notice.contains("Download complete"));
+            assert!(notice.contains("2 symbolic links skipped"));
+            assert!(current_notice(&mut q, "other-host", now).is_none());
+            assert!(current_notice(
+                &mut q,
+                &account,
+                now + NOTICE_LIFETIME - Duration::from_millis(1)
+            )
+            .is_some());
+            assert!(current_notice(&mut q, &account, now + NOTICE_LIFETIME).is_none());
+            retire_completed(&mut q, now + NOTICE_LIFETIME);
+            assert!(
+                q.notices.is_empty(),
+                "a finished report must not be shown again"
+            );
+            save(&mut q).unwrap();
+            let saved = crate::storage::read_json("transfer-queue.json")
+                .unwrap()
+                .unwrap();
+            assert_eq!(saved.as_array().unwrap().len(), 1);
+        });
+    }
+    #[test]
     fn folder_link_warnings_survive_resume_without_changing_old_plan_format() {
         let folder = tempfile::tempdir().unwrap();
         crate::storage::with_test_root(folder.path(), || {
@@ -1460,6 +1612,7 @@ mod tests {
                 show: false,
                 changed: 0,
                 dirty: true,
+                notices: VecDeque::new(),
             };
             save(&mut q).unwrap();
             let main = crate::storage::read_json("transfer-queue.json")

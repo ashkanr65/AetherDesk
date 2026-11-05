@@ -2277,6 +2277,12 @@
           "package": "ad-ssh",
           "source": "core/rust/crates/ad-ssh/src/shell.rs",
           "test": "saturated_writer_reports_failure_without_waiting"
+        },
+        {
+          "phase": "windows",
+          "package": "ad-desktop",
+          "source": "ui/rust/crates/ad-desktop/src/transfers.rs",
+          "test": "completed_reports_leave_the_file_list_and_notices_expire_per_account"
         }
       ],
       "liveAcceptance": "R4 adds a durable four-job queue, bounded recursive plans, OS/pane drops, pause/retry/resume and explicit stage cleanup. Original hashes/host-account-key bindings survive restart; validate real SFTP prefix/conflict fixtures and live reconnect/cancellation."
@@ -4995,6 +5001,18 @@
           "package": "ad-desktop",
           "source": "ui/rust/crates/ad-desktop/src/ai_models.rs",
           "test": "reasoning_requests_respect_mandatory_models_and_visible_reply_budget"
+        },
+        {
+          "phase": "windows",
+          "package": "ad-desktop",
+          "source": "ui/rust/crates/ad-desktop/src/assistant.rs",
+          "test": "browsing_a_service_without_models_does_not_clear_the_chat_selection"
+        },
+        {
+          "phase": "windows",
+          "package": "ad-desktop",
+          "source": "ui/rust/crates/ad-desktop/src/assistant.rs",
+          "test": "provider_groups_select_the_right_service_for_identical_model_ids"
         }
       ],
       "liveAcceptance": "Original provider IDs/endpoints/manual models migrate; all model tiers stay searchable with declared capability metadata. Custom manual models survive renaming, refresh and restart; first-chat provider/workspace restore no longer silently falls back. Windows/provider verification remains."
@@ -5187,6 +5205,30 @@
           "package": "ad-desktop-model",
           "source": "ui/rust/crates/ad-desktop-model/src/approval.rs",
           "test": "cancellation_and_workspace_changes_cannot_reuse_approvals"
+        },
+        {
+          "phase": "windows",
+          "package": "ad-desktop",
+          "source": "ui/rust/crates/ad-desktop/src/assistant.rs",
+          "test": "failed_tools_end_with_a_final_answer_instead_of_twenty_four_rounds"
+        },
+        {
+          "phase": "windows",
+          "package": "ad-desktop",
+          "source": "ui/rust/crates/ad-desktop/src/assistant_transcript.rs",
+          "test": "repeated_tool_failures_stop_reexecution_and_require_a_final_answer"
+        },
+        {
+          "phase": "windows",
+          "package": "ad-desktop",
+          "source": "ui/rust/crates/ad-desktop/src/assistant_transcript.rs",
+          "test": "tool_results_decode_command_output_and_classify_nonzero_exits"
+        },
+        {
+          "phase": "windows",
+          "package": "ad-desktop",
+          "source": "ui/rust/crates/ad-desktop/src/assistant_transcript.rs",
+          "test": "large_tool_results_leave_room_for_an_answer_without_altering_saved_evidence"
         }
       ],
       "liveAcceptance": "Bounded native turn loop, correlated tool results and interrupted-history repair; compile and run native tests, then live tools."
@@ -5205,6 +5247,12 @@
           "package": "ad-desktop-model",
           "source": "ui/rust/crates/ad-desktop-model/src/approval.rs",
           "test": "cancellation_and_workspace_changes_cannot_reuse_approvals"
+        },
+        {
+          "phase": "windows",
+          "package": "ad-desktop",
+          "source": "ui/rust/crates/ad-desktop/src/assistant.rs",
+          "test": "approval_controls_stay_on_one_line_at_narrow_widths_and_large_fonts"
         }
       ],
       "liveAcceptance": "Action/message/chat grants consumed by native UI and execution path; revoke on workspace/history changes and never serialize grants."
@@ -5457,6 +5505,18 @@
           "package": "ad-desktop",
           "source": "ui/rust/crates/ad-desktop/src/ai_tools.rs",
           "test": "workspace_labels_hide_verbatim_prefixes_without_changing_scope_identity"
+        },
+        {
+          "phase": "windows",
+          "package": "ad-desktop",
+          "source": "ui/rust/crates/ad-desktop/src/assistant.rs",
+          "test": "model_draft_and_explicit_workspace_survive_connection_tab_changes_and_reload"
+        },
+        {
+          "phase": "windows",
+          "package": "ad-desktop",
+          "source": "ui/rust/crates/ad-desktop/src/ai_tools.rs",
+          "test": "windows_commands_preserve_variables_quotes_loops_and_unicode"
         }
       ],
       "liveAcceptance": "Windows/SSH scope and revision checks, no local fallback, Windows jobs and R1 leased SSH process-group cleanup implemented. Verify canonical scopes, connection-loss cleanup and races live; deliberately daemonized services need their own stop."
@@ -5571,6 +5631,18 @@
           "package": "ad-desktop",
           "source": "ui/rust/crates/ad-desktop/src/assistant.rs",
           "test": "custom_provider_heading_stays_single_line_without_stretched_letters"
+        },
+        {
+          "phase": "windows",
+          "package": "ad-desktop",
+          "source": "ui/rust/crates/ad-desktop/src/assistant_selection.rs",
+          "test": "edge_scroll_speed_is_time_based_and_increases_with_distance"
+        },
+        {
+          "phase": "windows",
+          "package": "ad-desktop",
+          "source": "ui/rust/crates/ad-desktop/src/assistant_selection.rs",
+          "test": "drag_wheel_and_edge_scrolling_keep_an_offscreen_chat_anchor_and_copy_unicode"
         }
       ],
       "liveAcceptance": "Per-chat provider/model, draft, local workspace, reasoning, tool and token-budget state restore; remote scope requires the matching live connection."

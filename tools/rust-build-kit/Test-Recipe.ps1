@@ -4,6 +4,7 @@ foreach ($file in Get-ChildItem -LiteralPath $PSScriptRoot -Filter '*.ps1') {
     $null = [Management.Automation.Language.Parser]::ParseFile($file.FullName,[ref]$tokens,[ref]$errors)
     if ($errors.Count) { throw ($errors | Out-String) }
 }
+& (Join-Path $PSScriptRoot 'Test-X11-Download.ps1')
 # Evaluate selected production functions with no compiler or SDK invocation.
 $tokens = $null; $errors = $null
 $ast = [Management.Automation.Language.Parser]::ParseFile((Join-Path $PSScriptRoot 'Build-Common.ps1'),[ref]$tokens,[ref]$errors)

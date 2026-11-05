@@ -415,10 +415,15 @@ impl RustDesktop {
                         .workspace
                         .selected
                         .and_then(|i| self.workspace.tabs.get(i));
-                    let connection = tab.and_then(|t| t.ai_workspace());
+                    let connections: Vec<_> = self
+                        .workspace
+                        .tabs
+                        .iter()
+                        .filter_map(|t| t.ai_workspace())
+                        .collect();
                     let capture = tab.and_then(|t| t.capture());
                     if let Ok(runtime) = &self.connections {
-                        self.assistant.ui(ui, runtime, connection, capture);
+                        self.assistant.ui(ui, runtime, &connections, capture);
                     }
                 }
                 Sidebar::Connections => {

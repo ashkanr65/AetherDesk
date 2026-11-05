@@ -1,8 +1,21 @@
-# AetherDesk 0.1.3 - build 7
+# AetherDesk 0.1.3 - build 8
 
-Build 7 improves connection startup, SSH terminal responsiveness and X11 painting checks, preserves startup diagnostics and introduces connection-scoped host cleanup. This build number remains the current development candidate until its verified packages are published.
+Build 8 improves AI Assistant workspace and model selection, tool execution and SFTP completion reports. Full package and live provider acceptance remain required before publication.
 
-## Changes in build 7
+## Changes in build 8
+
+- **Stable AI selection:** keep the chat's model, provider, draft and explicit workspace when switching connection tabs. Browsing or editing another service no longer clears the chat's model. Preserve canonical local-workspace identity across restart.
+- **Workspace control:** choose this Windows computer or any connected host from the computer/server icon beside the model selector. The choice remains fixed across tab changes; changing it revokes previous workspace approvals. Unavailable hosts never silently redirect commands to Windows. The model receives explicit target and shell instructions.
+- **Provider groups:** group models beneath their service names, indent model rows and show provider/model in the selected control. Identical model IDs from different services retain separate identities. Existing search and pricing filters remain available.
+- **Aligned controls:** keep screenshot, workspace, model and send/stop controls in one row. Use four equal-size approval icons with descriptive tooltips and accessible names, including Deny, without wrapping long labels.
+- **Tool execution and answers:** preserve exact Windows PowerShell variables, quotes and Unicode through encoded script transport, retaining the approval gate and process cleanup. Collapse readable tool evidence instead of displaying raw JSON and empty assistant turns. Stop repeating identical failed actions, request a final explanation after repeated failures or the round limit, and shorten only the model's copy of oversized tool evidence. Full tool details remain in chat. Provider errors and empty final responses remain visible; these changes do not bypass provider credits, model limitations or permissions.
+- **SFTP completion notifications:** remove successful transfer reports from the file-list footer and show a small five-second notification inside the SFTP window. Keep active progress and failed/paused transfer recovery controls. Remove only completed transfers' private resume manifests; preserve published files. Old success reports do not return on restart.
+- **Chat text selection:** preserve character anchors when selecting across messages and scrolling. Allow the wheel during a held left-button selection, scroll faster as the pointer moves farther above/below the chat area, and stop edge scrolling on release or focus loss. Copy Unicode and line breaks across multiple pages. Expanded tool details share the chat's scrolling surface.
+- **X11 packaging downloads:** prefer verified existing caches, retry interrupted HTTPS downloads up to four times with timeouts, and publish cache entries only after their pinned SHA-256 matches. Keep certificate verification and reject invalid cache entries; reuse the older local X11 cache when its contents match the same pinned artifacts.
+
+## Previous changes in build 7
+
+Build 7 improved connection startup, SSH terminal responsiveness and X11 painting checks, preserved startup diagnostics and introduced connection-scoped host cleanup.
 
 - **Live minimized independent windows:** keep an explicitly viewed application rendering in a private capture holder when its original desktop window is minimized. Preserve real modified clicks and menu input, return it to the host window manager when viewing stops, and use the X11 server save-set to protect it if its viewing helper disappears. Real Cadence dialog families still need acceptance testing.
 - **Reliability diagnostics:** probe visible GUI windows, record bounded health checkpoints and collect metadata-only Windows wait chains after repeated failed probes. Do not collect process memory or user text. The reported idle hang's root cause remains unconfirmed.

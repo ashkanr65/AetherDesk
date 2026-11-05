@@ -34,6 +34,11 @@ pub enum Icon {
     Send,
     Stop,
     Remove,
+    Host,
+    ApproveOnce,
+    ApproveMessage,
+    ApproveChat,
+    Deny,
 }
 pub fn button(ui: &mut egui::Ui, icon: Icon, label: &str, selected: bool) -> egui::Response {
     button_scaled(ui, icon, label, selected, 1.0)
@@ -263,6 +268,31 @@ pub fn draw(p: &egui::Painter, rect: Rect, icon: Icon, color: Color32) {
         );
     };
     match icon {
+        Icon::Host => {
+            for y in [0.08, 0.55] {
+                border((0.08, y), (0.92, y + 0.36));
+                p.circle_filled(at(0.24, y + 0.18), rect.width() * 0.04, color);
+                line((0.47, y + 0.18), (0.76, y + 0.18));
+            }
+        }
+        Icon::ApproveOnce | Icon::ApproveMessage | Icon::ApproveChat => {
+            if matches!(icon, Icon::ApproveOnce) {
+                p.circle_stroke(rect.center(), rect.width() * 0.43, stroke);
+            } else {
+                if matches!(icon, Icon::ApproveChat) {
+                    border((0.25, 0.06), (0.95, 0.66));
+                }
+                border((0.06, 0.22), (0.78, 0.82));
+                line((0.17, 0.82), (0.17, 0.97));
+                line((0.17, 0.97), (0.34, 0.82));
+            }
+            line((0.24, 0.51), (0.42, 0.69));
+            line((0.42, 0.69), (0.72, 0.35));
+        }
+        Icon::Deny => {
+            line((0.2, 0.2), (0.8, 0.8));
+            line((0.2, 0.8), (0.8, 0.2));
+        }
         Icon::Cpu => {
             border((0.24, 0.24), (0.76, 0.76));
             border((0.37, 0.37), (0.63, 0.63));

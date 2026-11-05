@@ -18,6 +18,20 @@ $x11 = Join-Path $package 'x11'
 if (Test-Path -LiteralPath $x11) { throw "Refusing to overlay an existing X11 bundle: $x11. Use a fresh package directory." }
 New-Item -ItemType Directory -Force -Path $CacheDirectory | Out-Null
 
+function Receive-X11Artifact([string]$Url, [string]$Partial) {
+    $curl = Get-Command 'curl.exe' -ErrorAction SilentlyContinue
+    if ($curl) {
+        & $curl.Source --fail --location --silent --show-error --proto '=https' --proto-redir '=https' --connect-timeout 20 --max-time 600 --speed-limit 1024 --speed-time 60 --output $Partial $Url
+        if ($LASTEXITCODE -ne 0) { throw "HTTPS transfer stopped (curl exit $LASTEXITCODE)." }
+    } else {
+        $previous = [Net.ServicePointManager]::SecurityProtocol
+        try {
+            [Net.ServicePointManager]::SecurityProtocol = $previous -bor [Net.SecurityProtocolType]::Tls12
+            Invoke-WebRequest -Uri $Url -OutFile $Partial -UseBasicParsing -TimeoutSec 600
+        } finally { [Net.ServicePointManager]::SecurityProtocol = $previous }
+    }
+}
+function Wait-X11Retry([int]$Attempt) { Start-Sleep -Seconds ([Math]::Min(8, 2 * $Attempt)) }
 function Get-VerifiedDownload($Artifact, [string]$Name) {
     if ($Artifact.sha256 -notmatch '^[0-9a-f]{64}$' -or $Artifact.url -notlike 'https://*') {
         throw "Invalid pinned X11 artifact: $Name"
@@ -26,7 +40,23 @@ function Get-VerifiedDownload($Artifact, [string]$Name) {
     if (!(Test-Path -LiteralPath $file -PathType Leaf)) {
         $partial = $file + '.' + [guid]::NewGuid().ToString('N') + '.partial'
         try {
-            Invoke-WebRequest -Uri $Artifact.url -OutFile $partial -UseBasicParsing
+            $legacy = Join-Path (Join-Path $env:LOCALAPPDATA 'AetherDesk\build-cache\x11') $Name
+            if ([IO.Path]::GetFullPath($legacy) -ne [IO.Path]::GetFullPath($file) -and
+                (Test-Path -LiteralPath $legacy -PathType Leaf) -and
+                (Get-FileHash -LiteralPath $legacy -Algorithm SHA256).Hash -eq $Artifact.sha256) {
+                Write-Host "Reusing verified X11 cache: $Name"
+                Copy-Item -LiteralPath $legacy -Destination $partial
+            } else {
+                for ($attempt = 1; $attempt -le 4; $attempt++) {
+                    Write-Host "Downloading X11 artifact $Name (attempt $attempt/4)"
+                    try { Receive-X11Artifact $Artifact.url $partial; break } catch {
+                        if ($attempt -eq 4) { throw "Cannot download X11 artifact $Name after 4 attempts. Verified cache files were kept. Retry the build when the connection is available. Last error: $($_.Exception.Message)" }
+                        Write-Warning "X11 download interrupted: $Name. Retrying."
+                        if (Test-Path -LiteralPath $partial) { Remove-Item -LiteralPath $partial }
+                        Wait-X11Retry $attempt
+                    }
+                }
+            }
             if ((Get-FileHash -LiteralPath $partial -Algorithm SHA256).Hash -ne $Artifact.sha256) {
                 throw "Downloaded X11 artifact failed SHA-256 verification: $Name"
             }

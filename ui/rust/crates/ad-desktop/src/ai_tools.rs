@@ -37,6 +37,18 @@ pub fn display_path(path: &Path) -> String {
     text.into_owned()
 }
 impl Workspace {
+    pub fn is_available(&self) -> bool {
+        match self {
+            Self::Local(path) => path.is_dir(),
+            Self::Ssh { session, .. } => !session.is_closed(),
+        }
+    }
+    pub fn instructions(&self) -> String {
+        match self {
+            Self::Local(_) => format!("Target: THIS WINDOWS COMPUTER. Workspace: {}. run_command uses Windows PowerShell 5.1, not Bash or cmd.exe. Preserve $variables and use PowerShell syntax; && is unavailable. Commands run on Windows, never on an SSH host. If the user requests host/server work, ask them to select the host using the workspace control before running commands. Changing the visible tab does not change this workspace.", self.label()),
+            Self::Ssh { .. } => format!("Target: CONNECTED LINUX HOST. Workspace: {}. run_command runs on this host through SSH using sh -lc (POSIX shell), not Windows PowerShell. Use host paths and commands. Changing the visible tab does not change this workspace. Do not inspect Windows files to answer a host question.", self.label()),
+        }
+    }
     pub fn label(&self) -> String {
         match self {
             Self::Local(p) => display_path(p),
@@ -375,6 +387,33 @@ async fn bounded_output(mut input: impl tokio::io::AsyncRead + Unpin) -> Result<
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn windows_commands_preserve_variables_quotes_loops_and_unicode() {
+        let folder = tempfile::tempdir().unwrap();
+        let result = execute_command(
+            Workspace::Local(folder.path().to_owned()),
+            r#"
+$items = @('first', 'second')
+$quoted = 'C:\Program Files\Cadence\a "quoted" path'
+$sum = 0
+foreach ($item in $items) { $sum += $item.Length }
+[Console]::WriteLine(($items -join '|'))
+[Console]::WriteLine($quoted)
+[Console]::WriteLine('literal $item; ñ')
+[Console]::WriteLine($sum)
+"#,
+        )
+        .await
+        .unwrap();
+        assert_eq!(result["exit_status"], 0, "{result}");
+        let output = result["stdout"].as_str().unwrap().replace("\r\n", "\n");
+        assert_eq!(
+            output,
+            "first|second\nC:\\Program Files\\Cadence\\a \"quoted\" path\nliteral $item; ñ\n11\n"
+        );
+        assert_eq!(result["stderr"], "");
+    }
     #[test]
     fn workspace_labels_hide_verbatim_prefixes_without_changing_scope_identity() {
         for (raw, pretty) in [
@@ -433,10 +472,19 @@ pub async fn execute_command(workspace: Workspace, command: &str) -> Result<Valu
             let mut process = tokio::process::Command::new(
                 PathBuf::from(system).join("System32/WindowsPowerShell/v1.0/powershell.exe"),
             );
-            let gated =
-                format!("if ([Console]::In.ReadLine() -ne 'AETHER_RUN') {{ exit 125 }}\n{command}");
+            let gated = format!("if ([Console]::In.ReadLine() -ne 'AETHER_RUN') {{ exit 125 }}\n$OutputEncoding = [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)\n{command}");
+            // Windows PowerShell's native -Command parsing can reinterpret
+            // quotes/backslashes in a CRT-quoted argument. Pass exact UTF-16
+            // source instead, preserving variables and quoted paths verbatim.
+            use base64::Engine;
+            let encoded = base64::engine::general_purpose::STANDARD.encode(
+                gated
+                    .encode_utf16()
+                    .flat_map(u16::to_le_bytes)
+                    .collect::<Vec<_>>(),
+            );
             process
-                .args(["-NoProfile", "-NonInteractive", "-Command", &gated])
+                .args(["-NoProfile", "-NonInteractive", "-EncodedCommand", &encoded])
                 .current_dir(root)
                 .kill_on_drop(true)
                 .stdin(Stdio::piped())
