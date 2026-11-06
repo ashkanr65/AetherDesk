@@ -124,8 +124,21 @@ mod tests {
         assert!(matches!(read(&mut client), wire::Reply::Ready));
         write(&mut client, wire::Request::Stream { active: true });
         assert!(matches!(read(&mut client), wire::Reply::Ack));
+        write(&mut client, wire::Request::Titlebar { enabled: true });
+        assert!(matches!(read(&mut client), wire::Reply::Ack));
         write(&mut client, wire::Request::Select(window));
         assert!(matches!(read(&mut client), wire::Reply::Selected(_)));
+        let wire::Reply::Titlebar {
+            window: owner,
+            image,
+        } = read(&mut client)
+        else {
+            panic!("opted-in stream did not publish its caption before its first picture");
+        };
+        assert_eq!(owner, window);
+        if let Some(image) = image {
+            wire::validate_titlebar(&image).unwrap();
+        }
         assert!(
             matches!(read(&mut client), wire::Reply::Frame { .. }),
             "initial picture needed a poll"
@@ -466,6 +479,7 @@ async fn serve_io(session: &str, input_fd: i32, output_fd: i32) -> Result<(), Er
     let mut pending = None;
     let mut needed = false;
     let mut last_info = None;
+    let mut last_titlebar = None;
     let mut next = tokio::time::Instant::now();
     let mut fallback = next + Duration::from_millis(500);
     let mut heartbeat = next + Duration::from_secs(5);
@@ -510,6 +524,7 @@ async fn serve_io(session: &str, input_fd: i32, output_fd: i32) -> Result<(), Er
                 };
                 if let wire::Reply::Selected(info) = &reply {
                     last_info = Some(info.clone());
+                    last_titlebar = None;
                     needed = true;
                     next = tokio::time::Instant::now();
                 }
@@ -531,8 +546,26 @@ async fn serve_io(session: &str, input_fd: i32, output_fd: i32) -> Result<(), Er
             && needed
             && now >= next
             && !in_flight.load(Ordering::Acquire)
-            && tx.capacity() >= 2
+            && tx.capacity() >= 3
         {
+            if mirror.want_titlebar {
+                let window = mirror.selected.as_ref().unwrap().id;
+                match mirror.titlebar_image() {
+                    Ok(image) => {
+                        let current = (window, image);
+                        if last_titlebar.as_ref() != Some(&current) {
+                            tx.try_send(wire::Reply::Titlebar {
+                                window,
+                                image: current.1.clone(),
+                            })
+                            .map_err(|_| "Application output overflow")?;
+                            last_titlebar = Some(current);
+                        }
+                    }
+                    Err(error) if window_disappeared(&error, window) => {}
+                    Err(error) => return Err(error),
+                }
+            }
             let reply = match mirror.frame() {
                 Ok(reply) => reply,
                 Err(error) => {
@@ -572,7 +605,7 @@ async fn serve_io(session: &str, input_fd: i32, output_fd: i32) -> Result<(), Er
             && needed
             && mirror.selected.is_some()
             && !in_flight.load(Ordering::Acquire)
-            && tx.capacity() >= 2
+            && tx.capacity() >= 3
         {
             next.max(now + Duration::from_millis(1))
         } else {

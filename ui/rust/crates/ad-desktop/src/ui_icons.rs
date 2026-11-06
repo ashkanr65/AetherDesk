@@ -19,6 +19,7 @@ pub enum Icon {
     SecureKeys,
     Disconnect,
     EndSession,
+    CloseApplication,
     TerminalSettings,
     Attach,
     Filter,
@@ -56,7 +57,7 @@ pub fn button_scaled(
         ui.allocate_exact_size(egui::vec2(28.0, 28.0) * scale, egui::Sense::click());
     let visuals = ui.style().interact(&response);
     let palette = crate::theme::colors(ui.visuals().dark_mode);
-    let destructive = matches!(icon, Icon::EndSession);
+    let destructive = matches!(icon, Icon::EndSession | Icon::CloseApplication);
     let danger_hover = destructive
         && response.enabled()
         && (response.hovered() || response.is_pointer_button_down_on());
@@ -503,6 +504,10 @@ pub fn draw(p: &egui::Painter, rect: Rect, icon: Icon, color: Color32) {
                 stroke,
             ));
             line((0.5, 0.04), (0.5, 0.5));
+        }
+        Icon::CloseApplication => {
+            line((0.22, 0.22), (0.78, 0.78));
+            line((0.78, 0.22), (0.22, 0.78));
         }
         Icon::TerminalSettings => {
             border((0.04, 0.15), (0.96, 0.88));

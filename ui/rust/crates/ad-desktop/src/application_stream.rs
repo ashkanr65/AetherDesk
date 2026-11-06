@@ -42,7 +42,19 @@ pub(super) async fn run(
         drop(stream);
         return legacy(open(&target).await?, &mut commands, state, ctx).await;
     }
-    state.lock().streaming = true;
+    write(&mut stream, &Request::Titlebar { enabled: true }).await?;
+    let titlebar = tokio::time::timeout(Duration::from_secs(3), read(&mut stream)).await;
+    if !matches!(titlebar, Ok(Ok(Reply::Ack))) {
+        // Older retained agents know streaming but not host decorations. Keep
+        // the legacy view/close semantics instead of sending unknown actions.
+        drop(stream);
+        return legacy(open(&target).await?, &mut commands, state, ctx).await;
+    }
+    {
+        let mut s = state.lock();
+        s.streaming = true;
+        s.host_titlebar = true;
+    }
     let (mut receive, send) = tokio::io::split(stream);
     let writer = tokio::spawn(outbound(send, commands));
     let _guard = Abort(writer.abort_handle());

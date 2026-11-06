@@ -9,6 +9,7 @@ pub const MAGIC: &[u8; 8] = b"ADWIN002";
 pub const MAX_PACKET: usize = 36 * 1024 * 1024;
 pub const MAX_PIXELS: usize = 8_388_608;
 pub const MAX_WINDOWS: usize = 256;
+pub const MAX_TITLEBAR_HEIGHT: u32 = 256;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WindowInfo {
@@ -91,6 +92,20 @@ pub enum Request {
     /// Opt in to unsolicited, ordered image/metadata updates. Also a lease heartbeat.
     Stream {
         active: bool,
+    },
+    /// Opt in before selection; old runtimes can be retried without this extension.
+    Titlebar {
+        enabled: bool,
+    },
+    /// A complete primary click in the last displayed host decoration strip.
+    TitlebarClick {
+        window: u32,
+        x: u32,
+        y: u32,
+    },
+    /// Graceful close for a client without window-manager decorations.
+    CloseApplication {
+        window: u32,
     },
 }
 
@@ -216,6 +231,24 @@ pub enum Reply {
     Metadata(WindowInfo),
     /// A stream's selected view ended; input errors alone do not close a view.
     ViewClosed(String),
+    /// Independently bounded, full decoration image for the selected client.
+    Titlebar {
+        window: u32,
+        image: Option<Popup>,
+    },
+}
+
+pub fn validate_titlebar(image: &Popup) -> Result<(), &'static str> {
+    dimensions(image.width, image.height)?;
+    if image.window == 0
+        || image.height > MAX_TITLEBAR_HEIGHT
+        || image.x < 0
+        || image.x > 1024
+        || image.y != 0
+    {
+        return Err("Invalid application title bar");
+    }
+    Ok(())
 }
 
 pub fn dimensions(width: u32, height: u32) -> Result<usize, &'static str> {
@@ -354,6 +387,46 @@ pub fn decode_tiles(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn host_titlebar_packets_are_opt_in_bounded_and_separate_from_view_stop() {
+        for request in [
+            Request::Titlebar { enabled: true },
+            Request::TitlebarClick {
+                window: 8,
+                x: 90,
+                y: 12,
+            },
+            Request::CloseApplication { window: 8 },
+        ] {
+            assert!(!batchable(&request));
+            assert!(WindowInput::try_from(request.clone()).is_err());
+            assert_eq!(
+                encode(&decode::<Request>(&encode(&request).unwrap()).unwrap()).unwrap(),
+                encode(&request).unwrap()
+            );
+        }
+        assert!(matches!(
+            decode::<Request>(&encode(&Request::Stop).unwrap()).unwrap(),
+            Request::Stop
+        ));
+        let mut image = Popup {
+            window: 99,
+            x: 4,
+            y: 0,
+            width: 800,
+            height: 24,
+            tiles: Vec::new(),
+        };
+        validate_titlebar(&image).unwrap();
+        image.height = MAX_TITLEBAR_HEIGHT + 1;
+        assert!(validate_titlebar(&image).is_err());
+        image.height = 24;
+        image.x = -1;
+        assert!(validate_titlebar(&image).is_err());
+        image.x = 0;
+        image.window = 0;
+        assert!(validate_titlebar(&image).is_err());
+    }
     #[test]
     fn streaming_extensions_preserve_legacy_discriminants_and_metadata() {
         assert_eq!(encode(&Request::Poll).unwrap(), 2u32.to_le_bytes());

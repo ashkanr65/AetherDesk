@@ -66,7 +66,8 @@ pub fn save_index(chats: &[Chat]) -> Result<(), String> {
         "id":c.id,"title":c.title,"workspace_id":c.workspace_id,"workspace_label":c.workspace_label,
         "provider_id":c.provider_id,"model":c.model,"draft":c.draft,
         "context_tokens":c.context_tokens,"output_tokens":c.output_tokens,"use_tools":c.use_tools,
-        "reasoning":c.reasoning,"reasoning_tokens":c.reasoning_tokens,"nvidia_thinking":c.nvidia_thinking
+        "reasoning":c.reasoning,"reasoning_tokens":c.reasoning_tokens,"nvidia_thinking":c.nvidia_thinking,
+        "codex_thread":c.codex_thread,"codex_workspace":c.codex_workspace
     })).collect::<Vec<_>>();
     crate::storage::write_json("ai-history-index.json", &serde_json::json!(index))
 }

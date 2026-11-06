@@ -20,6 +20,12 @@ Preferences > Display; renderer changes require restarting the application.
 Connections need a reachable host and suitable credentials. AI providers use
 the user's service configuration and may have their own charges.
 
+From Build 9, you can also use an installed, signed-in Codex directly inside
+AetherDesk's AI Assistant. Choose **Use Codex in AetherDesk** under Preferences
+> AI Assistant, then select a model and workspace. See
+[Codex in AetherDesk](docs/codex-in-aetherdesk.md) for setup, approvals and the
+optional external connector.
+
 ## Preferences
 
 Open the top-right gear menu and choose **Preferences**. Categories include

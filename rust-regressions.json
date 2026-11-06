@@ -3997,6 +3997,30 @@
         {
           "phase": "windows",
           "package": "ad-desktop",
+          "source": "ui/rust/crates/ad-desktop/src/application_titlebar.rs",
+          "test": "host_caption_clicks_keep_coordinates_across_dpi_and_resize_and_reject_outside"
+        },
+        {
+          "phase": "windows",
+          "package": "ad-desktop",
+          "source": "ui/rust/crates/ad-desktop/src/application_titlebar.rs",
+          "test": "host_caption_uses_one_row_and_clicks_the_host_without_closing_the_view"
+        },
+        {
+          "phase": "windows",
+          "package": "ad-desktop",
+          "source": "ui/rust/crates/ad-desktop/src/application_frames.rs",
+          "test": "host_titlebar_packets_validate_selection_and_publish_atomically"
+        },
+        {
+          "phase": "linux",
+          "package": "ad-stream-protocol",
+          "source": "core/rust/crates/ad-stream-protocol/src/window_stream.rs",
+          "test": "host_titlebar_packets_are_opt_in_bounded_and_separate_from_view_stop"
+        },
+        {
+          "phase": "windows",
+          "package": "ad-desktop",
           "source": "ui/rust/crates/ad-desktop/src/remote_applications.rs",
           "test": "retained_application_view_initializes_pointer_without_clicks_or_modifiers"
         },
@@ -4143,6 +4167,24 @@
           "package": "ad-desktop",
           "source": "ui/rust/crates/ad-desktop/src/remote_application_worker.rs",
           "test": "only_legacy_focus_notices_are_silent"
+        },
+        {
+          "phase": "windows",
+          "package": "ad-desktop",
+          "source": "ui/rust/crates/ad-desktop/src/window_dpi.rs",
+          "test": "native_offscreen_recovery_waits_for_drag_end_and_returns_its_title_to_a_monitor"
+        },
+        {
+          "phase": "windows",
+          "package": "ad-desktop",
+          "source": "ui/rust/crates/ad-desktop/src/window_dpi.rs",
+          "test": "removed_monitors_recover_left_above_and_oversized_windows_without_moving_reachable_titles"
+        },
+        {
+          "phase": "windows",
+          "package": "ad-desktop",
+          "source": "ui/rust/crates/ad-desktop/src/window_dpi.rs",
+          "test": "topology_changes_fit_oversized_windows_but_preserve_intentional_multi_monitor_spans"
         }
       ],
       "liveAcceptance": "R6 source uses native physical monitor geometry and window placement, mixed DPI/negative origins, full host layouts on every tab/current/all transition, even/protocol-bounded sizes and unplugged-device fallback. Compile and verify host window repositioning, pointer alignment and hotplug under R12. Selected-window mirror remains a local prototype: verify exact colours under occlusion, focus/keyboard/mouse and resize, disposal without app termination, tab switching and connection-specific VPN. Window-family dialogs, native keyboard capture, hidden-original behavior and measured latency remain incomplete. Verify owned-menu focus, live host resize/text pointer shapes in tab/current/all modes, detached mixed-DPI dragging. Keeping a minimized original live still requires true-detachment architecture and is not implemented."
@@ -4875,6 +4917,12 @@
           "package": "ad-desktop",
           "source": "ui/rust/crates/ad-desktop/src/profile_store.rs",
           "test": "profile_import_export_preserves_consent_and_never_overwrites_or_reuses_credentials"
+        },
+        {
+          "phase": "windows",
+          "package": "ad-desktop",
+          "source": "ui/rust/crates/ad-desktop/src/codex_protocol.rs",
+          "test": "connector_credentials_are_windows_user_protected_and_damage_is_rejected"
         }
       ],
       "liveAcceptance": "Native Credential Manager store/forget and username consent implemented in a separate namespace. Existing production credential import/namespace compatibility remains."
@@ -5067,6 +5115,12 @@
           "package": "ad-desktop",
           "source": "ui/rust/crates/ad-desktop/src/assistant.rs",
           "test": "provider_response_limits_default_for_older_services_and_round_trip_independently"
+        },
+        {
+          "phase": "windows",
+          "package": "ad-desktop",
+          "source": "ui/rust/crates/ad-desktop/src/codex_protocol.rs",
+          "test": "connector_framing_preserves_split_utf8_and_rejects_oversized_or_truncated_messages"
         }
       ],
       "liveAcceptance": "HTTPS/loopback policy, no redirects, native TLS, endpoint normalization and bounded requests added; run provider fixtures/live checks."
@@ -5253,6 +5307,18 @@
           "package": "ad-desktop",
           "source": "ui/rust/crates/ad-desktop/src/assistant.rs",
           "test": "approval_controls_stay_on_one_line_at_narrow_widths_and_large_fonts"
+        },
+        {
+          "phase": "windows",
+          "package": "ad-desktop",
+          "source": "ui/rust/crates/ad-desktop/src/codex_connector.rs",
+          "test": "local_reads_stay_in_the_shared_root_and_writes_require_a_physical_approval_click"
+        },
+        {
+          "phase": "windows",
+          "package": "ad-desktop",
+          "source": "ui/rust/crates/ad-desktop/src/codex_connector.rs",
+          "test": "connector_authentication_rejects_tampering_and_other_instances"
         }
       ],
       "liveAcceptance": "Action/message/chat grants consumed by native UI and execution path; revoke on workspace/history changes and never serialize grants."
@@ -5517,6 +5583,18 @@
           "package": "ad-desktop",
           "source": "ui/rust/crates/ad-desktop/src/ai_tools.rs",
           "test": "windows_commands_preserve_variables_quotes_loops_and_unicode"
+        },
+        {
+          "phase": "windows",
+          "package": "ad-desktop",
+          "source": "ui/rust/crates/ad-desktop/src/codex_connector.rs",
+          "test": "connector_shares_are_explicit_and_revocation_cancels_pending_actions"
+        },
+        {
+          "phase": "windows",
+          "package": "ad-desktop",
+          "source": "ui/rust/crates/ad-desktop/src/codex_chat.rs",
+          "test": "codex_actions_refuse_other_workspaces_and_denials_without_running_commands"
         }
       ],
       "liveAcceptance": "Windows/SSH scope and revision checks, no local fallback, Windows jobs and R1 leased SSH process-group cleanup implemented. Verify canonical scopes, connection-loss cleanup and races live; deliberately daemonized services need their own stop."
@@ -5643,6 +5721,24 @@
           "package": "ad-desktop",
           "source": "ui/rust/crates/ad-desktop/src/assistant_selection.rs",
           "test": "drag_wheel_and_edge_scrolling_keep_an_offscreen_chat_anchor_and_copy_unicode"
+        },
+        {
+          "phase": "windows",
+          "package": "ad-desktop",
+          "source": "ui/rust/crates/ad-desktop/src/codex_chat.rs",
+          "test": "codex_input_keeps_images_separate_and_catalog_keeps_explicit_workspace_ids"
+        },
+        {
+          "phase": "windows",
+          "package": "ad-desktop",
+          "source": "ui/rust/crates/ad-desktop/src/assistant.rs",
+          "test": "service_actions_stay_in_one_bounded_row_with_equal_heights"
+        },
+        {
+          "phase": "windows",
+          "package": "ad-desktop",
+          "source": "ui/rust/crates/ad-desktop/src/assistant.rs",
+          "test": "codex_models_replace_placeholder_and_are_visible_and_selectable_in_both_pickers"
         }
       ],
       "liveAcceptance": "Per-chat provider/model, draft, local workspace, reasoning, tool and token-budget state restore; remote scope requires the matching live connection."
@@ -5733,9 +5829,21 @@
           "package": "ad-desktop",
           "source": "ui/rust/crates/ad-desktop/src/main.rs",
           "test": "application_actions_preserve_workspace_and_reject_closed_connection_identities"
+        },
+        {
+          "phase": "windows",
+          "package": "ad-desktop",
+          "source": "ui/rust/crates/ad-desktop/src/codex_protocol.rs",
+          "test": "catalog_is_explicit_and_rejects_unknown_oversized_and_ambiguous_targets"
+        },
+        {
+          "phase": "windows",
+          "package": "ad-desktop",
+          "source": "ui/rust/crates/ad-desktop/src/codex_connector.rs",
+          "test": "authenticated_gui_transport_handles_results_cancellation_and_descriptor_ownership"
         }
       ],
-      "liveAcceptance": "Approved list/select connections, open files/folders, panels, terminal text and screen capture; actions use current identities without changing AI workspace."
+      "liveAcceptance": "Approved list/select connections, open files/folders, panels, terminal text and screen capture; actions use current identities without changing AI workspace. Embedded Codex: verify installed CLI/account availability, model discovery, streamed replies, resumed chats, Stop/new chat, image inputs and explicit workspace/action approvals; verify optional external MCP access independently."
     },
     {
       "id": "tools.manifests",
@@ -6297,6 +6405,12 @@
           "package": "ad-desktop",
           "source": "ui/rust/crates/ad-desktop/src/server_clock.rs",
           "test": "clock_uses_server_response_and_closes_its_non_terminal_channel"
+        },
+        {
+          "phase": "windows",
+          "package": "ad-desktop",
+          "source": "ui/rust/crates/ad-desktop/src/main.rs",
+          "test": "connection_status_and_clock_are_centred_in_the_actual_bottom_row"
         }
       ],
       "liveAcceptance": "Verify the selected SSH, SSH+X11, SFTP and desktop connection shows server-local time and clears on disconnect, server silence and tab changes. Clock probes show SSH liveness, not health of every remote application."
@@ -6343,6 +6457,12 @@
         {
           "phase": "offline",
           "script": "tools/rust-build-kit/test_monitoring_collector.py"
+        },
+        {
+          "phase": "windows",
+          "package": "ad-desktop",
+          "source": "ui/rust/crates/ad-desktop/src/monitoring.rs",
+          "test": "compact_monitoring_text_is_vertically_centred_in_the_actual_bar"
         }
       ],
       "liveAcceptance": "Compile registered monitoring tests, then verify Linux system readings, stale/disconnected states, stacked layout at narrow widths/large fonts, popup footer visibility, licence users/features/machines/aliases and friendly labels against real lmstat output. Verify custom Text/Value/JSON-table checks only run for their selected saved connection, never enter PTY history, cancel on hiding/disconnect and remain isolated across VPN routes. Test restart persistence and optional compact status bar. No real-server or native UI acceptance is claimed by offline fixtures."

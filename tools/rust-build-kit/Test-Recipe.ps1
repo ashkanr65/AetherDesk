@@ -576,6 +576,9 @@ exit $Result
     $image[64]=80; $image[65]=69; $image[68]=100; $image[69]=134
     $exe = Join-Path $package 'AetherDesk.exe'
     [IO.File]::WriteAllBytes($exe,$image)
+    $companion=Join-Path $package 'aetherdesk-codex.exe'
+    [IO.File]::WriteAllBytes($companion,$image)
+    [IO.File]::WriteAllText((Join-Path $package 'verification/codex-connector.json'),(@{handshakePassed=$true;toolCatalogPassed=$true;disabledAccessPassed=$true;boundedInputPassed=$true;liveHostAcceptancePassed=$false;executableSha256=(Get-FileHash -LiteralPath $companion -Algorithm SHA256).Hash}|ConvertTo-Json))
     foreach ($name in @('Cargo.lock','READ-ME-FIRST.txt','THIRD-PARTY-NOTICES.txt')) {
         [IO.File]::WriteAllText((Join-Path $package $name),'offline fixture')
     }

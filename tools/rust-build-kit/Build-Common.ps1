@@ -432,6 +432,7 @@ function Copy-DependencyNotices([string]$Manifest,[string]$Destination) {
     [IO.File]::WriteAllLines((Join-Path $Destination 'THIRD-PARTY-NOTICES.txt'),$notices,[Text.UTF8Encoding]::new($false))
 }
 function Verify-RustPackage([string]$Package,[switch]$BeforeX11) {
+    if (!(Test-Path -LiteralPath (Join-Path $Package 'aetherdesk-codex.exe') -PathType Leaf)) { throw 'The native Codex companion is missing.' }
     foreach ($relative in @('x11\vcxsrv.exe','x11\xauth.exe','x11\xkbcomp.exe','x11\fonts\misc\fonts.dir','x11\xkbdata\rules\base','gst-plugin-scanner.exe','gstreamer-1.0','agent\linux-x86_64\version.txt')) {
         if (!(Test-Path -LiteralPath (Join-Path $Package $relative))) { throw "Missing native connection runtime: $relative" }
     }
@@ -444,6 +445,9 @@ function Verify-RustPackage([string]$Package,[switch]$BeforeX11) {
         if($result.compilerTestsPassed -ne $true -or $result.liveAcceptancePassed -ne $false -or $result.replacementReady -ne $false -or $result.required -lt 1 -or $result.registered -lt $result.required -or $result.catalogSha256 -ne $catalogHash){throw 'Package regression results do not match its catalog.'}
     }
     if(!$BeforeX11){
+        $connector=Get-Content -LiteralPath (Join-Path $Package 'verification/codex-connector.json') -Raw|ConvertFrom-Json
+        $connectorHash=(Get-FileHash -LiteralPath (Join-Path $Package 'aetherdesk-codex.exe') -Algorithm SHA256).Hash
+        if($connector.handshakePassed -ne $true -or $connector.toolCatalogPassed -ne $true -or $connector.disabledAccessPassed -ne $true -or $connector.boundedInputPassed -ne $true -or $connector.liveHostAcceptancePassed -ne $false -or $connector.executableSha256 -ne $connectorHash){throw 'Package Codex connector evidence is invalid.'}
         $x11=Get-Content -LiteralPath (Join-Path $Package 'verification/x11-runtime.json') -Raw|ConvertFrom-Json
         if($x11.bundledX11TestPassed -ne $true -or $x11.liveAcceptancePassed -ne $false -or $x11.replacementReady -ne $false){throw 'Package bundled X11 test evidence is invalid.'}
     }

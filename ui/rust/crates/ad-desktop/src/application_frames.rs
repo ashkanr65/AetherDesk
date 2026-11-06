@@ -92,7 +92,41 @@ pub(super) fn accept(
             s.selected = Some(window);
             s.image = None;
             s.popups.clear();
+            s.titlebar = None;
             s.error = None;
+        }
+        Reply::Titlebar { window, image } => {
+            let old = state.lock().clone();
+            if !old.host_titlebar || !old.selected.as_ref().is_some_and(|w| w.id == window) {
+                return Err("Title bar belongs to another application".into());
+            }
+            let titlebar = if let Some(info) = image {
+                wire::validate_titlebar(&info)?;
+                let image = if let Some(previous) = old.titlebar.as_ref().filter(|p| p.info == info)
+                {
+                    previous.image.clone()
+                } else {
+                    let bytes = wire::apply_frame(
+                        None,
+                        1,
+                        None,
+                        info.width,
+                        info.height,
+                        info.tiles.clone(),
+                    )?;
+                    Arc::new(egui::ColorImage::new(
+                        [info.width as usize, info.height as usize],
+                        bytes
+                            .chunks_exact(4)
+                            .map(|p| egui::Color32::from_rgb(p[2], p[1], p[0]))
+                            .collect(),
+                    ))
+                };
+                Some(PopupState { info, image })
+            } else {
+                None
+            };
+            state.lock().titlebar = titlebar;
         }
         Reply::Metadata(mut window) => {
             wire::dimensions(window.width, window.height)?;
@@ -186,6 +220,7 @@ pub(super) fn accept(
                 s.selected = None;
                 s.image = None;
                 s.popups.clear();
+                s.titlebar = None;
             }
         }
         Reply::ViewClosed(error) => {
@@ -194,6 +229,7 @@ pub(super) fn accept(
             s.selected = None;
             s.image = None;
             s.popups.clear();
+            s.titlebar = None;
         }
         Reply::Ack | Reply::Idle => return Ok(false),
     }
@@ -203,6 +239,74 @@ pub(super) fn accept(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn host_titlebar_packets_validate_selection_and_publish_atomically() {
+        let state = Arc::new(Mutex::new(State {
+            host_titlebar: true,
+            selected: Some(wire::WindowInfo {
+                id: 7,
+                title: "Editor".into(),
+                width: 2,
+                height: 1,
+                transient_for: None,
+            }),
+            ..Default::default()
+        }));
+        let info = wire::Popup {
+            window: 77,
+            x: 4,
+            y: 0,
+            width: 2,
+            height: 1,
+            tiles: vec![ad_stream_protocol::lossless::LosslessTile::encode(
+                ad_stream_protocol::Rectangle {
+                    x: 0,
+                    y: 0,
+                    width: 2,
+                    height: 1,
+                },
+                vec![12, 34, 56, 255, 12, 34, 56, 255],
+            )
+            .unwrap()],
+        };
+        assert!(accept(
+            &state,
+            Reply::Titlebar {
+                window: 8,
+                image: Some(info.clone())
+            },
+            None
+        )
+        .is_err());
+        accept(
+            &state,
+            Reply::Titlebar {
+                window: 7,
+                image: Some(info.clone()),
+            },
+            None,
+        )
+        .unwrap();
+        let before = state.lock().titlebar.as_ref().unwrap().image.clone();
+        assert_eq!(before.pixels[0], egui::Color32::from_rgb(56, 34, 12));
+        let mut broken = info;
+        broken.tiles.clear();
+        assert!(accept(
+            &state,
+            Reply::Titlebar {
+                window: 7,
+                image: Some(broken)
+            },
+            None
+        )
+        .is_err());
+        assert!(Arc::ptr_eq(
+            &before,
+            &state.lock().titlebar.as_ref().unwrap().image
+        ));
+        accept(&state, Reply::ViewClosed("Closed".into()), None).unwrap();
+        assert!(state.lock().titlebar.is_none());
+    }
     use ad_stream_protocol::{lossless::LosslessTile, Rectangle};
     #[test]
     fn sparse_frames_preserve_exact_colours_and_reuse_unchanged_tiles_across_skipped_paints() {

@@ -42,9 +42,9 @@ try {
         3 {
             $null = Require-Record 2 $fingerprint
             $snapshot = (Require-Record 1 $fingerprint).output
-            Invoke-StepTool 'cargo.exe' @('build','--locked','--release','--manifest-path',(Join-Path $snapshot 'ui\rust\Cargo.toml'),'-p','ad-desktop','--bin','aetherdesk','--target','x86_64-pc-windows-msvc')
+            Invoke-StepTool 'cargo.exe' @('build','--locked','--release','--manifest-path',(Join-Path $snapshot 'ui\rust\Cargo.toml'),'-p','ad-desktop','--bins','--target','x86_64-pc-windows-msvc')
             $result = Join-Path $targetRoot 'x86_64-pc-windows-msvc\release\AetherDesk.exe'
-            $files = @($result)
+            $files = @($result,(Join-Path $targetRoot 'x86_64-pc-windows-msvc\release\aetherdesk-codex.exe'))
         }
         4 {
             $binary = (Require-Record 3 $fingerprint).output
@@ -52,6 +52,7 @@ try {
             $result = Join-Path $packagesRoot ('AetherDesk-' + $release.version + '-build' + $release.build + '_' + $stamp)
             New-Item -ItemType Directory -Path $result | Out-Null
             Copy-Item -LiteralPath $binary -Destination (Join-Path $result 'AetherDesk.exe')
+            Copy-Item -LiteralPath (Join-Path (Split-Path $binary -Parent) 'aetherdesk-codex.exe') -Destination (Join-Path $result 'aetherdesk-codex.exe')
             foreach ($name in @('release.json','LICENSE','LICENSE-MIT','LICENSE-APACHE')) {
                 Copy-Item -LiteralPath (Join-Path $snapshot $name) -Destination (Join-Path $result $name)
             }
@@ -74,6 +75,8 @@ try {
             # Exercise the production native manager against the newly bundled
             # server before either distributable can be marked complete.
             Test-NativeX11Runtime $snapshot $result
+            $python=Get-Command 'python.exe' -ErrorAction Stop
+            Invoke-StepTool $python.Source @((Join-Path $snapshot 'tools\rust-build-kit\test_codex_connector.py'),'--executable',(Join-Path $result 'aetherdesk-codex.exe'),'--report',(Join-Path $result 'verification\codex-connector.json'))
             Verify-RustPackage $result
             $files = @(Get-ChildItem -LiteralPath $result -Recurse -File | Select-Object -ExpandProperty FullName)
             Set-Content -LiteralPath (Join-Path $outputRoot 'LATEST-FOLDER.txt') -Value $result -Encoding UTF8

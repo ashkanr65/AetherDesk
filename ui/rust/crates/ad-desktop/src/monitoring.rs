@@ -546,42 +546,60 @@ impl Panel {
                 ));
             }
         }
-        let height = ui.available_height().max(28.0);
-        let width = (ui.available_width() - height).max(1.0);
+        let rect = ui.available_rect_before_wrap();
+        let height = rect.height().max(1.0);
+        let width = (rect.width() - height).max(1.0);
         let mut open_panel = false;
-        ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
-        ui.horizontal(|ui| {
-            ui.allocate_ui_with_layout(
-                egui::vec2(width, height),
-                egui::Layout::left_to_right(egui::Align::Center),
-                |ui| {
-                    egui::ScrollArea::horizontal()
-                        .id_salt("monitoring-compact-scroll")
-                        .max_width(width)
-                        .max_height(height)
-                        .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
-                        .auto_shrink([false, false])
-                        .show(ui, |ui| {
-                            ui.horizontal(|ui| {
-                                for (icon, text, tooltip, width, monitor) in items {
-                                    if metric_segment(ui, icon, &text, &tooltip, width, height)
-                                        .clicked()
-                                    {
-                                        if let Some(monitor) = monitor {
-                                            self.details = Some(monitor);
-                                        } else {
-                                            open_panel = true;
-                                        }
-                                    }
+        let mut metrics = ui.new_child(
+            egui::UiBuilder::new()
+                .id_salt("compact-metrics")
+                .max_rect(egui::Rect::from_min_size(
+                    rect.min,
+                    egui::vec2(width, height),
+                ))
+                .layout(egui::Layout::top_down(egui::Align::Min)),
+        );
+        metrics.set_clip_rect(metrics.max_rect().intersect(ui.clip_rect()));
+        metrics.spacing_mut().item_spacing = egui::Vec2::ZERO;
+        egui::ScrollArea::horizontal()
+            .id_salt("monitoring-compact-scroll")
+            .max_width(width)
+            .max_height(height)
+            .min_scrolled_height(height)
+            .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
+            .auto_shrink([false, false])
+            .show(&mut metrics, |ui| {
+                let total = items.iter().map(|item| item.3).sum::<f32>().max(width);
+                ui.allocate_ui_with_layout(
+                    egui::vec2(total, height),
+                    egui::Layout::left_to_right(egui::Align::Min),
+                    |ui| {
+                        ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
+                        for (icon, text, tooltip, width, monitor) in items {
+                            if metric_segment(ui, icon, &text, &tooltip, width, height).clicked() {
+                                if let Some(monitor) = monitor {
+                                    self.details = Some(monitor);
+                                } else {
+                                    open_panel = true;
                                 }
-                            });
-                        });
-                },
-            );
-            if metric_segment(ui, Icon::NewChat, "", "Add monitor", height, height).clicked() {
-                self.add_open = true;
-            }
-        });
+                            }
+                        }
+                    },
+                );
+            });
+        let mut add = ui.new_child(
+            egui::UiBuilder::new()
+                .id_salt("compact-add")
+                .max_rect(egui::Rect::from_min_max(
+                    egui::pos2(rect.right() - height, rect.top()),
+                    rect.max,
+                ))
+                .layout(egui::Layout::left_to_right(egui::Align::Min)),
+        );
+        if metric_segment(&mut add, Icon::NewChat, "", "Add monitor", height, height).clicked() {
+            self.add_open = true;
+        }
+        ui.allocate_rect(rect, egui::Sense::hover());
         open_panel
     }
     fn system(&self, slow: bool) -> Option<&data::System> {
@@ -1485,6 +1503,60 @@ fn render_data(ui: &mut egui::Ui, value: &Data, filters: &Filters, limit: usize)
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn compact_monitoring_text_is_vertically_centred_in_the_actual_bar() {
+        let root = tempfile::tempdir().unwrap();
+        crate::storage::with_test_root(root.path(), || {
+            for font in [13.0, 22.0] {
+                let ctx = egui::Context::default();
+                ctx.style_mut(|style| {
+                    style
+                        .text_styles
+                        .insert(egui::TextStyle::Body, egui::FontId::proportional(font));
+                });
+                let mut panel = Panel::default();
+                for pass in 0..3 {
+                    let mut bounds = egui::Rect::NOTHING;
+                    let output = ctx.run(
+                        egui::RawInput {
+                            screen_rect: Some(egui::Rect::from_min_size(
+                                egui::Pos2::ZERO,
+                                egui::vec2(900.0, 500.0),
+                            )),
+                            ..Default::default()
+                        },
+                        |ctx| {
+                            bounds = egui::TopBottomPanel::bottom("monitor-row-fixture")
+                                .frame(
+                                    egui::Frame::side_top_panel(&ctx.style())
+                                        .inner_margin(egui::Margin::ZERO),
+                                )
+                                .exact_height((font + 16.0).max(28.0))
+                                .show(ctx, |ui| panel.compact(ui))
+                                .response
+                                .rect;
+                        },
+                    );
+                    if pass > 0 {
+                        let mut count = 0;
+                        for shape in output.shapes {
+                            if let egui::epaint::Shape::Text(text) = shape.shape {
+                                count += 1;
+                                assert!(
+                                    (text.pos.y + text.galley.size().y / 2.0 - bounds.center().y)
+                                        .abs()
+                                        < 1.0,
+                                    "metric text escaped the vertical centre: {bounds:?}, {:?}",
+                                    text.pos
+                                );
+                            }
+                        }
+                        assert!(count > 0);
+                    }
+                }
+            }
+        });
+    }
     #[test]
     fn monitoring_settings_preserve_scopes_and_corrupt_files() {
         let root = tempfile::tempdir().unwrap();

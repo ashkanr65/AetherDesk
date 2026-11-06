@@ -269,6 +269,7 @@ pub enum Action {
     Assistant,
     Updates,
     Logs,
+    Codex,
 }
 pub struct Panel {
     pub settings: Settings,
@@ -601,6 +602,9 @@ impl Panel {
                 ui.label("Manage services, models, workspace, message limits and tool permissions in the assistant's own preferences.");
                 if ui.button("Open AI Assistant preferences").clicked() {
                     return Some(Action::Assistant);
+                }
+                if ui.button("Use Codex in AetherDesk").clicked() {
+                    return Some(Action::Codex);
                 }
                 ui.label("API keys stay in the protected credential store; themes and application preferences do not export them.");
             }

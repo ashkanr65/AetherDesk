@@ -12,6 +12,8 @@ use std::sync::{Arc, Mutex};
 use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 use zeroize::{Zeroize, Zeroizing};
+#[path = "codex_chat.rs"]
+mod codex_chat;
 #[path = "assistant_selection.rs"]
 mod text_selection;
 #[path = "assistant_transcript.rs"]
@@ -113,6 +115,10 @@ pub(crate) struct Chat {
     pub(crate) reasoning_tokens: u32,
     #[serde(default)]
     pub(crate) nvidia_thinking: bool,
+    #[serde(default)]
+    pub(crate) codex_thread: String,
+    #[serde(default)]
+    pub(crate) codex_workspace: String,
     #[serde(skip)]
     pub(crate) loaded: bool,
 }
@@ -151,6 +157,10 @@ enum Event {
     Delta(String),
     Checkpoint(Vec<Value>),
     Done(Result<(), String>),
+    CodexThread {
+        id: String,
+        workspace: String,
+    },
     Approval {
         name: String,
         args: Value,
@@ -287,6 +297,10 @@ pub struct Assistant {
     local_root: String,
     services: bool,
     settings_open: bool,
+    codex_requested: bool,
+    codex_catalog_checked: bool,
+    model_refreshes: std::collections::HashSet<String>,
+    model_errors: std::collections::HashMap<String, String>,
     editing_service: Option<String>,
     composer_model_query: String,
     composer_height: f32,
@@ -325,6 +339,8 @@ fn new_chat() -> Chat {
         reasoning: None,
         reasoning_tokens: 0,
         nvidia_thinking: false,
+        codex_thread: String::new(),
+        codex_workspace: String::new(),
         loaded: true,
     }
 }
@@ -352,6 +368,10 @@ impl Default for Assistant {
             local_root,
             services: false,
             settings_open: false,
+            codex_requested: false,
+            codex_catalog_checked: false,
+            model_refreshes: Default::default(),
+            model_errors: Default::default(),
             editing_service: None,
             composer_model_query: String::new(),
             composer_height: 142.0,
@@ -443,6 +463,64 @@ fn model_provider_heading(ui: &mut egui::Ui, label: &str, base: &str) -> egui::R
     })
     .inner
     .on_hover_text(format!("{label}\n{base}"))
+}
+fn service_buttons(
+    ui: &mut egui::Ui,
+    busy: bool,
+    codex: bool,
+    loading: bool,
+) -> [egui::Response; 4] {
+    let height = (ui.text_style_height(&egui::TextStyle::Button) + 10.0)
+        .max(ui.spacing().interact_size.y)
+        .max(28.0);
+    let (row, _) = ui.allocate_exact_size(
+        egui::vec2(ui.available_width(), height),
+        egui::Sense::hover(),
+    );
+    let gap = ui.spacing().item_spacing.x.min(6.0);
+    let unit = ((row.width() - gap * 3.0) / 5.0).max(1.0);
+    let labels = [
+        "Use Codex",
+        "External Codex",
+        "Services / API keys",
+        if loading {
+            "Loading…"
+        } else {
+            "Refresh models"
+        },
+    ];
+    let hints = [
+        "Chat in AetherDesk using your installed Codex and existing sign-in",
+        "Optional: connect Codex's own interface to shared AetherDesk workspaces",
+        "Manage services and API keys",
+        "Refresh the selected service's model catalog",
+    ];
+    let weights = [1.0, 1.2, 1.6, 1.2];
+    let mut left = row.left();
+    std::array::from_fn(|index| {
+        let rect = egui::Rect::from_min_size(
+            egui::pos2(left, row.top()),
+            egui::vec2(unit * weights[index], height),
+        );
+        left = rect.right() + gap;
+        let mut child = ui.new_child(
+            egui::UiBuilder::new()
+                .id_salt(("service-action", index))
+                .max_rect(rect)
+                .layout(egui::Layout::left_to_right(egui::Align::Center)),
+        );
+        child
+            .add_enabled_ui((!busy || index == 1) && !(loading && index == 3), |ui| {
+                ui.add_sized(
+                    rect.size(),
+                    egui::Button::new(labels[index])
+                        .selected(codex && index == 0)
+                        .truncate(),
+                )
+            })
+            .inner
+            .on_hover_text(hints[index])
+    })
 }
 fn model_menu_size(viewport: egui::Rect, anchor: egui::Rect) -> egui::Vec2 {
     // Use the same compact width for the chat and settings pickers. Popup::width
@@ -661,6 +739,43 @@ impl Assistant {
     pub fn open_preferences(&mut self) {
         self.settings_open = true;
     }
+    pub fn take_codex_request(&mut self) -> bool {
+        std::mem::take(&mut self.codex_requested)
+    }
+    pub(crate) fn use_codex(&mut self, runtime: &Connections, ctx: &egui::Context) {
+        if self.busy {
+            return;
+        }
+        let index = self
+            .providers
+            .iter()
+            .position(|p| p.id == codex_chat::PROVIDER_ID)
+            .unwrap_or_else(|| {
+                self.providers.push(codex_chat::provider());
+                self.providers.len() - 1
+            });
+        let model = if self.provider == index && !self.model.is_empty() {
+            self.model.clone()
+        } else {
+            self.providers[index]
+                .models
+                .first()
+                .cloned()
+                .unwrap_or_else(|| "default".into())
+        };
+        self.choose_model(index, model);
+        self.refresh_provider_models(index, runtime, ctx);
+    }
+    fn ensure_codex_models(&mut self, runtime: &Connections, ctx: &egui::Context) {
+        if !self.codex_catalog_checked
+            && self
+                .providers
+                .get(self.provider)
+                .is_some_and(|p| p.id == codex_chat::PROVIDER_ID)
+        {
+            self.refresh_provider_models(self.provider, runtime, ctx);
+        }
+    }
     pub fn is_busy(&self) -> bool {
         self.busy || self.approval.is_some()
     }
@@ -832,6 +947,11 @@ impl Assistant {
             .or_else(|_| self.turn_events.try_recv())
         {
             match event {
+                Event::CodexThread { id, workspace } => {
+                    self.chats[self.chat].codex_thread = id;
+                    self.chats[self.chat].codex_workspace = workspace;
+                    self.persist();
+                }
                 Event::Delta(text) => {
                     self.reply_started |= !text.trim().is_empty();
                     self.stream.push_str(&text);
@@ -860,40 +980,61 @@ impl Assistant {
                         self.approval = Some((name, args, reply));
                     }
                 }
-                Event::Models { id, result } => match result {
-                    Ok(models) => {
-                        let manual_model = self
-                            .providers
-                            .get(self.provider)
-                            .filter(|p| p.id == id)
-                            .map(|_| self.model.trim().to_owned())
-                            .filter(|model| !model.is_empty());
-                        if let Some(provider) = self.providers.iter_mut().find(|p| p.id == id) {
-                            if let Some(manual_model) = manual_model {
-                                provider.remember_model(&manual_model);
-                            }
-                            provider.update_models(models);
-                            if self
+                Event::Models { id, result } => {
+                    self.model_refreshes.remove(&id);
+                    match result {
+                        Ok(models) => {
+                            self.model_errors.remove(&id);
+                            let codex = id == codex_chat::PROVIDER_ID;
+                            let preferred = models.first().map(|m| m.id.clone());
+                            let manual_model = self
                                 .providers
                                 .get(self.provider)
-                                .is_some_and(|p| p.id == id)
-                                && self.model.is_empty()
-                            {
-                                self.model = self.providers[self.provider]
-                                    .models
-                                    .first()
-                                    .cloned()
-                                    .unwrap_or_default();
+                                .filter(|p| p.id == id)
+                                .map(|_| self.model.trim().to_owned())
+                                .filter(|model| {
+                                    !model.is_empty() && !(codex && model == "default")
+                                });
+                            if let Some(provider) = self.providers.iter_mut().find(|p| p.id == id) {
+                                if codex {
+                                    provider.manual_models.retain(|m| m != "default");
+                                }
+                                if let Some(manual_model) = manual_model {
+                                    provider.remember_model(&manual_model);
+                                }
+                                provider.update_models(models);
+                                if codex
+                                    && self.provider < self.providers.len()
+                                    && self.providers[self.provider].id == id
+                                    && self.model == "default"
+                                {
+                                    if let Some(preferred) = preferred {
+                                        self.model = preferred;
+                                    }
+                                }
+                                if self
+                                    .providers
+                                    .get(self.provider)
+                                    .is_some_and(|p| p.id == id)
+                                    && self.model.is_empty()
+                                {
+                                    self.model = self.providers[self.provider]
+                                        .models
+                                        .first()
+                                        .cloned()
+                                        .unwrap_or_default();
+                                }
                             }
+                            self.persist();
                         }
-                        self.persist();
-                    }
-                    Err(error) => {
-                        self.error = Some(format!(
+                        Err(error) => {
+                            self.model_errors.insert(id.clone(), error.clone());
+                            self.error = Some(format!(
                             "Could not load the provider's model list: {error}. The provider is saved; enter its exact model ID to continue."
                         ));
+                        }
                     }
-                },
+                }
             }
         }
         if self.busy {
@@ -908,6 +1049,7 @@ impl Assistant {
         capture: Option<crate::remote::Image>,
     ) -> egui::Rect {
         self.poll(ui.ctx());
+        self.ensure_codex_models(runtime, ui.ctx());
         let saved_workspace = self
             .chats
             .get(self.chat)
@@ -1055,11 +1197,26 @@ impl Assistant {
         self.settings_ui(ui.ctx(), runtime, connections);
         self.history_ui(ui.ctx());
         self.services_ui(ui.ctx(), runtime);
+        self.ensure_codex_models(runtime, ui.ctx());
         composer_bounds
     }
     fn choose_model(&mut self, provider: usize, model: String) {
+        if self.providers.get(self.provider).map(|p| &p.id)
+            != self.providers.get(provider).map(|p| &p.id)
+        {
+            self.chats[self.chat].codex_thread.clear();
+            self.chats[self.chat].codex_workspace.clear();
+        }
         self.provider = provider;
         self.model = model;
+        if self
+            .providers
+            .get(provider)
+            .is_some_and(|p| p.id == codex_chat::PROVIDER_ID)
+        {
+            self.composer_model_query.clear();
+            self.composer_model_filter = ModelFilter::All;
+        }
         self.error = None;
         self.persist();
     }
@@ -1103,6 +1260,7 @@ impl Assistant {
             .map(|p| format!("{} / {}", p.name, self.model))
             .unwrap_or_default();
         let mut choice = None;
+        let mut use_codex = false;
         let response = model_button(ui, &title, width);
         let menu_size = model_menu_size(ui.ctx().content_rect(), response.rect);
         egui::Popup::menu(&response)
@@ -1130,14 +1288,38 @@ impl Assistant {
                             "Search services and models",
                         );
                         let query = self.composer_model_query.to_lowercase();
+                        if selected.is_some_and(|p| self.model_refreshes.contains(&p.id)) {
+                            ui.horizontal(|ui| {
+                                ui.add(egui::Spinner::new().size(14.0));
+                                ui.label("Loading models…");
+                            });
+                        }
+                        if let Some(error) = selected.and_then(|p| self.model_errors.get(&p.id)) {
+                            ui.add(
+                                egui::Label::new(format!("Could not load models: {error}")).wrap(),
+                            );
+                        }
+                        if !self
+                            .providers
+                            .iter()
+                            .any(|p| p.id == codex_chat::PROVIDER_ID)
+                            && catalog_matches("Codex installed", &query)
+                            && ui.button("Use installed Codex…").clicked()
+                        {
+                            use_codex = true;
+                            ui.close();
+                        }
                         egui::ScrollArea::vertical()
-                            .id_salt("composer-model-list")
+                            .id_salt(("composer-model-list", selected.map(|p| p.id.as_str())))
                             .max_width(menu_size.x)
                             .max_height((menu_size.y - (ui.cursor().top() - top)).max(1.0))
                             .auto_shrink([false, true])
                             .show(ui, |ui| {
                                 let mut found = false;
-                                for (index, provider) in self.providers.iter().enumerate() {
+                                let mut order: Vec<_> = (0..self.providers.len()).collect();
+                                order.sort_by_key(|index| *index != self.provider);
+                                for index in order {
+                                    let provider = &self.providers[index];
                                     let matches_service =
                                         provider.name.to_lowercase().contains(&query);
                                     let models: Vec<&str> = provider
@@ -1219,6 +1401,11 @@ impl Assistant {
         let response = response.on_hover_text(detail);
         if let Some((provider, model)) = choice {
             self.choose_model(provider, model);
+        }
+        if use_codex && !self.busy {
+            self.providers.push(codex_chat::provider());
+            self.choose_model(self.providers.len() - 1, "default".into());
+            self.codex_catalog_checked = false;
         }
         response
     }
@@ -1377,29 +1564,22 @@ impl Assistant {
                     .show(ui, |ui| {
                         settings_group(ui, |ui| {
                             ui.strong("Services and models");
-                            ui.horizontal(|ui| {
-                                if ui
-                                    .add_enabled(
-                                        !self.busy,
-                                        egui::Button::new("Manage services / API keys"),
-                                    )
-                                    .clicked()
-                                {
-                                    self.services = true;
-                                    self.services_page = ServicesPage::Services;
-                                }
-                                if ui
-                                    .add_enabled(!self.busy, egui::Button::new("Refresh models"))
-                                    .clicked()
-                                {
-                                    self.refresh_models(runtime, ctx);
-                                }
-                            });
+                            let selected = self.providers.get(self.provider);
+                            let codex = selected.is_some_and(|p|p.id==codex_chat::PROVIDER_ID);
+                            let loading = selected.is_some_and(|p|self.model_refreshes.contains(&p.id));
+                            let [use_codex, external, services, refresh] = service_buttons(ui,self.busy,codex,loading);
+                            if use_codex.clicked(){self.use_codex(runtime,ctx);}
+                            if external.clicked(){self.codex_requested=true;}
+                            if services.clicked(){self.services=true;self.services_page=ServicesPage::Services;}
+                            if refresh.clicked(){self.refresh_models(runtime,ctx);}
                             ui.add_enabled_ui(!self.busy, |ui| {
                                 let width = (ui.available_width() - 20.0).max(100.0);
                                 self.model_picker(ui, width)
                             });
-                            ui.label("Every saved service keeps its own API key and model list.");
+                            if let Some(error) = self.providers.get(self.provider).and_then(|p|self.model_errors.get(&p.id)) {
+                                ui.add(egui::Label::new(format!("Could not load models: {error}")).wrap());
+                            }
+                            ui.label(if codex {"Models come from your installed Codex account."} else {"Every saved service keeps its own API key and model list."});
                             ui.horizontal(|ui| {
                                 ui.add(
                                     egui::TextEdit::singleline(&mut self.new_model)
@@ -1451,6 +1631,7 @@ impl Assistant {
                             settings_group(ui, |ui| {
                                 ui.strong("Message limits and tools");
                                 let mut provider = self.providers.get_mut(self.provider);
+                                let codex = provider.as_ref().is_some_and(|p|p.id==codex_chat::PROVIDER_ID);
                                 let chat = &mut self.chats[self.chat];
                                 egui::Grid::new("ai-budget-grid")
                                     .num_columns(2)
@@ -1464,7 +1645,7 @@ impl Assistant {
                                         }
                                         ui.label("Context budget");
                                         model_settings_changed |= ui
-                                            .add(
+                                            .add_enabled(!codex,
                                                 egui::DragValue::new(&mut chat.context_tokens)
                                                     .range(256..=1_000_000),
                                             )
@@ -1472,7 +1653,7 @@ impl Assistant {
                                         ui.end_row();
                                         ui.label("Output limit");
                                         model_settings_changed |= ui
-                                            .add(
+                                            .add_enabled(!codex,
                                                 egui::DragValue::new(&mut chat.output_tokens)
                                                     .range(1..=1_000_000),
                                             )
@@ -1483,6 +1664,7 @@ impl Assistant {
                                             ui.checkbox(&mut chat.use_tools, "Enabled").changed();
                                         ui.end_row();
                                     });
+                                if codex {ui.label("Codex manages its own context and answer limits using your signed-in account.");}
                             });
                             settings_group(ui, |ui| {
                                 ui.collapsing("Advanced reasoning", |ui| {
@@ -1643,14 +1825,26 @@ impl Assistant {
         let Some(provider) = self.providers.get(index).cloned() else {
             return;
         };
+        if !self.model_refreshes.insert(provider.id.clone()) {
+            return;
+        }
+        self.model_errors.remove(&provider.id);
+        if provider.id == codex_chat::PROVIDER_ID {
+            self.codex_catalog_checked = true;
+        }
         let events = self.sender.clone();
         let ctx = ctx.clone();
         runtime.spawn(async move {
-            let result = match vault::read(&provider.id) {
-                Ok(key) => {
-                    ai_api::models(&provider.base, Zeroizing::new(key.unwrap_or_default())).await
+            let result = if provider.id == codex_chat::PROVIDER_ID {
+                codex_chat::models().await
+            } else {
+                match vault::read(&provider.id) {
+                    Ok(key) => {
+                        ai_api::models(&provider.base, Zeroizing::new(key.unwrap_or_default()))
+                            .await
+                    }
+                    Err(error) => Err(error),
                 }
-                Err(error) => Err(error),
             };
             let _ = events
                 .send(Event::Models {
@@ -1730,7 +1924,7 @@ impl Assistant {
                                                     self.services_page = ServicesPage::Models;
                                                     self.service_model_query.clear();
                                                 }
-                                                if ui.button("Edit").clicked() { actions.edit = Some(index); }
+                                                if provider.id != codex_chat::PROVIDER_ID && ui.button("Edit").clicked() { actions.edit = Some(index); }
                                                 if crate::ui_icons::button(ui, crate::ui_icons::Icon::Remove,
                                                     "Remove service and API key", false).clicked() { actions.remove = Some(index); }
                                             });
@@ -2059,6 +2253,13 @@ impl Assistant {
         let reasoning = self.chats[self.chat].reasoning.clone();
         let reasoning_tokens = self.chats[self.chat].reasoning_tokens;
         let nvidia_thinking = self.chats[self.chat].nvidia_thinking;
+        let codex_thread = if self.chats[self.chat].codex_workspace
+            == codex_chat::scope_key(&self.workspace, use_tools)
+        {
+            self.chats[self.chat].codex_thread.clone()
+        } else {
+            String::new()
+        };
         let workspace = self.workspace.clone();
         let (events, receive) = mpsc::channel(256);
         self.turn_events = receive;
@@ -2072,7 +2273,14 @@ impl Assistant {
         self.stream.clear();
         self.persist();
         runtime.spawn(async move {
-            let work=run(provider,model,messages,workspace,scope.clone(),events.clone(),grants.clone(),model_meta,context_tokens,output_tokens,use_tools,reasoning,reasoning_tokens,nvidia_thinking);
+            let work=async {
+                if provider.id == codex_chat::PROVIDER_ID {
+                    let reasoning = reasoning.filter(|effort| model_meta.reasoning.as_ref().is_some_and(|r|r.efforts.contains(effort)));
+                    codex_chat::run(model,messages,workspace,scope.clone(),events.clone(),grants.clone(),use_tools,reasoning,codex_thread,provider.response_timeout_seconds).await
+                } else {
+                    run(provider,model,messages,workspace,scope.clone(),events.clone(),grants.clone(),model_meta,context_tokens,output_tokens,use_tools,reasoning,reasoning_tokens,nvidia_thinking).await
+                }
+            };
             let result=tokio::select!{biased; _ = cancel.cancelled()=>Err("Response stopped".into()),result=work=>result};
             grants.lock().unwrap_or_else(|e|e.into_inner()).finish(&scope);
             let _=events.send(Event::Done(result)).await;ctx.request_repaint();
@@ -2728,6 +2936,163 @@ mod tests {
         });
     }
     #[test]
+    fn service_actions_stay_in_one_bounded_row_with_equal_heights() {
+        for width in [260.0, 400.0, 560.0] {
+            for font in [13.0, 22.0] {
+                let ctx = egui::Context::default();
+                ctx.style_mut(|s| {
+                    s.text_styles
+                        .insert(egui::TextStyle::Button, egui::FontId::proportional(font));
+                });
+                let mut controls = None;
+                for _ in 0..3 {
+                    let _ = ctx.run(
+                        egui::RawInput {
+                            screen_rect: Some(egui::Rect::from_min_size(
+                                egui::Pos2::ZERO,
+                                egui::vec2(width, 300.0),
+                            )),
+                            ..Default::default()
+                        },
+                        |ctx| {
+                            egui::CentralPanel::default().show(ctx, |ui| {
+                                let bounds = ui.available_rect_before_wrap();
+                                controls = Some((
+                                    bounds,
+                                    service_buttons(ui, false, true, false).map(|r| r.rect),
+                                ));
+                            });
+                        },
+                    );
+                }
+                let (bounds, rects) = controls.unwrap();
+                for rect in rects {
+                    assert!(
+                        (rect.center().y - rects[0].center().y).abs() < 0.5,
+                        "Service action wrapped: {rect:?}"
+                    );
+                    assert!((rect.height() - rects[0].height()).abs() < 0.5);
+                    assert!(
+                        rect.left() >= bounds.left() - 0.5 && rect.right() <= bounds.right() + 0.5,
+                        "Service action escaped at width {width}, font {font}: {rect:?}"
+                    );
+                }
+                assert!(rects.windows(2).all(|r| r[0].right() <= r[1].left()));
+            }
+        }
+    }
+    #[test]
+    fn codex_models_replace_placeholder_and_are_visible_and_selectable_in_both_pickers() {
+        let root = tempfile::tempdir().unwrap();
+        crate::storage::with_test_root(root.path(), || {
+            let runtime = Connections::new().unwrap();
+            for settings in [false, true] {
+                let mut assistant = Assistant::default();
+                let mut large =
+                    configure_provider(None, "Alpha catalog", "https://example.test/v1", "")
+                        .unwrap();
+                large.update_models(
+                    (0..500)
+                        .map(|n| crate::ai_models::Model::manual(&format!("other-{n:03}")))
+                        .collect(),
+                );
+                let mut codex = codex_chat::provider();
+                codex.manual_models = vec!["default".into()];
+                assistant.providers = vec![large, codex];
+                assistant.composer_model_query = "old search".into();
+                assistant.composer_model_filter = ModelFilter::Free;
+                assistant.choose_model(1, "default".into());
+                assert!(assistant.composer_model_query.is_empty());
+                assert!(assistant.composer_model_filter == ModelFilter::All);
+                assistant
+                    .model_refreshes
+                    .insert(codex_chat::PROVIDER_ID.into());
+                assistant
+                    .sender
+                    .try_send(Event::Models {
+                        id: codex_chat::PROVIDER_ID.into(),
+                        result: Ok(vec![
+                            crate::ai_models::Model::manual("codex-first"),
+                            crate::ai_models::Model::manual("codex-second"),
+                        ]),
+                    })
+                    .unwrap();
+                let ctx = egui::Context::default();
+                assistant.poll(&ctx);
+                assert_eq!(assistant.model, "codex-first");
+                assert!(!assistant.providers[1].models.iter().any(|m| m == "default"));
+                assert!(assistant.model_refreshes.is_empty());
+                assistant.settings_open = settings;
+                let render = |assistant: &mut Assistant, events| {
+                    let output = ctx.run(
+                        egui::RawInput {
+                            screen_rect: Some(egui::Rect::from_min_size(
+                                egui::Pos2::ZERO,
+                                egui::vec2(700.0, 850.0),
+                            )),
+                            events,
+                            ..Default::default()
+                        },
+                        |ctx| {
+                            if settings {
+                                assistant.settings_ui(ctx, &runtime, &[]);
+                            } else {
+                                egui::CentralPanel::default().show(ctx, |ui| {
+                                    assistant.model_picker(ui, 300.0);
+                                });
+                            }
+                        },
+                    );
+                    output
+                        .shapes
+                        .iter()
+                        .filter_map(|shape| match &shape.shape {
+                            egui::epaint::Shape::Text(text) => {
+                                let rect = egui::Rect::from_min_size(text.pos, text.galley.size());
+                                let visible = rect.intersect(shape.clip_rect);
+                                visible
+                                    .is_positive()
+                                    .then(|| (text.galley.job.text.clone(), visible.center()))
+                            }
+                            _ => None,
+                        })
+                        .collect::<Vec<_>>()
+                };
+                for _ in 0..4 {
+                    render(&mut assistant, vec![]);
+                }
+                let text = render(&mut assistant, vec![]);
+                let anchor = text
+                    .iter()
+                    .find(|(text, _)| text == "Codex (installed) / codex-first")
+                    .expect("Model selector")
+                    .1;
+                render(&mut assistant, pointer_click(anchor, true));
+                render(&mut assistant, pointer_click(anchor, false));
+                let mut choices = vec![];
+                for _ in 0..3 {
+                    choices = render(&mut assistant, vec![]);
+                }
+                let choice = choices
+                    .iter()
+                    .find(|(text, _)| text == "codex-second")
+                    .expect("The selected Codex provider must be visible above other catalogs")
+                    .1;
+                render(&mut assistant, pointer_click(choice, true));
+                render(&mut assistant, pointer_click(choice, false));
+                assert_eq!(
+                    assistant.model, "codex-second",
+                    "Settings picker: {settings}"
+                );
+                assert_eq!(
+                    assistant.providers[assistant.provider].id,
+                    codex_chat::PROVIDER_ID
+                );
+                assert_eq!(Assistant::default().model, "codex-second");
+            }
+        });
+    }
+    #[test]
     fn approval_controls_stay_on_one_line_at_narrow_widths_and_large_fonts() {
         for width in [150.0, 240.0, 350.0] {
             let ctx = egui::Context::default();
@@ -3164,6 +3529,8 @@ mod tests {
                 assert!(grants.allowed(&old_scope));
             }
             let (reply, mut approval) = oneshot::channel();
+            assistant.chats[assistant.chat].codex_thread = "previous-codex-thread".into();
+            assistant.chats[assistant.chat].codex_workspace = "previous-codex-workspace".into();
             assistant.approval = Some(("old tool".into(), json!({}), reply));
             let (old_events, receiver) = mpsc::channel(256);
             assistant.turn_events = receiver;
@@ -3175,6 +3542,8 @@ mod tests {
             assert!(!assistant.cancel.is_cancelled());
             assert_ne!(assistant.chats[assistant.chat].id, old_id);
             assert!(assistant.chats[assistant.chat].messages.is_empty());
+            assert!(assistant.chats[assistant.chat].codex_thread.is_empty());
+            assert!(assistant.chats[assistant.chat].codex_workspace.is_empty());
             assert!(assistant.draft.is_empty() && assistant.stream.is_empty());
             assert!(assistant.error.is_none() && assistant.restore_error.is_none());
             assert!(assistant.attachment.is_none() && assistant.approval.is_none());

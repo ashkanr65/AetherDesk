@@ -36,10 +36,22 @@ use popups::PopupCapture;
 mod capture;
 #[path = "window_detach.rs"]
 mod detach;
+#[path = "window_titlebar.rs"]
+mod titlebar;
 #[path = "window_updates.rs"]
 mod updates;
 
 type Error = Box<dyn std::error::Error + Send + Sync>;
+fn window_disappeared(error: &Error, window: u32) -> bool {
+    matches!(
+        error.downcast_ref::<x11rb::errors::ReplyError>(),
+        Some(x11rb::errors::ReplyError::X11Error(error))
+            if error.bad_value == window
+                && matches!(error.error_kind,
+                    x11rb::protocol::ErrorKind::Window | x11rb::protocol::ErrorKind::Drawable)
+    )
+}
+
 #[derive(Debug)]
 struct FocusChanged;
 impl std::fmt::Display for FocusChanged {
@@ -99,6 +111,8 @@ pub struct Mirror {
     atoms: std::cell::RefCell<std::collections::BTreeMap<Vec<u8>, u32>>,
     last_read_pixels: u64,
     detached: Option<detach::Detached>,
+    want_titlebar: bool,
+    titlebar: Option<titlebar::Capture>,
 }
 
 pub(crate) fn wheel_steps(remainder: &mut i32, value: i32) -> i32 {
@@ -325,6 +339,8 @@ impl Mirror {
             atoms: Default::default(),
             last_read_pixels: 0,
             detached: None,
+            want_titlebar: false,
+            titlebar: None,
         })
     }
     fn atom(&self, name: &[u8]) -> Result<u32, Error> {
@@ -411,7 +427,13 @@ impl Mirror {
         if self.detached.is_some() {
             if let Some(selected) = &self.selected {
                 if !selected.destroyed && !windows.iter().any(|info| info.id == selected.id) {
-                    windows.push(self.info(selected.id)?);
+                    match self.info(selected.id) {
+                        Ok(info) => windows.push(info),
+                        // A minimized client can disappear before DestroyNotify
+                        // is drained. Do not fail the entire application list.
+                        Err(error) if window_disappeared(&error, selected.id) => {}
+                        Err(error) => return Err(error),
+                    }
                 }
             }
         }
@@ -510,6 +532,7 @@ impl Mirror {
             .release_input()
             .and_then(|_| self.wait_released(&keys, &buttons));
         self.clear_popups();
+        self.titlebar.take();
         // Return a live hidden client to the host WM before removing capture.
         drop(self.detached.take());
         if let Some(s) = self.selected.take() {
@@ -579,6 +602,9 @@ impl Mirror {
                 break;
             };
             self.popup_event(&event);
+            if let Some(titlebar) = &mut self.titlebar {
+                titlebar.event(&event);
+            }
             if matches!(
                 &event,
                 Event::MapNotify(_)
@@ -598,6 +624,11 @@ impl Mirror {
                         s.metadata_dirty = true;
                     }
                     Event::PropertyNotify(e) if e.window == s.id => s.metadata_dirty = true,
+                    Event::ReparentNotify(e) if e.window == s.id => {
+                        s.metadata_dirty = true;
+                        s.rebind = true;
+                        s.dirty = true;
+                    }
                     Event::DestroyNotify(e) if e.window == s.id => s.destroyed = true,
                     Event::UnmapNotify(e) if e.window == s.id => s.dirty = true,
                     Event::MapNotify(e) if e.window == s.id => {
@@ -611,7 +642,23 @@ impl Mirror {
         Ok(())
     }
     fn frame(&mut self) -> Result<wire::Reply, Error> {
+        let window = self.selected.as_ref().map(|s| s.id);
+        match self.capture_frame() {
+            Err(error) if window.is_some_and(|id| window_disappeared(&error, id)) => {
+                // Destruction can race any geometry/property/capture query,
+                // even after we have drained the queued events.
+                self.clear()?;
+                Err("The application window was closed".into())
+            }
+            result => result,
+        }
+    }
+    fn capture_frame(&mut self) -> Result<wire::Reply, Error> {
         self.events()?;
+        if self.selected.as_ref().is_some_and(|s| s.destroyed) {
+            self.clear()?;
+            return Err("The application window was closed".into());
+        }
         if self.selected.as_ref().is_some_and(|s| s.metadata_dirty) {
             let info = self.info(self.selected.as_ref().unwrap().id)?;
             let s = self.selected.as_mut().unwrap();
@@ -619,10 +666,6 @@ impl Mirror {
             s.metadata_dirty = false;
         }
         let s = self.selected.as_ref().ok_or("No application selected")?;
-        if s.destroyed {
-            let _ = self.clear();
-            return Err("The application window was closed".into());
-        }
         let id = s.id;
         let info = s.info.clone();
         if let Some(detached) = &self.detached {
@@ -928,8 +971,24 @@ impl Mirror {
         match request {
             Stream { .. } => {}
             List => return Ok(wire::Reply::Windows(self.list()?)),
-            Select(id) => return Ok(wire::Reply::Selected(self.select(id)?)),
+            Select(id) => {
+                return self.select(id).map(wire::Reply::Selected).map_err(|error| {
+                    if window_disappeared(&error, id) {
+                        "The application window was closed".into()
+                    } else {
+                        error
+                    }
+                });
+            }
             Poll => return self.frame(),
+            Titlebar { enabled } => {
+                self.want_titlebar = enabled;
+                if !enabled {
+                    self.titlebar.take();
+                }
+            }
+            TitlebarClick { window, x, y } => self.titlebar_click(window, x, y)?,
+            CloseApplication { window } => self.close_application(window)?,
             Focus => self.focus()?,
             Resize { width, height } => {
                 wire::dimensions(width, height)?;
@@ -1470,7 +1529,42 @@ pub(crate) fn verify_existing_window(
     }
     // A real synchronous WM grab can defer device processing beyond XSync.
     // Release must not acknowledge success before the host unfreezes it.
+    // Acquire the fixture's grab before pressing: xfwm4 has passive click
+    // grabs, and pressing first can give the WM ownership (ALREADY_GRABBED)
+    // before this test gets to install its deliberate synchronous grab.
+    // Wait only for fixture ownership; the release/Ack checks below still
+    // query the other X11 connection immediately, without retries or sleeps.
+    let grab_deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        let status = controller
+            .grab_pointer(
+                false,
+                window,
+                EventMask::BUTTON_PRESS | EventMask::BUTTON_RELEASE,
+                GrabMode::ASYNC,
+                GrabMode::ASYNC,
+                0u32,
+                0u32,
+                x11rb::CURRENT_TIME,
+            )
+            .unwrap()
+            .reply()
+            .unwrap()
+            .status;
+        if status == GrabStatus::SUCCESS {
+            break;
+        }
+        assert!(
+            matches!(status, GrabStatus::ALREADY_GRABBED | GrabStatus::FROZEN)
+                && Instant::now() < grab_deadline,
+            "fixture could not acquire pointer ownership before injecting input: {status:?}"
+        );
+        std::thread::sleep(Duration::from_millis(2));
+    }
     press_owned(&mut mirror);
+    assert_input(true, true);
+    // The same client can replace its active asynchronous grab with a
+    // synchronous one without racing xfwm4 or freezing the initial press.
     let grabbed = controller
         .grab_pointer(
             false,
@@ -1581,12 +1675,113 @@ pub(crate) fn verify_existing_window(
 }
 
 #[cfg(test)]
+pub(crate) fn verify_window_lifetime(
+    connection: RustConnection,
+    controller: &RustConnection,
+    healthy_window: u32,
+) {
+    let mut mirror = Mirror::from_connection(connection).unwrap();
+    for detached in [false, true] {
+        let window = controller.generate_id().unwrap();
+        controller
+            .create_window(
+                0,
+                window,
+                mirror.root,
+                20,
+                20,
+                120,
+                90,
+                0,
+                WindowClass::INPUT_OUTPUT,
+                0,
+                &CreateWindowAux::new().background_pixel(0x234567),
+            )
+            .unwrap()
+            .check()
+            .unwrap();
+        controller.map_window(window).unwrap().check().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while !mirror.list().unwrap().iter().any(|w| w.id == window) {
+            assert!(
+                Instant::now() < deadline,
+                "WM did not register the lifetime fixture"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        mirror.select(window).unwrap();
+        if detached {
+            let iconic = mirror.atom(b"WM_CHANGE_STATE").unwrap();
+            controller
+                .send_event(
+                    false,
+                    mirror.root,
+                    EventMask::SUBSTRUCTURE_REDIRECT | EventMask::SUBSTRUCTURE_NOTIFY,
+                    ClientMessageEvent::new(32, window, iconic, [3, 0, 0, 0, 0]),
+                )
+                .unwrap()
+                .check()
+                .unwrap();
+            let deadline = Instant::now() + Duration::from_secs(3);
+            while controller
+                .get_window_attributes(window)
+                .unwrap()
+                .reply()
+                .unwrap()
+                .map_state
+                == MapState::VIEWABLE
+            {
+                assert!(
+                    Instant::now() < deadline,
+                    "WM did not minimize the lifetime fixture"
+                );
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            mirror.frame().unwrap();
+            assert!(mirror.detached.is_some());
+        }
+        mirror.events().unwrap();
+        mirror.selected.as_mut().unwrap().metadata_dirty = true;
+        controller.destroy_window(window).unwrap().check().unwrap();
+        // This is the actual BadDrawable/GetGeometry from the screenshot,
+        // before the mirror consumes the corresponding DestroyNotify.
+        let error = mirror.info(window).unwrap_err();
+        assert!(window_disappeared(&error, window));
+        assert!(!window_disappeared(&error, healthy_window));
+        assert!(!window_disappeared(&"transport failure".into(), window));
+        assert!(!mirror.selected.as_ref().unwrap().destroyed);
+        let windows = mirror.list().unwrap();
+        assert!(!windows.iter().any(|w| w.id == window));
+        assert!(windows.iter().any(|w| w.id == healthy_window));
+        assert_eq!(
+            mirror.frame().unwrap_err().to_string(),
+            "The application window was closed"
+        );
+        assert!(mirror.selected.is_none());
+        assert!(mirror.detached.is_none());
+        // One disappearing view must not invalidate the other applications.
+        mirror.select(healthy_window).unwrap();
+        mirror.frame().unwrap();
+        mirror.clear().unwrap();
+    }
+}
+
+#[cfg(test)]
 pub(crate) fn verify_minimized_window(
     connection: RustConnection,
     controller: &RustConnection,
     window: u32,
 ) {
     detach::verify_minimized(Arc::new(connection), controller, window);
+}
+
+#[cfg(test)]
+pub(crate) fn verify_host_titlebar(
+    connection: RustConnection,
+    controller: &RustConnection,
+    window: u32,
+) {
+    titlebar::verify(connection, controller, window);
 }
 
 #[cfg(test)]

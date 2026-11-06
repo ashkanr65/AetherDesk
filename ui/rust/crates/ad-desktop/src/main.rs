@@ -6,6 +6,10 @@ mod app_layout;
 mod app_tools;
 mod assistant;
 mod assistant_history;
+mod codex_connector;
+// Shared with the independent headless binary; some endpoints are client-only.
+#[allow(dead_code)]
+mod codex_protocol;
 mod comparison;
 mod connection;
 mod crash_diagnostics;
@@ -86,6 +90,7 @@ struct RustDesktop {
     closing: Option<std::time::Instant>,
     editors: editor::Editors,
     assistant: assistant::Assistant,
+    codex: codex_connector::Connector,
     tools: user_tools::Panel,
     monitoring: monitoring::Panel,
     profiles_valid: bool,
@@ -139,6 +144,7 @@ impl Default for RustDesktop {
             closing: None,
             editors: editor::Editors::default(),
             assistant: assistant::Assistant::default(),
+            codex: codex_connector::Connector::default(),
             tools: user_tools::Panel::default(),
             monitoring: monitoring::Panel::default(),
             profiles_valid,
@@ -594,6 +600,37 @@ impl RustDesktop {
             }
         }
     }
+    fn status_bar(&self, ctx: &egui::Context) {
+        egui::TopBottomPanel::bottom("status")
+            .exact_height((self.preferences.settings.font_size+12.0).max(24.0))
+            .frame(egui::Frame::side_top_panel(&ctx.style()).inner_margin(egui::Margin::symmetric(8,0)))
+            .show(ctx,|ui|{
+                let rect=ui.available_rect_before_wrap();
+                let tab=self.workspace.selected.and_then(|index|self.workspace.tabs.get(index));
+                let status=tab.map(|tab|format!("{} · {}",tab.profile.name,if tab.connected{"Connected"}else{"Disconnected"})).unwrap_or_else(||"○  No active session".into());
+                let connected=self.workspace.tabs.iter().filter(|tab|tab.connected).count();
+                let active=self.workspace.tabs.iter().filter(|tab|tab.is_active()).count();
+                let detail=tab.map(|tab|format!("{} · {}",tab.profile.connection_type.label(),tab.profile.authentication)).unwrap_or_default();
+                let full=format!("{status} · {connected} connected · {active} active · {detail}\n{}",self.notice);
+                let text=if rect.width()>600.0{full.replace('\n'," · ")}else{status};
+                let clock_width=(ui.text_style_height(&egui::TextStyle::Body)*5.5).max(72.0).min(rect.width());
+                let status_rect=egui::Rect::from_min_max(rect.min,egui::pos2((rect.right()-clock_width-12.0).max(rect.left()),rect.bottom()));
+                let clock_rect=egui::Rect::from_min_max(egui::pos2(rect.right()-clock_width,rect.top()),rect.max);
+                let draw=|ui:&mut egui::Ui,bounds:egui::Rect,text:&str,right:bool,tooltip:&str,id:&str|{
+                    let galley=egui::WidgetText::from(text).into_galley(ui,Some(egui::TextWrapMode::Truncate),bounds.width().max(1.0),egui::TextStyle::Body);
+                    let x=if right{bounds.right()-galley.size().x}else{bounds.left()};
+                    ui.painter().with_clip_rect(bounds.intersect(ui.clip_rect())).galley(egui::pos2(x,bounds.center().y-galley.size().y/2.0),galley,ui.visuals().text_color());
+                    let response=ui.interact(bounds,ui.make_persistent_id(id),egui::Sense::hover());
+                    response.widget_info(||egui::WidgetInfo::labeled(egui::WidgetType::Label,true,text));
+                    response.on_hover_text(tooltip);
+                };
+                draw(ui,status_rect,&text,false,&full,"connection-status");
+                let time=tab.map(|tab|tab.server_time()).unwrap_or_else(||"--:--:--".into());
+                draw(ui,clock_rect,&time,true,"Server time from the active connection. Clears after 3 seconds without a reply.","connection-clock");
+                ui.allocate_rect(rect,egui::Sense::hover());
+                ui.ctx().request_repaint_after(std::time::Duration::from_millis(250));
+            });
+    }
     fn app_action(
         &mut self,
         name: &str,
@@ -717,6 +754,25 @@ impl eframe::App for RustDesktop {
         // remote desktop owns the keyboard. Do not consume Ctrl+Shift+K here.
         process_health::pulse(2);
         self.assistant.poll(ctx);
+        if self.assistant.take_codex_request() {
+            self.codex.open = true;
+        }
+        if let Ok(runtime) = &self.connections {
+            let targets: Vec<_> = self
+                .workspace
+                .tabs
+                .iter()
+                .filter_map(|tab| {
+                    tab.ai_workspace().map(|workspace| codex_connector::Target {
+                        id: tab.identity(),
+                        name: tab.profile.name.clone(),
+                        kind: tab.profile.connection_type.name().into(),
+                        workspace,
+                    })
+                })
+                .collect();
+            self.codex.tick(ctx, runtime, &targets);
+        }
         let had_update = self.updates.available();
         self.updates.poll(ctx);
         if !had_update && self.updates.available() {
@@ -784,6 +840,7 @@ impl eframe::App for RustDesktop {
             self.persist_settings();
             self.closing = Some(std::time::Instant::now());
             self.assistant.stop();
+            self.codex.stop();
             self.tools.stop();
             self.monitoring.stop();
             transfers::pause_all();
@@ -1096,75 +1153,7 @@ impl eframe::App for RustDesktop {
                     }
                 });
         }
-        egui::TopBottomPanel::bottom("status")
-            .exact_height((self.preferences.settings.font_size + 12.0).max(24.0))
-            .frame(
-                egui::Frame::side_top_panel(&ctx.style())
-                    .inner_margin(egui::Margin::symmetric(8, 0)),
-            )
-            .show(ctx, |ui| {
-                ui.horizontal(|ui| {
-                    let status = self
-                        .workspace
-                        .selected
-                        .and_then(|i| self.workspace.tabs.get(i))
-                        .map(|t| {
-                            format!(
-                                "{} · {}",
-                                t.profile.name,
-                                if t.connected {
-                                    "Connected"
-                                } else {
-                                    "Disconnected"
-                                }
-                            )
-                        })
-                        .unwrap_or_else(|| "○  No active session".into());
-                    let width = ui.available_width();
-                    let clock_width =
-                        (ui.text_style_height(&egui::TextStyle::Body) * 5.5).max(72.0);
-                    let status_width = (width - clock_width - 12.0).max(1.0);
-                    ui.allocate_ui_with_layout(
-                        egui::vec2(status_width, 18.0),
-                        egui::Layout::left_to_right(egui::Align::Center),
-                        |ui| {
-                            let connected =
-                                self.workspace.tabs.iter().filter(|t| t.connected).count();
-                            let active =
-                                self.workspace.tabs.iter().filter(|t| t.is_active()).count();
-                            let detail = self
-                                .workspace
-                                .selected
-                                .and_then(|i| self.workspace.tabs.get(i))
-                                .map(|tab| {
-                                    format!(
-                                        "{} · {}",
-                                        tab.profile.connection_type.label(),
-                                        tab.profile.authentication
-                                    )
-                                })
-                                .unwrap_or_default();
-                            let full = format!(
-                                "{status} · {connected} connected · {active} active · {detail}\n{}",
-                                self.notice
-                            );
-                            let text = if width > 600.0 {
-                                full.replace('\n', " · ")
-                            } else {
-                                status
-                            };
-                            ui.add(egui::Label::new(text).truncate())
-                                .on_hover_text(full);
-                        },
-                    );
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        let time=self.workspace.selected.and_then(|index|self.workspace.tabs.get(index))
-                            .map(|tab|tab.server_time()).unwrap_or_else(||"--:--:--".into());
-                        ui.label(time).on_hover_text("Server time from the active connection. Clears after 3 seconds without a reply.");
-                        ui.ctx().request_repaint_after(std::time::Duration::from_millis(250));
-                    });
-                });
-            });
+        self.status_bar(ctx);
         egui::SidePanel::left("navigation-rail")
             .resizable(false)
             .exact_width(44.0)
@@ -1218,6 +1207,12 @@ impl eframe::App for RustDesktop {
             Some(preferences::Action::Assistant) => {
                 self.workspace.select_sidebar(Sidebar::Assistant);
                 self.assistant.open_preferences();
+            }
+            Some(preferences::Action::Codex) => {
+                self.workspace.select_sidebar(Sidebar::Assistant);
+                if let Ok(runtime) = &self.connections {
+                    self.assistant.use_codex(runtime, ctx);
+                }
             }
             Some(preferences::Action::Updates) => self.updates.open = true,
             Some(preferences::Action::Logs) => self.show_logs = true,
@@ -1549,6 +1544,47 @@ fn main() -> eframe::Result {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn connection_status_and_clock_are_centred_in_the_actual_bottom_row() {
+        let root = tempfile::tempdir().unwrap();
+        storage::with_test_root(root.path(), || {
+            let mut app = RustDesktop::default();
+            let ctx = egui::Context::default();
+            for font in [13.0, 22.0] {
+                app.preferences.settings.font_size = font;
+                ctx.style_mut(|style| {
+                    style
+                        .text_styles
+                        .insert(egui::TextStyle::Body, egui::FontId::proportional(font));
+                });
+                for _ in 0..3 {
+                    let output = ctx.run(
+                        egui::RawInput {
+                            screen_rect: Some(egui::Rect::from_min_size(
+                                egui::Pos2::ZERO,
+                                egui::vec2(900.0, 500.0),
+                            )),
+                            ..Default::default()
+                        },
+                        |ctx| app.status_bar(ctx),
+                    );
+                    let expected = 500.0 - (font + 12.0).max(24.0) / 2.0;
+                    let mut count = 0;
+                    for shape in output.shapes {
+                        if let egui::epaint::Shape::Text(text) = shape.shape {
+                            count += 1;
+                            assert!(
+                                (text.pos.y + text.galley.size().y / 2.0 - expected).abs() < 1.0,
+                                "status text is not vertically centred: {:?}",
+                                text.pos
+                            );
+                        }
+                    }
+                    assert_eq!(count, 2);
+                }
+            }
+        });
+    }
     #[test]
     fn narrow_windows_preserve_sidebar_preference_and_restore_width_on_larger_screens() {
         let directory = tempfile::tempdir().unwrap();

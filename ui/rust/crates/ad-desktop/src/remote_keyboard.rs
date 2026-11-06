@@ -122,6 +122,10 @@ pub fn keyboard_layout(id: u32) -> Option<(&'static str, &'static str)> {
     })
 }
 pub(crate) fn current_modifiers(_fallback: eframe::egui::Modifiers) -> eframe::egui::Modifiers {
+    #[cfg(test)]
+    if let Some(modifiers) = TEST_MODIFIERS.with(|value| value.get()) {
+        return modifiers;
+    }
     #[cfg(windows)]
     {
         use windows_sys::Win32::UI::Input::KeyboardAndMouse::*;
@@ -141,6 +145,28 @@ pub(crate) fn current_modifiers(_fallback: eframe::egui::Modifiers) -> eframe::e
     {
         _fallback
     }
+}
+// Headless GUI fixtures provide their own keyboard snapshot. Reading the
+// developer's real keys makes an otherwise synthetic Copy/Paste test depend
+// on whether they happen to hold Ctrl/Shift while the build is running.
+// Keep this override scoped to the current test thread and restore on unwind.
+#[cfg(test)]
+thread_local! {
+    static TEST_MODIFIERS: std::cell::Cell<Option<eframe::egui::Modifiers>> = const { std::cell::Cell::new(None) };
+}
+#[cfg(test)]
+pub(crate) fn with_test_modifiers<T>(
+    modifiers: eframe::egui::Modifiers,
+    run: impl FnOnce() -> T,
+) -> T {
+    struct Restore(Option<eframe::egui::Modifiers>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            TEST_MODIFIERS.with(|value| value.set(self.0));
+        }
+    }
+    let _restore = Restore(TEST_MODIFIERS.with(|value| value.replace(Some(modifiers))));
+    run()
 }
 pub(crate) fn without_altgr_shortcut(
     mut modifiers: eframe::egui::Modifiers,

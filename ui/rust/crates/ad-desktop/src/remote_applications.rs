@@ -10,6 +10,8 @@ use worker::{State, Worker};
 mod geometry;
 #[path = "application_native.rs"]
 mod native;
+#[path = "application_titlebar.rs"]
+mod titlebar;
 #[path = "remote_application_view.rs"]
 mod view;
 #[path = "application_workspace.rs"]
@@ -28,6 +30,7 @@ pub(crate) struct Applications {
     view: bool,
     search: String,
     texture: Option<egui::TextureHandle>,
+    titlebar_texture: Option<(egui::TextureHandle, std::sync::Arc<egui::ColorImage>)>,
     sequence: u64,
     uploaded_image: Option<worker::Frame>,
     native: native::NativeWindow,
@@ -65,6 +68,7 @@ impl Applications {
             view: false,
             search: String::new(),
             texture: None,
+            titlebar_texture: None,
             sequence: 0,
             uploaded_image: None,
             native: Default::default(),
@@ -131,6 +135,7 @@ impl Applications {
         self.worker = Some(Worker::start(target, ctx.clone()));
         self.sequence = 0;
         self.texture = None;
+        self.titlebar_texture = None;
         self.error = None;
     }
     fn send(&mut self, request: Request) {
@@ -426,6 +431,7 @@ mod tests {
             commands,
             state: Arc::new(parking_lot::Mutex::new(State {
                 alive: true,
+                host_titlebar: true,
                 selected: Some(WindowInfo {
                     id: 42,
                     title: "Synthetic application".into(),
@@ -491,5 +497,9 @@ mod tests {
         assert!(!applications.view);
         assert!(applications.worker.is_none());
         assert!(matches!(requests.try_recv().unwrap(), Request::Stop));
+        assert!(
+            requests.try_recv().is_err(),
+            "Windows Close must not send a host close request"
+        );
     }
 }

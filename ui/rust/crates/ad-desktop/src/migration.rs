@@ -300,6 +300,8 @@ fn convert_history(value: &Value) -> Result<Vec<Chat>, String> {
             reasoning: None,
             reasoning_tokens: 0,
             nvidia_thinking: false,
+            codex_thread: String::new(),
+            codex_workspace: String::new(),
             loaded: true,
         });
     }

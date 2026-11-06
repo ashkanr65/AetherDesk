@@ -8,6 +8,12 @@ license.workspace = true
 name = "aetherdesk"
 path = "src/main.rs"
 
+[[bin]]
+name = "aetherdesk-codex"
+path = "src/codex_bridge_main.rs"
+test = false
+bench = false
+
 [dependencies]
 ad-desktop-model = { path = "../ad-desktop-model" }
 eframe.workspace = true

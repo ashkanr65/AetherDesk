@@ -632,6 +632,17 @@ mod tests {
             "application must be reparented inside the host's decoration frame"
         );
         crate::host_cursor::verify_forwarding(&compositor, &connection, window);
+        crate::window_mirror::verify_host_titlebar(
+            RustConnection::connect_to_stream_with_auth_info(
+                connect(),
+                0,
+                b"MIT-MAGIC-COOKIE-1".to_vec(),
+                cookie.clone(),
+            )
+            .unwrap(),
+            &connection,
+            window,
+        );
         let executor = tokio::runtime::Builder::new_current_thread()
             .enable_time()
             .build()
@@ -1272,6 +1283,17 @@ mod tests {
             std::thread::sleep(Duration::from_millis(20));
         }
         crate::window_mirror::verify_minimized_window(
+            RustConnection::connect_to_stream_with_auth_info(
+                connect(),
+                0,
+                b"MIT-MAGIC-COOKIE-1".to_vec(),
+                cookie.clone(),
+            )
+            .unwrap(),
+            &connection,
+            window,
+        );
+        crate::window_mirror::verify_window_lifetime(
             RustConnection::connect_to_stream_with_auth_info(
                 connect(),
                 0,

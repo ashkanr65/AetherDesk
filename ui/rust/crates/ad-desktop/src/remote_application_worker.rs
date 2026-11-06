@@ -89,6 +89,8 @@ pub(super) struct State {
     pub error: Option<String>,
     pub alive: bool,
     pub streaming: bool,
+    pub host_titlebar: bool,
+    pub titlebar: Option<PopupState>,
 }
 pub(super) struct Worker {
     pub commands: mpsc::Sender<Request>,

@@ -1,6 +1,6 @@
 use super::*;
 use std::time::Instant;
-fn display_scale(ctx: &egui::Context, zoom: f32) -> geometry::Scale {
+pub(super) fn display_scale(ctx: &egui::Context, zoom: f32) -> geometry::Scale {
     geometry::Scale::new(
         ctx.input(|i| i.viewport().native_pixels_per_point.unwrap_or(1.0)),
         ctx.pixels_per_point(),
@@ -104,7 +104,7 @@ impl Applications {
                     if crate::ui_icons::button(
                         ui,
                         crate::ui_icons::Icon::Tab,
-                        "Stop viewing (keep application running)",
+                        "Return to desktop (keep application running)",
                         false,
                     )
                     .clicked()
@@ -157,6 +157,7 @@ impl Applications {
                         .on_hover_text(&window.title);
                 });
             });
+            self.host_titlebar(ctx, state, &window);
             let scale = display_scale(ctx, self.content_zoom);
             let mut image_rect = egui::Rect::NOTHING;
             egui::CentralPanel::default()
@@ -280,6 +281,7 @@ impl Applications {
             self.worker.take();
             self.view = false;
             self.texture = None;
+            self.titlebar_texture = None;
             self.popup_textures.clear();
             self.popup_native.clear();
             self.native = Default::default();
@@ -716,68 +718,119 @@ mod tests {
     #[test]
     fn clipboard_commands_only_reach_a_focused_application_and_release_temporary_control() {
         use std::sync::Arc;
-        let ctx = egui::Context::default();
-        ctx.options_mut(|o| o.max_passes = 1.try_into().unwrap());
-        let (commands, mut requests) = tokio::sync::mpsc::channel(64);
-        let mut app = Applications::new(None, uuid::Uuid::new_v4());
-        app.worker = Some(Worker {
-            commands,
-            state: Arc::new(parking_lot::Mutex::new(State::default())),
-            cancel: tokio_util::sync::CancellationToken::new(),
-        });
-        for focused in [true, false] {
-            let _ = ctx.run(
-                egui::RawInput {
-                    focused,
-                    events: vec![
-                        egui::Event::Copy,
-                        egui::Event::Paste("private text".into()),
-                        egui::Event::Cut,
-                    ],
-                    ..Default::default()
-                },
-                |ctx| {
-                    egui::CentralPanel::default().show(ctx, |ui| {
-                        let (image, response) = ui.allocate_exact_size(
-                            egui::vec2(300.0, 160.0),
-                            egui::Sense::click_and_drag(),
+        for (shift, ctrl) in [(false, false), (true, false), (false, true), (true, true)] {
+            let modifiers = egui::Modifiers {
+                shift,
+                ctrl,
+                command: ctrl,
+                ..egui::Modifiers::NONE
+            };
+            crate::remote_keyboard::with_test_modifiers(modifiers, || {
+                let ctx = egui::Context::default();
+                ctx.options_mut(|o| o.max_passes = 1.try_into().unwrap());
+                let (commands, mut requests) = tokio::sync::mpsc::channel(64);
+                let mut app = Applications::new(None, uuid::Uuid::new_v4());
+                app.worker = Some(Worker {
+                    commands,
+                    state: Arc::new(parking_lot::Mutex::new(State::default())),
+                    cancel: tokio_util::sync::CancellationToken::new(),
+                });
+                for focused in [true, false] {
+                    let _ = ctx.run(
+                        egui::RawInput {
+                            focused,
+                            modifiers,
+                            events: vec![
+                                egui::Event::Copy,
+                                egui::Event::Paste("private text".into()),
+                                egui::Event::Cut,
+                            ],
+                            ..Default::default()
+                        },
+                        |ctx| {
+                            egui::CentralPanel::default().show(ctx, |ui| {
+                                let (image, response) = ui.allocate_exact_size(
+                                    egui::vec2(300.0, 160.0),
+                                    egui::Sense::click_and_drag(),
+                                );
+                                response.request_focus();
+                                app.application_input(
+                                    ui,
+                                    &response,
+                                    image,
+                                    (300, 160),
+                                    (0, 0),
+                                    true,
+                                    true,
+                                );
+                            });
+                        },
+                    );
+                    let mut keys = Vec::new();
+                    while let Ok(request) = requests.try_recv() {
+                        if let Request::Key { evdev, pressed } = request {
+                            keys.push((evdev, pressed));
+                        }
+                    }
+                    if focused {
+                        let mut expected = Vec::new();
+                        if ctrl {
+                            expected.push((29, true));
+                        }
+                        if shift {
+                            expected.push((42, true));
+                        }
+                        // An already-held Ctrl belongs to the user: clipboard commands
+                        // must not release it between C, V and X. A temporary Ctrl must
+                        // instead be released after each command, preserving Shift.
+                        expected.extend(if ctrl {
+                            vec![
+                                (46, true),
+                                (46, false),
+                                (47, true),
+                                (47, false),
+                                (45, true),
+                                (45, false),
+                            ]
+                        } else {
+                            vec![
+                                (29, true),
+                                (46, true),
+                                (46, false),
+                                (29, false),
+                                (29, true),
+                                (47, true),
+                                (47, false),
+                                (29, false),
+                                (29, true),
+                                (45, true),
+                                (45, false),
+                                (29, false),
+                            ]
+                        });
+                        assert_eq!(
+                            keys, expected,
+                            "clipboard edges changed with Shift={shift}, Ctrl={ctrl}"
                         );
-                        response.request_focus();
-                        app.application_input(ui, &response, image, (300, 160), (0, 0), true, true);
-                    });
-                },
-            );
-            let mut keys = Vec::new();
-            while let Ok(request) = requests.try_recv() {
-                if let Request::Key { evdev, pressed } = request {
-                    keys.push((evdev, pressed));
+                    } else {
+                        assert!(
+                            keys.is_empty(),
+                            "background application consumed a local clipboard command"
+                        );
+                    }
+                    assert_eq!(app.modifiers.ctrl, ctrl);
+                    assert_eq!(app.modifiers.shift, shift);
                 }
-            }
-            if focused {
-                assert_eq!(
-                    keys,
-                    vec![
-                        (29, true),
-                        (46, true),
-                        (46, false),
-                        (29, false),
-                        (29, true),
-                        (47, true),
-                        (47, false),
-                        (29, false),
-                        (29, true),
-                        (45, true),
-                        (45, false),
-                        (29, false)
-                    ]
-                );
-            } else {
-                assert!(
-                    keys.is_empty(),
-                    "background application consumed a local clipboard command"
-                );
-            }
-            assert!(!app.modifiers.ctrl);
+                app.release();
+                assert_eq!(app.modifiers, egui::Modifiers::NONE);
+                if shift || ctrl {
+                    assert!(
+                        std::iter::from_fn(|| requests.try_recv().ok())
+                            .any(|r| matches!(r, Request::Release)),
+                        "Held modifiers must be released when the view loses capture"
+                    );
+                }
+            });
         }
     }
     #[test]
