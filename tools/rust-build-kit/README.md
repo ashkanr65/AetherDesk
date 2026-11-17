@@ -15,11 +15,19 @@ This kit builds the AetherDesk Windows application, Linux agent, X11 and video r
 Application Preferences and colour customization are described in [PREFERENCES.md](../../PREFERENCES.md). Packages and installer shortcuts use AetherDesk; existing installation and data identifiers remain compatible.
 
 Double-click `Build-Everything.cmd` in `AetherDesk-Rust-Beginner-Build-Kit`.
-`Build-Portable-Only.cmd` omits the installer. All three launchers, including
-`Rebuild-Everything.cmd`, automatically clear old generated outputs before running
-the stages. After success they also remove staging files and caches to save disk
-space, keeping completed packages, logs and reports. These commands compile and test the
-source when **you** run them. Source changes do not compile until you run the kit.
+After every build stage succeeds, it keeps the newest completed release set
+(package folder, portable ZIP and installer) and removes verified older sets
+from `AetherDesk-Rust-output/packages`. Failed builds keep older releases.
+Installed/running copies, changed packages and other active tasks are protected;
+any cleanup exception is printed. Source changes compile when **you** run the kit.
+
+**Build-Faster.cmd keeps older completed releases.** Both launchers still remove
+owned temporary files/containers on success and failure and share one reusable
+cache with a normal 10 GB post-build budget. The faster switch does not disable
+that bounded cleanup. `Build-Portable-Only.cmd` omits the installer and also
+retains older releases; `Build-Portable-Faster.cmd` does likewise. All required
+compiler tests still run. Logs, reports and signed-publication evidence remain.
+Release-retention results are saved in `reports/release-retention.json`.
 
 
 Dependency locks are prepared separately for the UI and backend in the isolated

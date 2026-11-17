@@ -1,18 +1,27 @@
-# AetherDesk 0.1.3 - build 9
+# AetherDesk 0.1.3 - build 10
 
-Build 9 adds Codex chat inside AetherDesk, an optional external Codex connector, monitor-disconnection recovery and bottom-row alignment fixes. Full package and real host acceptance remain separate from compiler and isolated client checks.
+Build 10 improves recovery after a monitor is disconnected, including normal window sizes saved by earlier versions.
 
-## Changes in build 9
+## Changes in build 10
 
-- **Two application title bars:** retain the Windows caption for moving/minimizing the independent view and closing it without ending the host application. Display the actual host title strip beneath AetherDesk's compact controls; its buttons operate on the host window. Keep normal application Save/Cancel handling and a separate Return to desktop action. Undecorated clients get an explicit graceful host-close control, with no force-kill fallback. Title strips use bounded lossless, damage-driven updates; older retained agents keep their existing view behavior until reconnected with a current runtime.
-- **Codex in the AI Assistant:** use the installed Codex and its existing sign-in directly from AetherDesk's composer. Discover account models and reasoning efforts, stream answers, attach screenshots, continue each chat's own conversation and use Stop/New chat. Keep explicit Windows/host workspace selection and AetherDesk action approvals. Codex manages its own context/answer limits; the response timeout remains configurable. No separate API key is required by this integration. See [setup and boundaries](docs/codex-in-aetherdesk.md).
-- **AI service controls and model selection:** keep Use Codex, External Codex, Services/API keys and Refresh models in one bounded row with matching heights. Load Codex's catalog automatically, show loading/failure state, remove the temporary default entry after discovery, and place the selected provider's selectable models first. Preserve actual model choices across refresh and restart.
-- **Workspace isolation:** embedded Codex uses AetherDesk's rooted file tools and separate scoped commands, rather than typing into terminals. Disable inherited native shell/plugin/MCP tools for this child process without modifying normal Codex settings. Reject other workspace IDs, decline unsupported native permission requests, preserve revision checks and cancel pending actions on Stop or workspace revocation. New provider/workspace/Tools contexts retain bounded prior conversation text without reusing the previous execution scope.
-- **Optional external connector:** explicitly share connections or a Windows folder with Codex's own interface through a local MCP companion. Disabled by default, read-only by default, loopback-only, authenticated with Windows-user-protected credentials, bounded and revocable. Shares reset on exit. Commands/writes require individual approval when permitted. Packaging verifies the shipped companion's handshake, tool catalog, refusal paths and shutdown.
-- **Monitor removal:** recover captioned AetherDesk, Files/editor and independent application windows whose title bars are stranded on a removed display. Fit oversized windows when the display topology changes, preserve reachable multi-monitor positions and defer corrections until native dragging finishes. Physical monitor-unplug acceptance still needs confirmation on the affected setup.
-- **Bottom rows:** vertically centre the connection status, server clock and compact host-monitoring text/icons within their actual row bounds, including larger fonts. Preserve overflow and tooltips.
-- **Linux input regression setup:** acquire the test's pointer grab before injecting a held click, so xfwm4's passive click grabs cannot race the deliberate synchronous-grab scenario. Retain immediate release acknowledgements, stuck-input assertions and protection for keys owned by another client.
-- **Windows clipboard regression setup:** isolate synthetic input tests from the user's live Windows modifier state. Explicitly cover no modifiers, held Shift, held Ctrl and Ctrl+Shift, including temporary-Control release, preservation of held modifiers, background-view rejection and capture-loss cleanup. Production keyboard polling is unchanged.
-- **Remote application window lifetime:** skip an expired independently hosted window when refreshing the application list. Process window destruction before refreshing its title/geometry, and recover from a selected window disappearing between X11 queries with a normal closed-view notice. Preserve unrelated X11 failures and allow other applications to remain selectable. Verify normal and independently hosted window destruction on an isolated desktop.
+- Follow the active Windows keyboard layout in each focused independent application or menu, including applications detached from Remote Desktop. Resynchronize after focus changes/reconnects and language switches without replacing physical Ctrl/Shift/AltGr handling or forcing unknown layouts to US.
+- Reduce remote desktop rendering work when no views are attached, while preserving host applications and resumable sessions. Keep independent application views active until their own connection detaches.
+- Render changed desktop content on demand, with prompt updates after idle input, bounded busy-frame pacing and low-rate callbacks for unviewed applications.
+- Keep wheel-button delivery ordered with its exact pointer position, avoiding a cross-channel race when the compositor processes input quickly. Preserve held keyboard modifiers and fractional wheel accumulation.
+- Negotiate exact tile reuse for moved or repeated screen regions. Resolve copies from one immutable committed baseline, preserve colours and atomic updates, and retain the original lossless path for older clients and agents.
+
+These performance changes take effect in newly started host sessions after rebuilding. Existing retained sessions and their applications are left running with their current agent.
+
+- Avoid a timing error between retained-session recovery and the final agent status update.
+
+- Keep SSH terminal keyboard focus after right-click copy/paste, including when returning from another window, and return pasted input to the live prompt from scrollback.
+
+- Recover retained desktops whose broker has already been reaped but left failed discovery files behind. Require a private exit record and a closed listener, preserve the old session directory for diagnosis, and leave live endpoints and unrelated processes untouched.
+- Raise an explicitly activated independent application even when it already has keyboard focus but is covered by another host window. Check the real pointer target before sending clicks or wheel events, and preserve owned menu grabs and held modifiers.
+- Record bounded, rate-limited host request errors in the application log while keeping routine focus warnings out of the GUI.
+- Repair Windows' saved Restore placement as well as the visible window bounds after monitor changes. Keep maximized and minimized states intact, and make Maximize followed by Restore return to a reachable, usable window.
+- Recover collapsed, zero-size or title-bar-only windows using their last usable normal size, with a bounded default if no usable size is available. Preserve valid small application windows, intentional monitor spans and active dragging.
+- Keep normal placement in the correct Windows workspace coordinates, including top/left taskbars and monitors with negative origins. Never use minimized or maximized rectangles as normal sizes when replaying a deferred DPI change.
+- Apply the shared recovery to the main window and captioned Files, editor and independent application windows. Recovery changes window geometry only; it does not restart connections or applications.
 
 [Earlier release notes](docs/release-history.md).

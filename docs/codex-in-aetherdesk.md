@@ -20,7 +20,7 @@ Stop, closing the chat and application shutdown cancel the owned client process 
 
 The **External Codex connector…** button in AI Assistant settings opens a separate optional MCP bridge. This is not required for the embedded chat.
 
-Enable the connector, keep Read-only enabled initially, and explicitly share a connection or Windows folder. Shared connections expose terminal output, root-folder files and remote desktop screenshots. Shares reset when AetherDesk exits. Click **Connect to installed Codex** to register the packaged `aetherdesk-codex.exe` companion under the name `aetherdesk`. This changes only that named entry in your Codex MCP configuration. Refresh Codex's MCP tools or start a new Codex chat if it retains an old tool catalog.
+Enable the connector, keep Read-only enabled initially, and explicitly share a connection or Windows folder. Shared connections expose terminal output, root-folder files and remote desktop screenshots. Shares reset when AetherDesk exits. Click **Connect to installed Codex** to register the packaged `runtime/ai/aetherdesk-connector.exe` companion under the name `aetherdesk`. This changes only that named entry in your Codex MCP configuration. Refresh Codex's MCP tools or start a new Codex chat if it retains an old tool catalog.
 
 The external bridge listens only on loopback, authenticates each request using a Windows-user-protected credential and exposes eight bounded tools. Commands and writes remain blocked in Read-only mode; otherwise each requires Allow once inside AetherDesk. Disabling the bridge or revoking a share cancels queued/running access. No SSH passwords, private keys or provider API keys are exposed through its tools.
 
@@ -29,7 +29,7 @@ The external bridge listens only on loopback, authenticates each request using a
 - **Codex unavailable/not signed in:** install or update Codex and sign in there, then retry model discovery. Login is owned by Codex; do not paste an account token into AetherDesk's API-key fields.
 - **No models/usage limit:** check the Codex account's access and limits. Refresh does not buy credits or bypass account restrictions.
 - **Unsupported protocol/configuration:** update the installed CLI. Dynamic tools use Codex's experimental app-server API; an incompatible CLI fails visibly. Embedded mode stops if it cannot safely disable an inherited MCP server identifier.
-- **External companion missing:** use the complete Build 9 package, with `aetherdesk-codex.exe` beside `AetherDesk.exe`.
+- **External companion missing:** use the complete package, including `runtime/ai/aetherdesk-connector.exe`. After upgrading an existing external connection, click **Connect to installed Codex** once to refresh its registered path.
 
 Compiler regressions cover framing, input schemas, exact workspace checks, denials, root restrictions, approval UI and revocation. Packaging exercises the real companion without model access. The optional ignored native test `installed_codex_streams_and_resumes_inside_the_assistant` checks streamed conversation/resume and an explicitly approved disposable file read, then archives its own test conversations; it is intentionally excluded from ordinary builds. Real host/Cadence acceptance remains separate.
 

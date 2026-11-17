@@ -484,14 +484,17 @@ impl Connector {
         self.ui(ctx, runtime, targets);
     }
     fn register(&mut self, runtime: &Connections, ctx: &egui::Context) {
-        let executable = match std::env::current_exe()
-            .ok()
-            .and_then(|exe| exe.parent().map(|p| p.join("aetherdesk-codex.exe")))
-        {
+        let executable = match std::env::current_exe().ok().and_then(|exe| {
+            exe.parent().map(|p| {
+                p.join("runtime")
+                    .join("ai")
+                    .join("aetherdesk-connector.exe")
+            })
+        }) {
             Some(exe) if exe.is_file() => exe,
             _ => {
                 self.error =
-                    Some("The Codex companion is missing. Use a complete Build 9 package.".into());
+                    Some("The integration helper is missing. Use a complete AetherDesk package with its runtime folder.".into());
                 return;
             }
         };

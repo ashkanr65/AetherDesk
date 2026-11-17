@@ -162,6 +162,7 @@ impl ApplicationSpec {
 
 enum CompositorCommand {
     CaptureRate(u32),
+    CaptureDemand(bool),
     Launch(ApplicationSpec),
     Resize {
         width: u32,
@@ -311,6 +312,13 @@ impl HeadlessCompositor {
             .map_err(|_| CompositorError::Stopped)
     }
 
+    /// This changes capture demand only. The compositor, X server, children and
+    /// low-rate Wayland frame callbacks remain alive while nobody is viewing.
+    pub fn set_capture_demand(&self, viewed: bool) -> Result<(), CompositorError> {
+        self.send(CompositorCommand::CaptureDemand(viewed))
+            .map_err(|_| CompositorError::Stopped)
+    }
+
     pub fn resize(&self, width: u32, height: u32) -> Result<(), CompositorError> {
         if width == 0 || height == 0 || width > 16_384 || height > 16_384 {
             return Err(CompositorError::InvalidConfiguration(
@@ -443,7 +451,13 @@ pub(crate) struct AgentCompositorState {
     pub(crate) width: u32,
     pub(crate) height: u32,
     pub(crate) refresh_millihz: u32,
-    capture_fps: u32,
+    frame_clock: crate::frame_clock::FrameClock,
+    viewer_probe: crate::view_demand::ViewerProbe,
+    scene: Vec<(
+        Window,
+        Point<i32, Logical>,
+        smithay::utils::Rectangle<i32, Logical>,
+    )>,
     pub(crate) registry: SurfaceRegistry,
     pub(crate) surface_output: Arc<RwLock<Vec<SurfaceSnapshot>>>,
     pub(crate) frame_tx: watch::Sender<Option<Arc<CapturedFrame>>>,
@@ -501,23 +515,36 @@ fn run_compositor(
     }
     let _ = ready_tx.send(Ok((socket_name, event_loop.get_signal())));
 
-    let mut next_frame = Instant::now();
     while state.running {
+        state
+            .frame_clock
+            .set_mirror_viewed(state.viewer_probe.active(), Instant::now());
         // Wayland socket events and explicit command wakeups interrupt this
         // wait. Do not wake 250 times/s merely to poll an otherwise idle desktop.
-        event_loop.dispatch(
-            Some(next_frame.saturating_duration_since(Instant::now())),
-            &mut state,
-        )?;
+        let mut timeout = state.frame_clock.timeout(Instant::now());
+        if !state.frame_clock.viewed() {
+            timeout = timeout.min(Duration::from_millis(100));
+        }
+        if state.enable_xwayland && state.xdisplay.is_none() {
+            timeout = timeout.min(Duration::from_millis(20));
+        }
+        event_loop.dispatch(Some(timeout), &mut state)?;
         state.process_commands()?;
-        if Instant::now() >= next_frame {
+        state
+            .frame_clock
+            .set_mirror_viewed(state.viewer_probe.active(), Instant::now());
+        state.space.refresh();
+        state.refresh_scene_damage();
+        let now = Instant::now();
+        if state.frame_clock.render_due(now) {
             state.render_frame()?;
-            // Never catch up by rendering a burst of outdated frames.
-            next_frame =
-                Instant::now() + Duration::from_secs_f64(1.0 / f64::from(state.capture_fps));
+            state.frame_clock.rendered(now);
+        }
+        if state.frame_clock.callbacks_due(now) {
+            state.send_frame_callbacks();
+            state.frame_clock.sent_callbacks(now);
         }
         state.reap_applications();
-        state.space.refresh();
         state.popups.cleanup();
         state.display_handle.flush_clients()?;
     }
@@ -616,7 +643,12 @@ impl AgentCompositorState {
             width: config.width,
             height: config.height,
             refresh_millihz: config.refresh_millihz,
-            capture_fps: (config.refresh_millihz / 1000).clamp(1, 240),
+            frame_clock: crate::frame_clock::FrameClock::new(
+                config.refresh_millihz / 1000,
+                Instant::now(),
+            ),
+            viewer_probe: crate::view_demand::ViewerProbe::open(&config.runtime_dir)?,
+            scene: Vec::new(),
             registry: SurfaceRegistry::default(),
             surface_output,
             frame_tx,
@@ -658,8 +690,17 @@ impl AgentCompositorState {
                     }
                     self.pending_applications.push(application)
                 }
-                CompositorCommand::CaptureRate(fps) => self.capture_fps = fps.clamp(1, 240),
-                CompositorCommand::Resize { width, height } => self.resize_output(width, height)?,
+                CompositorCommand::CaptureRate(fps) => self.frame_clock.set_rate(fps),
+                CompositorCommand::CaptureDemand(viewed) => {
+                    self.frame_clock.set_viewed(viewed, Instant::now());
+                    if viewed {
+                        self.target_valid = false;
+                    }
+                }
+                CompositorCommand::Resize { width, height } => {
+                    self.resize_output(width, height)?;
+                    self.frame_clock.damage();
+                }
                 CompositorCommand::Input(input) => self.inject_arpp_input(input)?,
                 CompositorCommand::Clipboard(selection) => {
                     let mime_types: Vec<String> = selection.values.keys().cloned().collect();
@@ -705,6 +746,7 @@ impl AgentCompositorState {
                     // Metadata/monitor-placement changes do not recreate the framebuffer.
                     if (self.width, self.height) != (width, height) {
                         self.resize_output(width, height)?;
+                        self.frame_clock.damage();
                     }
                     if let Some(desktop) = &mut self.host_desktop {
                         desktop.monitors =
@@ -897,18 +939,29 @@ impl AgentCompositorState {
                 horizontal,
                 vertical,
             } => {
-                if self
-                    .host_desktop
-                    .as_ref()
-                    .and_then(|d| d.clipboard.as_ref())
-                    .is_some_and(|bridge| bridge.wheel(horizontal, vertical))
-                {
-                    return Ok(());
-                }
                 let pointer = self
                     ._seat
                     .get_pointer()
                     .ok_or(CompositorError::Input("Wayland pointer is unavailable"))?;
+                let position = pointer.current_location();
+                let x = position
+                    .x
+                    .round()
+                    .clamp(0.0, f64::from(self.width.saturating_sub(1)))
+                    as i16;
+                let y = position
+                    .y
+                    .round()
+                    .clamp(0.0, f64::from(self.height.saturating_sub(1)))
+                    as i16;
+                if self
+                    .host_desktop
+                    .as_ref()
+                    .and_then(|d| d.clipboard.as_ref())
+                    .is_some_and(|bridge| bridge.wheel(horizontal, vertical, x, y))
+                {
+                    return Ok(());
+                }
                 pointer.axis(self, wheel_frame(time, horizontal, vertical));
                 pointer.frame(self);
             }
@@ -1053,6 +1106,11 @@ impl AgentCompositorState {
     }
 
     fn render_frame(&mut self) -> Result<(), CompositorError> {
+        // Independent windows capture their own XComposite pixmaps. They need
+        // live frame callbacks, not a second software render of the full root.
+        if self.window_streams_only {
+            return Ok(());
+        }
         let mut framebuffer = self.renderer.bind(&mut self.target)?;
         let result = smithay::desktop::space::render_output::<
             _,
@@ -1071,20 +1129,6 @@ impl AgentCompositorState {
             [0.035, 0.035, 0.045, 1.0],
         )?;
         self.target_valid = true;
-        // Frame callbacks must continue even when no pixels changed.
-        self.space.elements().for_each(|window| {
-            window.send_frame(
-                &self.output,
-                self.start_time.elapsed(),
-                Some(Duration::ZERO),
-                |_, _| Some(self.output.clone()),
-            )
-        });
-        // The root still presents buffers and frame callbacks normally. Only
-        // independent window streams read pixels in application-only sessions.
-        if self.window_streams_only {
-            return Ok(());
-        }
         let Some(damage) = result.damage else {
             return Ok(());
         };
@@ -1134,6 +1178,33 @@ impl AgentCompositorState {
         // A slow encoder takes the newest complete raw image, never old queued images.
         self.frame_tx.send_replace(Some(Arc::new(frame)));
         Ok(())
+    }
+
+    fn send_frame_callbacks(&self) {
+        self.space.elements().for_each(|window| {
+            window.send_frame(
+                &self.output,
+                self.start_time.elapsed(),
+                Some(Duration::ZERO),
+                |_, _| Some(self.output.clone()),
+            )
+        });
+    }
+
+    fn refresh_scene_damage(&mut self) {
+        let scene: Vec<_> = self
+            .space
+            .elements()
+            .filter_map(|window| {
+                self.space
+                    .element_location(window)
+                    .map(|location| (window.clone(), location, window.geometry()))
+            })
+            .collect();
+        if scene != self.scene {
+            self.frame_clock.damage();
+            self.scene = scene;
+        }
     }
 
     fn reap_applications(&mut self) {
@@ -1268,6 +1339,16 @@ impl CompositorHandler for AgentCompositorState {
     }
 
     fn commit(&mut self, surface: &WlSurface) {
+        let visual_change = with_states(surface, |states| {
+            let mut attributes = states.cached_state.get::<SurfaceAttributes>();
+            let attributes = attributes.current();
+            attributes.buffer.is_some()
+                || !attributes.damage.is_empty()
+                || attributes.buffer_delta.is_some()
+        });
+        if visual_change {
+            self.frame_clock.damage();
+        }
         let buffer_kind = pending_buffer_kind(surface);
         on_commit_buffer_handler::<Self>(surface);
         self.registry
@@ -1329,6 +1410,9 @@ impl CompositorHandler for AgentCompositorState {
                 let _ = popup.send_configure();
             }
         }
+    }
+    fn destroyed(&mut self, _surface: &WlSurface) {
+        self.frame_clock.damage();
     }
 }
 
@@ -1797,6 +1881,60 @@ mod tests {
             .socket_name()
             .to_string_lossy()
             .starts_with("wayland-"));
+        compositor.shutdown();
+    }
+
+    #[tokio::test]
+    async fn detached_capture_keeps_children_running_and_resume_gets_current_dimensions() {
+        let runtime = tempfile::tempdir().unwrap();
+        std::fs::set_permissions(runtime.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        let counter = runtime.path().join("heartbeat");
+        let mut compositor = HeadlessCompositor::spawn(CompositorConfig {
+            width: 64,
+            height: 48,
+            refresh_millihz: 30_000,
+            runtime_dir: runtime.path().to_owned(),
+            enable_xwayland: false,
+            host_window_manager: false,
+        })
+        .unwrap();
+        compositor.set_capture_demand(false).unwrap();
+        let mut application = ApplicationSpec::new("/bin/sh");
+        application.arguments = vec![
+            "-c".into(),
+            r#"while :; do printf x >> "$1"; sleep 0.05; done"#.into(),
+            "heartbeat".into(),
+            counter.as_os_str().to_owned(),
+        ];
+        compositor.launch(application).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(4);
+        while !counter.exists() {
+            assert!(Instant::now() < deadline);
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        compositor.resize(80, 60).unwrap();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        compositor.frames.borrow_and_update();
+        let length = std::fs::metadata(&counter).unwrap().len();
+        while std::fs::metadata(&counter).unwrap().len() <= length {
+            assert!(
+                Instant::now() < deadline,
+                "Host child stopped when capture detached"
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert!(
+            !compositor.frames.has_changed().unwrap(),
+            "Detached output still produced pixels"
+        );
+        compositor.set_capture_rate(5).unwrap();
+        compositor.set_capture_demand(true).unwrap();
+        let fresh = tokio::time::timeout(Duration::from_secs(2), compositor.next_frame())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!((fresh.width, fresh.height), (80, 60));
+        assert!(std::fs::metadata(&counter).unwrap().len() >= length);
         compositor.shutdown();
     }
 

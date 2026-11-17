@@ -87,6 +87,7 @@ pub(super) struct State {
     pub image: Option<Frame>,
     pub popups: Vec<PopupState>,
     pub error: Option<String>,
+    pub input_diagnostic: Option<(String, Instant)>,
     pub alive: bool,
     pub streaming: bool,
     pub host_titlebar: bool,

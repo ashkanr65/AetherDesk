@@ -3,13 +3,15 @@ $PSNativeCommandUseErrorActionPreference = $false
 $env:PSModulePath = "$PSHOME\Modules;$env:ProgramFiles\WindowsPowerShell\Modules"
 Import-Module (Join-Path $PSHOME 'Modules\Microsoft.PowerShell.Utility\Microsoft.PowerShell.Utility.psd1') -ErrorAction Stop
 $recipeRoot = $PSScriptRoot
+Import-Module (Join-Path $recipeRoot 'Project-Cleanup.psm1') -Force -DisableNameChecking
 $sourceRoot = [IO.Path]::GetFullPath((Join-Path $recipeRoot '..\..'))
 $outputRoot = [IO.Path]::GetFullPath($(if ($env:AETHERDESK_RUST_OUTPUT_ROOT) {
     $env:AETHERDESK_RUST_OUTPUT_ROOT
 } else { Join-Path (Split-Path $sourceRoot -Parent) 'AetherDesk-Rust-output' })).TrimEnd('\')
 $frozenFingerprint = $env:AETHERDESK_RUST_FROZEN_FINGERPRINT
-$frozenWorker = $frozenFingerprint -match '^[a-f0-9]{64}$' -and
-    $sourceRoot.Equals((Join-Path $outputRoot ('source\'+$frozenFingerprint)),[StringComparison]::OrdinalIgnoreCase)
+$legacySnapshot = Join-Path $outputRoot ('source\'+$frozenFingerprint)
+$managedSnapshot = $sourceRoot.StartsWith((Join-Path $outputRoot '.cleanup-work')+'\',[StringComparison]::OrdinalIgnoreCase) -and $sourceRoot.EndsWith('\source',[StringComparison]::OrdinalIgnoreCase)
+$frozenWorker = $frozenFingerprint -match '^[a-f0-9]{64}$' -and ($sourceRoot.Equals($legacySnapshot,[StringComparison]::OrdinalIgnoreCase) -or $managedSnapshot)
 if ($frozenFingerprint -and !$frozenWorker) { throw 'Frozen workers must run from their recorded source snapshot.' }
 if ($outputRoot -eq [IO.Path]::GetPathRoot($outputRoot).TrimEnd('\') -or
     $outputRoot.Equals($sourceRoot, [StringComparison]::OrdinalIgnoreCase) -or
@@ -48,67 +50,11 @@ function Write-BuildTimingReport([string]$Path,[DateTimeOffset]$Started,[TimeSpa
 }
 
 function Reset-BuildOutput([string]$OutputDirectory,[string]$SourceDirectory,[switch]$AfterSuccess,[switch]$KeepCache) {
-    $root = [IO.Path]::GetFullPath($OutputDirectory).TrimEnd('\')
-    $source = [IO.Path]::GetFullPath($SourceDirectory).TrimEnd('\')
-    if ($root -eq [IO.Path]::GetPathRoot($root).TrimEnd('\') -or
-        $root.Equals($source,[StringComparison]::OrdinalIgnoreCase) -or
-        $root.StartsWith($source + '\',[StringComparison]::OrdinalIgnoreCase) -or
-        $source.StartsWith($root + '\',[StringComparison]::OrdinalIgnoreCase)) {
-        throw 'Cleanup requires an output folder separate from the source, not a drive root.'
-    }
-    # Check every existing ancestor before traversing the output. A junction
-    # could otherwise redirect an apparently safe output path into the source.
-    $ancestor = $root
-    while ($ancestor) {
-        if (Test-Path -LiteralPath $ancestor) {
-            $item = Get-Item -LiteralPath $ancestor -Force
-            if (!$item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
-                throw "Cleanup refuses a non-directory or linked output ancestor: $ancestor"
-            }
-        }
-        $ancestor = Split-Path -Path $ancestor -Parent
-    }
-    # Only recognized generated artifacts are disposable. Successful builds also
-    # release caches; completed packages/evidence and unknown user files remain.
-    $names = if ($AfterSuccess) { @('agent','installer','source','state','cache','preflight.json','model-tests.json') } else { @('agent','installer','logs','packages','reports','source','state',
-        'preflight.json','model-tests.json','LATEST-FOLDER.txt',
-        'LATEST-ZIP.txt','LATEST-INSTALLER.txt',
-        'LATEST-PREVIEW-FOLDER.txt','LATEST-PREVIEW-ZIP.txt','LATEST-PREVIEW-INSTALLER.txt') }
-    if ($AfterSuccess -and $KeepCache) { $names = @($names | Where-Object { $_ -ne 'cache' }) }
-    $targets = [Collections.Generic.List[string]]::new()
-    foreach ($name in $names) {
-        $target = [IO.Path]::GetFullPath((Join-Path $root $name))
-        if (!$target.StartsWith($root + '\',[StringComparison]::OrdinalIgnoreCase)) {
-            throw "Cleanup target is outside the output folder: $target"
-        }
-        if (Test-Path -LiteralPath $target) { $targets.Add($target) }
-    }
-    # Validate all trees before deleting any of them; never recurse into links.
-    $pending = [Collections.Generic.Stack[string]]::new()
-    foreach ($target in $targets) { $pending.Push($target) }
-    while ($pending.Count) {
-        $item = Get-Item -LiteralPath $pending.Pop() -Force
-        if (!$item.FullName.StartsWith($root + '\',[StringComparison]::OrdinalIgnoreCase) -or
-            ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
-            throw "Cleanup refuses an outside or linked artifact: $($item.FullName)"
-        }
-        if ($item.PSIsContainer) {
-            foreach ($child in Get-ChildItem -LiteralPath $item.FullName -Force) { $pending.Push($child.FullName) }
-        }
-    }
-    if ($AfterSuccess -and $KeepCache) { Write-Host "Removing staging files: $root (keeping build caches, packages, logs and reports)." }
-    elseif ($AfterSuccess) { Write-Host "Removing temporary build files and caches: $root (keeping packages, logs, reports and latest pointers)." }
-    else { Write-Host "Cleaning old generated build outputs: $root (keeping dependency and compiler caches until the build succeeds)." }
-    foreach ($target in $targets) { Remove-Item -LiteralPath $target -Recurse -Force -ErrorAction Stop }
+    throw 'Untracked output cleanup is disabled. Use the current task ownership manifest.'
 }
-
 function Clear-NativeAgentBuildCache {
-    $distribution = if ($env:AETHERDESK_WSL_DISTRIBUTION) { $env:AETHERDESK_WSL_DISTRIBUTION } else { 'Ubuntu' }
-    # The label is applied only by this Rust recipe. Never prune an entire
-    # container store or unrelated/old unlabelled images on the user's machine.
-    Invoke-StepTool 'wsl.exe' @('-d',$distribution,'-u','root','--exec','podman','--storage-driver=vfs','image','prune','--all','--force','--filter','label=io.aetherdesk.rust-build-cache=true')
+    throw 'Shared-label image pruning is disabled. Cleanup removes exact verified task IDs only.'
 }
-
 function Get-RustSourceFiles {
     $paths = [Collections.Generic.List[string]]::new()
     foreach ($path in Get-ChildItem -LiteralPath (Join-Path $sourceRoot 'ui\rust') -Recurse -File) {
@@ -289,7 +235,8 @@ function Write-Record([int]$Step,[string]$Fingerprint,[string]$Output,[string[]]
         ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $stateRoot ('step-{0:D2}.json' -f $Step)) -Encoding UTF8
 }
 function Write-Snapshot([string]$Fingerprint) {
-    $destination = Join-Path $outputRoot ('source\' + $Fingerprint)
+    $stagingRoot = if ($env:AETHERDESK_CLEANUP_TASK_WORK) { $env:AETHERDESK_CLEANUP_TASK_WORK } else { throw 'Snapshot requires a tracked build task.' }
+    $destination = Join-Path $stagingRoot 'source'
     New-Item -ItemType Directory -Force -Path $destination | Out-Null
     foreach ($relative in Get-RustSourceFiles) {
         $target = Join-Path $destination $relative
@@ -355,6 +302,7 @@ function Build-NativeAgent([string]$Snapshot,[string]$Destination) {
         Copy-Item -Path (Join-Path $bundle '*') -Destination $Destination -Recurse
         return
     }
+    if ($env:AETHERDESK_WSL_DISTRIBUTION -and $env:AETHERDESK_WSL_DISTRIBUTION -ne 'Ubuntu') { throw 'Verify the shared cleanup store configuration before selecting another WSL distribution.' }
     $distribution = if ($env:AETHERDESK_WSL_DISTRIBUTION) { $env:AETHERDESK_WSL_DISTRIBUTION } else { 'Ubuntu' }
     $linuxSource = (& wsl.exe -d $distribution --exec wslpath -u $Snapshot | Out-String).Trim()
     if ($LASTEXITCODE -ne 0 -or !$linuxSource.StartsWith('/')) { throw 'Could not translate the snapshot path for WSL.' }
@@ -363,7 +311,9 @@ function Build-NativeAgent([string]$Snapshot,[string]$Destination) {
     if ($LASTEXITCODE -ne 0 -or !$linuxOutput.StartsWith('/')) { throw 'Could not translate the agent output path for WSL.' }
     # The original container recipe compiles the Rust agent, runs its Wayland
     # regression tests, and bundles Xwayland and the encoder's runtime libraries.
-    Invoke-StepTool 'wsl.exe' @('-d',$distribution,'-u','root','--exec','podman','--storage-driver=vfs','build','--layers',
+    Invoke-StepTool 'wsl.exe' @('-d',$distribution,'-u','root','--exec','podman','--storage-driver=vfs','build','--layers=false','--rm=true','--force-rm=true',
+        '--build-arg',('AETHER_CLEANUP_TASK='+$env:AETHERDESK_CLEANUP_TASK_ID),'--build-arg','AETHER_CLEANUP_PROJECT=aetherdesk',
+        '--iidfile',($linuxOutput+'.iid'),
         '--from','docker.io/library/almalinux:8','--platform','linux/amd64','--target','artifact','--output',("type=local,dest=$linuxOutput"),
         '-f',($linuxSource + '/agent/linux/Dockerfile.bundle'),$linuxSource)
     Test-AgentBundle $Destination
@@ -432,7 +382,8 @@ function Copy-DependencyNotices([string]$Manifest,[string]$Destination) {
     [IO.File]::WriteAllLines((Join-Path $Destination 'THIRD-PARTY-NOTICES.txt'),$notices,[Text.UTF8Encoding]::new($false))
 }
 function Verify-RustPackage([string]$Package,[switch]$BeforeX11) {
-    if (!(Test-Path -LiteralPath (Join-Path $Package 'aetherdesk-codex.exe') -PathType Leaf)) { throw 'The native Codex companion is missing.' }
+    foreach ($name in @('aetherdesk-codex.exe','aetherdesk-connector.exe')) { if (Test-Path -LiteralPath (Join-Path $Package $name)) { throw 'Integration helpers belong in runtime\ai, not the application root.' } }
+    if (!(Test-Path -LiteralPath (Join-Path $Package 'runtime\ai\aetherdesk-connector.exe') -PathType Leaf)) { throw 'The native Codex companion is missing.' }
     foreach ($relative in @('x11\vcxsrv.exe','x11\xauth.exe','x11\xkbcomp.exe','x11\fonts\misc\fonts.dir','x11\xkbdata\rules\base','gst-plugin-scanner.exe','gstreamer-1.0','agent\linux-x86_64\version.txt')) {
         if (!(Test-Path -LiteralPath (Join-Path $Package $relative))) { throw "Missing native connection runtime: $relative" }
     }
@@ -446,7 +397,7 @@ function Verify-RustPackage([string]$Package,[switch]$BeforeX11) {
     }
     if(!$BeforeX11){
         $connector=Get-Content -LiteralPath (Join-Path $Package 'verification/codex-connector.json') -Raw|ConvertFrom-Json
-        $connectorHash=(Get-FileHash -LiteralPath (Join-Path $Package 'aetherdesk-codex.exe') -Algorithm SHA256).Hash
+        $connectorHash=(Get-FileHash -LiteralPath (Join-Path $Package 'runtime\ai\aetherdesk-connector.exe') -Algorithm SHA256).Hash
         if($connector.handshakePassed -ne $true -or $connector.toolCatalogPassed -ne $true -or $connector.disabledAccessPassed -ne $true -or $connector.boundedInputPassed -ne $true -or $connector.liveHostAcceptancePassed -ne $false -or $connector.executableSha256 -ne $connectorHash){throw 'Package Codex connector evidence is invalid.'}
         $x11=Get-Content -LiteralPath (Join-Path $Package 'verification/x11-runtime.json') -Raw|ConvertFrom-Json
         if($x11.bundledX11TestPassed -ne $true -or $x11.liveAcceptancePassed -ne $false -or $x11.replacementReady -ne $false){throw 'Package bundled X11 test evidence is invalid.'}

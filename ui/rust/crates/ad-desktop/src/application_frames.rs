@@ -210,6 +210,17 @@ pub(super) fn accept(
         }
         Reply::Error(error) => {
             let mut s = state.lock();
+            // Focus deferrals stay out of the GUI, but retain bounded evidence
+            // when a host rejects input. Never log typed text or clipboard data.
+            let diagnostic: String = error.chars().take(240).collect();
+            let now = Instant::now();
+            if s.input_diagnostic.as_ref().is_none_or(|(previous, at)| {
+                previous != &diagnostic || now.duration_since(*at) >= Duration::from_secs(5)
+            }) {
+                tracing::warn!(window = ?s.selected.as_ref().map(|w| w.id), error = %diagnostic,
+                    "Remote application request was rejected by host");
+                s.input_diagnostic = Some((diagnostic, now));
+            }
             if quiet_focus_error(&error) {
                 s.input_epoch = s.input_epoch.wrapping_add(1);
                 s.error = None;
@@ -239,6 +250,20 @@ pub(super) fn accept(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn input_rejections_keep_bounded_diagnostics_without_showing_focus_warnings() {
+        let state = Arc::new(Mutex::new(State::default()));
+        let error = "Application focus changed; click its independent view to activate it again";
+        assert!(quiet_focus_error(error));
+        accept(&state, Reply::Error(error.into()), None).unwrap();
+        let first = state.lock().input_diagnostic.clone().unwrap();
+        accept(&state, Reply::Error(error.into()), None).unwrap();
+        assert_eq!(state.lock().input_diagnostic.as_ref().unwrap().1, first.1);
+        assert!(state.lock().error.is_none());
+        assert_eq!(state.lock().input_epoch, 2);
+        accept(&state, Reply::Error("x".repeat(1024)), None).unwrap();
+        assert_eq!(state.lock().input_diagnostic.as_ref().unwrap().0.len(), 240);
+    }
     #[test]
     fn host_titlebar_packets_validate_selection_and_publish_atomically() {
         let state = Arc::new(Mutex::new(State {

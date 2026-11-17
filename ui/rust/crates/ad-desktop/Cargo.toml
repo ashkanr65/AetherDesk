@@ -9,7 +9,7 @@ name = "aetherdesk"
 path = "src/main.rs"
 
 [[bin]]
-name = "aetherdesk-codex"
+name = "aetherdesk-connector"
 path = "src/codex_bridge_main.rs"
 test = false
 bench = false

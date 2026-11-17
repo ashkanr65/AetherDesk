@@ -13,8 +13,6 @@ pub(crate) struct Workspace {
     clipboard: crate::remote_clipboard::Clipboard,
     last_clipboard: String,
     tick: std::time::Instant,
-    layout: Option<(String, String)>,
-    keyboard: crate::remote_keyboard::NativeKeyboard,
     monitor_layout: Option<(u32, u32, Vec<ad_stream_protocol::MonitorProperties>)>,
     monitor_tick: std::time::Instant,
     last_window: Option<u32>,
@@ -99,8 +97,6 @@ impl Workspace {
             clipboard: Default::default(),
             last_clipboard: String::new(),
             tick: std::time::Instant::now() - std::time::Duration::from_secs(2),
-            layout: None,
-            keyboard: crate::remote_keyboard::NativeKeyboard::new(),
             monitor_layout: None,
             monitor_tick: std::time::Instant::now() - std::time::Duration::from_secs(3),
             last_window: None,
@@ -284,25 +280,6 @@ impl Workspace {
                 self.last_clipboard = text.clone();
                 if let Err(error) = self.client.send(crate::remote::Request::Clipboard { text }) {
                     self.directory.error = Some(error);
-                }
-            }
-            if focused {
-                let layout = self
-                    .keyboard
-                    .layout()
-                    .map(|(layout, variant)| (layout.to_owned(), variant.to_owned()));
-                if layout != self.layout {
-                    if let Some((layout, variant)) = &layout {
-                        if let Err(error) =
-                            self.client.send(crate::remote::Request::KeyboardLayout {
-                                layout: layout.clone(),
-                                variant: variant.clone(),
-                            })
-                        {
-                            self.directory.error = Some(error);
-                        }
-                    }
-                    self.layout = layout;
                 }
             }
         }

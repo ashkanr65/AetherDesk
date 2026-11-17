@@ -1,6 +1,13 @@
 [CmdletBinding()]
 param([Parameter(Mandatory=$true)][ValidateRange(0,6)][int]$Step)
 . (Join-Path $PSScriptRoot 'Build-Common.ps1')
+if (!$env:AETHERDESK_CLEANUP_TASK_ID -or !$env:AETHERDESK_CLEANUP_TASK_WORK) { throw 'Run this worker through the managed Run-Build-Step.ps1 entry point.' }
+$stagingRoot = Assert-CleanupTree $env:AETHERDESK_CLEANUP_TASK_WORK $env:AETHERDESK_CLEANUP_TASK_WORK
+$owner=Get-Content -LiteralPath (Join-Path $stagingRoot '.project-owner.json') -Raw | ConvertFrom-Json
+if ($owner.task -ne $env:AETHERDESK_CLEANUP_TASK_ID -or $owner.project -ne 'aetherdesk') { throw 'Build task workspace owner mismatch.' }
+Register-ProjectProcess -TaskId $env:AETHERDESK_CLEANUP_TASK_ID -Token $owner.token
+$workerMaintenanceLease=Open-CleanupMaintenanceLease
+$workerContext=[pscustomobject]@{Task=(Get-Content -LiteralPath (Get-ProjectTaskPath $env:AETHERDESK_CLEANUP_TASK_ID) -Raw|ConvertFrom-Json);Lease=$null;CacheLease=$null}
 $fingerprint = Get-SourceFingerprint
 $env:AETHERDESK_SOURCE_FINGERPRINT = $fingerprint
 $stamp = Get-Date -Format 'yyyyMMdd_HHmmss_fff'
@@ -19,7 +26,7 @@ try {
         0 {
             & (Join-Path $sourceRoot 'ui\rust\Check-Migration.ps1')
             & (Join-Path $PSScriptRoot 'Test-Recipe.ps1')
-            $result = Join-Path $outputRoot 'preflight.json'
+            $result = Join-Path $stagingRoot 'preflight.json'
             [ordered]@{mode='native-rust';version=$release.version;build=$release.build;rustc=(& rustc.exe --version);checked=(Get-Date -Format o)} |
                 ConvertTo-Json | Set-Content -LiteralPath $result -Encoding UTF8
             $files = @($result)
@@ -32,9 +39,9 @@ try {
         2 {
             $snapshot = (Require-Record 1 $fingerprint).output
             Invoke-RustWorkspaceTests $snapshot
-            $agent = Join-Path $outputRoot ('agent\linux-x86_64-' + $stamp)
+            $agent = Join-Path $stagingRoot ('agent\linux-x86_64-' + $stamp)
             Build-NativeAgent $snapshot $agent
-            $result = Join-Path $outputRoot 'model-tests.json'
+            $result = Join-Path $stagingRoot 'model-tests.json'
             [ordered]@{passed=$true;agent=$agent;regressions=(Join-Path $outputRoot 'reports\windows-regressions.json');scope='Cataloged native UI/core and Linux agent regressions; live feature parity remains unverified';checked=(Get-Date -Format o)} |
                 ConvertTo-Json | Set-Content -LiteralPath $result -Encoding UTF8
             $files = @($result,(Join-Path $outputRoot 'reports\windows-regressions.json')) + @(Get-ChildItem -LiteralPath $agent -Recurse -File | Select-Object -ExpandProperty FullName)
@@ -44,15 +51,16 @@ try {
             $snapshot = (Require-Record 1 $fingerprint).output
             Invoke-StepTool 'cargo.exe' @('build','--locked','--release','--manifest-path',(Join-Path $snapshot 'ui\rust\Cargo.toml'),'-p','ad-desktop','--bins','--target','x86_64-pc-windows-msvc')
             $result = Join-Path $targetRoot 'x86_64-pc-windows-msvc\release\AetherDesk.exe'
-            $files = @($result,(Join-Path $targetRoot 'x86_64-pc-windows-msvc\release\aetherdesk-codex.exe'))
+            $files = @($result,(Join-Path $targetRoot 'x86_64-pc-windows-msvc\release\aetherdesk-connector.exe'))
         }
         4 {
             $binary = (Require-Record 3 $fingerprint).output
             $snapshot = (Require-Record 1 $fingerprint).output
-            $result = Join-Path $packagesRoot ('AetherDesk-' + $release.version + '-build' + $release.build + '_' + $stamp)
+            $result = Join-Path $stagingRoot ('AetherDesk-' + $release.version + '-build' + $release.build + '_' + $stamp)
             New-Item -ItemType Directory -Path $result | Out-Null
             Copy-Item -LiteralPath $binary -Destination (Join-Path $result 'AetherDesk.exe')
-            Copy-Item -LiteralPath (Join-Path (Split-Path $binary -Parent) 'aetherdesk-codex.exe') -Destination (Join-Path $result 'aetherdesk-codex.exe')
+            New-Item -ItemType Directory -Path (Join-Path $result 'runtime\ai') -Force | Out-Null
+            Copy-Item -LiteralPath (Join-Path (Split-Path $binary -Parent) 'aetherdesk-connector.exe') -Destination (Join-Path $result 'runtime\ai\aetherdesk-connector.exe')
             foreach ($name in @('release.json','LICENSE','LICENSE-MIT','LICENSE-APACHE')) {
                 Copy-Item -LiteralPath (Join-Path $snapshot $name) -Destination (Join-Path $result $name)
             }
@@ -76,19 +84,21 @@ try {
             # server before either distributable can be marked complete.
             Test-NativeX11Runtime $snapshot $result
             $python=Get-Command 'python.exe' -ErrorAction Stop
-            Invoke-StepTool $python.Source @((Join-Path $snapshot 'tools\rust-build-kit\test_codex_connector.py'),'--executable',(Join-Path $result 'aetherdesk-codex.exe'),'--report',(Join-Path $result 'verification\codex-connector.json'))
+            Invoke-StepTool $python.Source @((Join-Path $snapshot 'tools\rust-build-kit\test_codex_connector.py'),'--executable',(Join-Path $result 'runtime\ai\aetherdesk-connector.exe'),'--report',(Join-Path $result 'verification\codex-connector.json'))
             Verify-RustPackage $result
+            $result=Publish-ProjectTaskOutput $workerContext $result $packagesRoot
             $files = @(Get-ChildItem -LiteralPath $result -Recurse -File | Select-Object -ExpandProperty FullName)
             Set-Content -LiteralPath (Join-Path $outputRoot 'LATEST-FOLDER.txt') -Value $result -Encoding UTF8
         }
         5 {
             $package = (Require-Record 4 $fingerprint).output
             Verify-RustPackage $package
-            $result = Join-Path $packagesRoot ((Split-Path $package -Leaf) + '_' + $stamp + '.zip')
+            $result = Join-Path $stagingRoot ((Split-Path $package -Leaf) + '_' + $stamp + '.zip')
             Add-Type -AssemblyName System.IO.Compression.FileSystem
             # Runtime DLLs/agent bundles dominate this archive. Fast compression
             # avoids spending minutes on a slightly smaller distributable.
             [IO.Compression.ZipFile]::CreateFromDirectory($package,$result,[IO.Compression.CompressionLevel]::Fastest,$true)
+            $result=Publish-ProjectTaskOutput $workerContext $result $packagesRoot
             $files = @($result)
             Set-Content -LiteralPath (Join-Path $outputRoot 'LATEST-ZIP.txt') -Value $result -Encoding UTF8
         }
@@ -96,7 +106,9 @@ try {
             $package = (Require-Record 4 $fingerprint).output
             Verify-RustPackage $package
             $installerName = (Split-Path $package -Leaf) + '-Setup'
-            $script = Join-Path $outputRoot ('installer\rust-' + $stamp + '.iss')
+            $script = Join-Path $stagingRoot ('installer\rust-' + $stamp + '.iss')
+            $installerOutput=Join-Path $stagingRoot 'installer-output'
+            New-Item -ItemType Directory -Path $installerOutput -Force | Out-Null
             New-Item -ItemType Directory -Force -Path (Split-Path $script -Parent) | Out-Null
             if (@($package,$packagesRoot) | Where-Object { $_ -match '["\r\n]' }) { throw 'Invalid installer path.' }
             @(
@@ -115,13 +127,15 @@ try {
                 'MinVersion=10.0',
                 'ArchitecturesAllowed=x64compatible',
                 'ArchitecturesInstallIn64BitMode=x64compatible',
-                ('OutputDir=' + $packagesRoot),
+                ('OutputDir=' + $installerOutput),
                 ('OutputBaseFilename=' + $installerName),
                 'Compression=lzma2',
                 'SolidCompression=yes',
                 'UninstallDisplayIcon={app}\AetherDesk.exe',
                 ('SetupIconFile=' + (Join-Path ((Require-Record 1 $fingerprint).output) 'ui\rust\crates\ad-desktop\assets\theme\aetherdesk.ico')),
                 '[InstallDelete]',
+                'Type: files; Name: "{app}\aetherdesk-codex.exe"',
+                'Type: files; Name: "{app}\aetherdesk-connector.exe"',
                 'Type: files; Name: "{app}\aetherdesk-rust.exe"',
                 'Type: files; Name: "{app}\aetherdesk-rust-preview.exe"',
                 'Type: files; Name: "{app}\RUST-MIGRATION.md"',
@@ -139,7 +153,8 @@ try {
                 'Filename: "{app}\AetherDesk.exe"; Description: "Open AetherDesk"; WorkingDir: "{app}"; Flags: nowait postinstall skipifsilent'
             ) | Set-Content -LiteralPath $script -Encoding UTF8
             Invoke-StepTool (Get-Iscc) @($script)
-            $result = Join-Path $packagesRoot ($installerName + '.exe')
+            $result = Join-Path $installerOutput ($installerName + '.exe')
+            $result=Publish-ProjectTaskOutput $workerContext $result $packagesRoot
             $files = @($result,$script)
             Set-Content -LiteralPath (Join-Path $outputRoot 'LATEST-INSTALLER.txt') -Value $result -Encoding UTF8
         }
@@ -154,4 +169,5 @@ try {
     $stepClock.Stop()
     Write-Host ("STEP {0} WORKER TIME: {1}" -f $Step,(Format-BuildDuration $stepClock.Elapsed)) -ForegroundColor Cyan
     if ($transcribing) { Stop-Transcript | Out-Null }
+    $workerMaintenanceLease.Dispose()
 }

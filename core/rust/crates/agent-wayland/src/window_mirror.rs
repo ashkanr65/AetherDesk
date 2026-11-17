@@ -102,6 +102,7 @@ pub struct Mirror {
     connection: Arc<RustConnection>,
     root: u32,
     application_runtime: Option<std::path::PathBuf>,
+    _viewer_lease: Option<crate::view_demand::ViewerLease>,
     selected: Option<Selected>,
     keys: BTreeSet<u8>,
     buttons: BTreeSet<u8>,
@@ -304,6 +305,7 @@ impl Mirror {
             cookie,
         )?;
         let mut mirror = Self::from_connection(connection)?;
+        mirror._viewer_lease = Some(crate::view_demand::ViewerLease::acquire(&runtime)?);
         mirror.application_runtime = Some(runtime);
         Ok(mirror)
     }
@@ -330,6 +332,7 @@ impl Mirror {
             connection,
             root,
             application_runtime: None,
+            _viewer_lease: None,
             selected: None,
             keys: BTreeSet::new(),
             buttons: BTreeSet::new(),
@@ -757,10 +760,18 @@ impl Mirror {
     }
     fn focus(&mut self) -> Result<(), Error> {
         let id = self.selected.as_ref().ok_or("No application selected")?.id;
-        if self.application_has_focus()? {
+        let focused = self.application_has_focus()?;
+        // Keyboard focus alone does not mean the client is visible to XTest:
+        // another host window can cover it without taking focus. An explicit
+        // click in the independent view must ask the WM to raise it as well.
+        // Preserve an owned popup's grab, and never reset held modifiers just
+        // because the already-focused client needs raising.
+        if focused && (self.detached.is_some() || !self.popup_candidates(id)?.is_empty()) {
             return Ok(());
         }
-        self.release_input()?;
+        if !focused {
+            self.release_input()?;
+        }
         if self.detached.is_some() {
             self.connection
                 .set_input_focus(InputFocus::PARENT, id, x11rb::CURRENT_TIME)?
@@ -906,6 +917,31 @@ impl Mirror {
             0,
         )?
         .check()?;
+        Ok(())
+    }
+    fn pointer_in_application(&self) -> Result<bool, Error> {
+        let id = self.selected.as_ref().ok_or("No application selected")?.id;
+        let menus = self.popup_candidates(id)?;
+        let mut target = self.root;
+        for _ in 0..32 {
+            target = self.connection.query_pointer(target)?.reply()?.child;
+            if target == id || menus.iter().any(|menu| menu.0 == target) {
+                return Ok(true);
+            }
+            if target == 0 {
+                break;
+            }
+        }
+        Ok(false)
+    }
+    fn wait_pointer_target(&self) -> Result<(), Error> {
+        let deadline = Instant::now() + Duration::from_millis(250);
+        while !self.pointer_in_application()? {
+            if Instant::now() >= deadline {
+                return Err(FocusChanged.into());
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
         Ok(())
     }
     pub(crate) fn handle(&mut self, request: wire::Request) -> Result<wire::Reply, Error> {
@@ -1062,6 +1098,9 @@ impl Mirror {
                 self.motion(x, y)?;
                 let code = x_button(button)?;
                 if pressed {
+                    // Activation/raising is asynchronous. Do not click an
+                    // unrelated host window through the selected app's image.
+                    self.wait_pointer_target()?;
                     self.buttons.insert(code);
                 } else if !self.buttons.contains(&code) {
                     return Ok(wire::Reply::Ack);
@@ -1090,6 +1129,7 @@ impl Mirror {
                 vertical,
             } => {
                 self.require_focus()?;
+                self.wait_pointer_target()?;
                 for (index, value, positive, negative) in
                     [(0, vertical, 4, 5), (1, horizontal, 7, 6)]
                 {

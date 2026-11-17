@@ -2,7 +2,7 @@
 use std::collections::HashSet;
 
 use ad_stream_protocol::{
-    lossless::{MAX_FRAME_BYTES, MAX_TILES, TILE_EDGE},
+    lossless::{TileEncoding, MAX_FRAME_BYTES, MAX_TILES, TILE_EDGE},
     DisplayMessage, Rectangle,
 };
 
@@ -10,6 +10,7 @@ use ad_stream_protocol::{
 pub struct LosslessPatch {
     pub region: Rectangle,
     pub pixels_bgra: Vec<u8>,
+    pub copy_from: Option<(u32, u32)>,
 }
 
 #[derive(Debug)]
@@ -100,10 +101,27 @@ impl LosslessAssembler {
                 {
                     return Err("Invalid, duplicate or overlapping lossless tile");
                 }
-                let pixels_bgra = tile.decode()?;
+                let (pixels_bgra, copy_from) =
+                    if let TileEncoding::CopyBgra { x, y } = tile.encoding {
+                        if update.base_frame_id == 0
+                            || !tile.data.is_empty()
+                            || !x.is_multiple_of(TILE_EDGE)
+                            || !y.is_multiple_of(TILE_EDGE)
+                            || x.checked_add(region.width).is_none_or(|n| n > update.width)
+                            || y.checked_add(region.height)
+                                .is_none_or(|n| n > update.height)
+                            || region.width != TILE_EDGE.min(update.width - x)
+                            || region.height != TILE_EDGE.min(update.height - y)
+                        {
+                            return Err("Invalid lossless tile copy source");
+                        }
+                        (Vec::new(), Some((x, y)))
+                    } else {
+                        (tile.decode()?, None)
+                    };
                 pending.bytes = pending
                     .bytes
-                    .checked_add(pixels_bgra.len())
+                    .checked_add(region.width as usize * region.height as usize * 4)
                     .ok_or("Lossless frame overflow")?;
                 if pending.bytes > MAX_FRAME_BYTES {
                     return Err("Oversized lossless frame");
@@ -111,6 +129,7 @@ impl LosslessAssembler {
                 update.patches.push(LosslessPatch {
                     region,
                     pixels_bgra,
+                    copy_from,
                 });
                 Ok(None)
             }
@@ -140,6 +159,101 @@ mod tests {
     use ad_stream_protocol::lossless::LosslessTile;
 
     const DESKTOP_HEIGHT: u32 = 64;
+
+    fn base_for_copy() -> (LosslessAssembler, Framebuffer) {
+        let mut assembler = LosslessAssembler::default();
+        let mut framebuffer = Framebuffer::new(512, 64).unwrap();
+        assembler.push(begin(1, 0, 512, 2)).unwrap();
+        for (x, colour) in [(0, [9_u8, 18, 27, 255]), (256, [64, 128, 192, 255])] {
+            let tile = LosslessTile::encode(
+                Rectangle {
+                    x,
+                    y: 0,
+                    width: 256,
+                    height: 64,
+                },
+                colour.repeat(256 * 64),
+            )
+            .unwrap();
+            assembler
+                .push(DisplayMessage::LosslessTile { frame_id: 1, tile })
+                .unwrap();
+        }
+        framebuffer
+            .apply_lossless(
+                assembler
+                    .push(DisplayMessage::LosslessCommit { frame_id: 1 })
+                    .unwrap()
+                    .unwrap(),
+            )
+            .unwrap();
+        (assembler, framebuffer)
+    }
+
+    #[test]
+    fn copied_tiles_resolve_from_one_immutable_base_and_swaps_are_atomic() {
+        let (mut assembler, mut framebuffer) = base_for_copy();
+        let original = framebuffer.snapshot_shared().2;
+        assembler.push(begin(2, 1, 512, 2)).unwrap();
+        for (x, source) in [(0, 256), (256, 0)] {
+            assembler
+                .push(DisplayMessage::LosslessTile {
+                    frame_id: 2,
+                    tile: LosslessTile {
+                        region: Rectangle {
+                            x,
+                            y: 0,
+                            width: 256,
+                            height: 64,
+                        },
+                        encoding: TileEncoding::CopyBgra { x: source, y: 0 },
+                        data: Vec::new(),
+                    },
+                })
+                .unwrap();
+        }
+        let update = assembler
+            .push(DisplayMessage::LosslessCommit { frame_id: 2 })
+            .unwrap()
+            .unwrap();
+        assert_eq!(&framebuffer.snapshot().2[..4], &[9, 18, 27, 255]);
+        framebuffer.apply_lossless(update).unwrap();
+        let pixels = framebuffer.snapshot().2;
+        assert_eq!(&pixels[..4], &[64, 128, 192, 255]);
+        assert_eq!(&pixels[256 * 4..256 * 4 + 4], &[9, 18, 27, 255]);
+        assert_eq!(&original[..4], &[9, 18, 27, 255]);
+    }
+
+    #[test]
+    fn copied_tiles_reject_missing_bases_payloads_and_invalid_source_regions() {
+        for (base, x, y, data) in [
+            (0, 0, 0, vec![]),
+            (1, 512, 0, vec![]),
+            (1, 1, 0, vec![]),
+            (1, 0, u32::MAX, vec![]),
+            (1, 0, 0, vec![1]),
+        ] {
+            let (mut assembler, framebuffer) = base_for_copy();
+            assembler.push(begin(2, base, 512, 1)).unwrap();
+            let before = framebuffer.snapshot().2;
+            assert!(assembler
+                .push(DisplayMessage::LosslessTile {
+                    frame_id: 2,
+                    tile: LosslessTile {
+                        region: Rectangle {
+                            x: 0,
+                            y: 0,
+                            width: 256,
+                            height: 64
+                        },
+                        encoding: TileEncoding::CopyBgra { x, y },
+                        data
+                    }
+                })
+                .is_err());
+            assert_eq!(framebuffer.snapshot().2, before);
+        }
+    }
 
     fn begin(frame_id: u64, base_frame_id: u64, width: u32, count: u32) -> DisplayMessage {
         DisplayMessage::LosslessBegin {

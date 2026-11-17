@@ -42,6 +42,7 @@ enum MediaCommand {
 }
 
 enum CaptureCommand {
+    ViewersChanged,
     Resize {
         width: u32,
         height: u32,
@@ -99,6 +100,7 @@ impl AgentSupervisor {
         })
         .await
         .map_err(SupervisorError::TaskJoin)??;
+        compositor.set_capture_demand(false)?;
         compositor.launch(config.application)?;
         let cursors = compositor.subscribe_cursors();
 
@@ -268,6 +270,10 @@ impl AgentSupervisor {
                 .await
                 .map_err(|_| SupervisorError::Stopped)?;
         }
+        self.capture_tx
+            .send(CaptureCommand::ViewersChanged)
+            .await
+            .map_err(|_| SupervisorError::Stopped)?;
         self.request_refresh().await?;
         set_state_if_running(&self.state, SessionState::Active);
         info!(%client_id, session_id = %self.session_id, "ARPP client attached");
@@ -299,6 +305,10 @@ impl AgentSupervisor {
         if should_pause {
             self.media_tx
                 .send(MediaCommand::Pause)
+                .await
+                .map_err(|_| SupervisorError::Stopped)?;
+            self.capture_tx
+                .send(CaptureCommand::ViewersChanged)
                 .await
                 .map_err(|_| SupervisorError::Stopped)?;
             set_state_if_running(&self.state, SessionState::Detached);
@@ -432,6 +442,12 @@ async fn run_capture_loop(
                 compositor.set_capture_rate(rate.borrow_and_update().1)?;
             }
             command = commands.recv() => match command {
+                Some(CaptureCommand::ViewersChanged) => {
+                    // Read the CURRENT set, not a queued boolean that could
+                    // suspend a replacement connection after a rapid reconnect.
+                    let viewed = !clients.lock().map_err(|_| SupervisorError::Poisoned)?.is_empty();
+                    compositor.set_capture_demand(viewed)?;
+                }
                 Some(CaptureCommand::Resize { width, height }) => compositor.resize(width, height)?,
                 Some(CaptureCommand::Input(input)) => compositor.inject_input(input)?,
                 Some(CaptureCommand::Clipboard(selection)) => compositor.set_clipboard(selection)?,
@@ -655,6 +671,72 @@ pub enum SupervisorError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn last_viewer_detaches_without_stopping_apps_and_reconnect_is_live() {
+        use std::os::unix::fs::PermissionsExt;
+        let runtime = tempfile::tempdir().unwrap();
+        std::fs::set_permissions(runtime.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        let heartbeat = runtime.path().join("heartbeat");
+        let mut application = ApplicationSpec::new("/bin/sh");
+        application
+            .environment
+            .push(("AETHERDESK_APPLICATIONS_ONLY".into(), "1".into()));
+        application.arguments = vec![
+            "-c".into(),
+            r#"while :; do printf x >> "$1"; sleep 0.05; done"#.into(),
+            "heartbeat".into(),
+            heartbeat.as_os_str().to_owned(),
+        ];
+        let supervisor = AgentSupervisor::start(SupervisorConfig {
+            session_id: Uuid::new_v4(),
+            compositor: CompositorConfig {
+                width: 64,
+                height: 48,
+                refresh_millihz: 30_000,
+                runtime_dir: runtime.path().to_owned(),
+                enable_xwayland: false,
+                host_window_manager: false,
+            },
+            input: InputConfig::default(),
+            encoder: EncoderConfig {
+                codec: ad_stream_protocol::VideoCodec::H264,
+                width: 64,
+                height: 48,
+                framerate: 30,
+                bitrate_kbps: 8000,
+                keyframe_interval: 30,
+            },
+            application,
+        })
+        .await
+        .unwrap();
+        let first = Uuid::new_v4();
+        let second = Uuid::new_v4();
+        supervisor.attach_client(first).await.unwrap();
+        supervisor.attach_client(second).await.unwrap();
+        supervisor.detach_client(first).await.unwrap();
+        assert_eq!(
+            supervisor.state(),
+            SessionState::Active,
+            "An independent viewer must keep the session active"
+        );
+        supervisor.detach_client(second).await.unwrap();
+        assert_eq!(supervisor.state(), SessionState::Detached);
+        let deadline = Instant::now() + Duration::from_secs(4);
+        while !heartbeat.exists() {
+            assert!(Instant::now() < deadline);
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        let length = std::fs::metadata(&heartbeat).unwrap().len();
+        while std::fs::metadata(&heartbeat).unwrap().len() <= length {
+            assert!(Instant::now() < deadline, "Detached application stopped");
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        supervisor.attach_client(first).await.unwrap();
+        assert_eq!(supervisor.state(), SessionState::Active);
+        supervisor.shutdown().await.unwrap();
+    }
 
     #[test]
     fn congestion_does_not_destroy_the_per_frame_quality_budget() {

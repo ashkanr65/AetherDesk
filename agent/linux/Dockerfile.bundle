@@ -1,6 +1,8 @@
 # glibc 2.28 baseline: compatible with Rocky/Alma/RHEL 8 and newer hosts.
 FROM almalinux:8 AS builder
-LABEL io.aetherdesk.rust-build-cache="true"
+ARG AETHER_CLEANUP_PROJECT=aetherdesk
+ARG AETHER_CLEANUP_TASK=unmanaged
+LABEL io.aetherdesk.project="${AETHER_CLEANUP_PROJECT}" io.aetherdesk.task="${AETHER_CLEANUP_TASK}" io.aetherdesk.cleanup="disposable"
 
 RUN dnf install -y dnf-plugins-core epel-release \
     && dnf config-manager --set-enabled powertools \
@@ -58,6 +60,7 @@ COPY tools/rust-build-kit/test_scoped_command.py /src/tools/rust-build-kit/test_
 COPY tools/rust-build-kit/test_terminal_integration.py /src/tools/rust-build-kit/test_terminal_integration.py
 COPY tools/rust-build-kit/monitor_host.sh /src/tools/rust-build-kit/monitor_host.sh
 COPY tools/rust-build-kit/test_monitoring_collector.py /src/tools/rust-build-kit/test_monitoring_collector.py
+COPY tools/rust-build-kit/project_cleanup_linux.py tools/rust-build-kit/test_project_cleanup_linux.py /src/tools/rust-build-kit/
 COPY ui/rust/crates/ad-desktop/src/connection.rs /src/ui/rust/crates/ad-desktop/src/connection.rs
 RUN install -d -m 1777 /tmp/.X11-unix \
     && cargo test --locked --release --manifest-path core/rust/Cargo.toml \
@@ -68,11 +71,14 @@ RUN install -d -m 1777 /tmp/.X11-unix \
     && python3 tools/rust-build-kit/test_scoped_command.py \
     && python3 tools/rust-build-kit/test_terminal_integration.py \
     && python3 tools/rust-build-kit/test_monitoring_collector.py \
+    && python3 tools/rust-build-kit/test_project_cleanup_linux.py \
     && python3 tools/test_x11_icons.py \
     && python3 tools/rust-build-kit/test_regression_registry.py \
     && bash tools/package-linux-agent.sh core/rust/target/release/ad-agent /src/agent-bundle \
     && python3 tools/rust-build-kit/check_regression_registry.py --catalog rust-regressions.json --phase linux --list /tmp/native-tests.list --passed --output /src/agent-bundle/regression-results.json
 
 FROM scratch AS artifact
-LABEL io.aetherdesk.rust-build-cache="true"
+ARG AETHER_CLEANUP_PROJECT=aetherdesk
+ARG AETHER_CLEANUP_TASK=unmanaged
+LABEL io.aetherdesk.project="${AETHER_CLEANUP_PROJECT}" io.aetherdesk.task="${AETHER_CLEANUP_TASK}" io.aetherdesk.cleanup="disposable"
 COPY --from=builder /src/agent-bundle/ /

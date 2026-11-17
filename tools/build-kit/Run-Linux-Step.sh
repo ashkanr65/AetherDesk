@@ -31,7 +31,9 @@ case "$mode" in
       echo 'Podman needs the nftables package in the existing Ubuntu distribution. No new Ubuntu installation is needed.' >&2
       exit 69
     }
-    podman --storage-driver=vfs build --layers \
+        : "${AETHERDESK_CLEANUP_TASK_ID:?Use the managed Rust build kit so every build has a task owner}"
+    podman --storage-driver=vfs build --layers=false --rm=true --force-rm=true \
+      --build-arg "AETHER_CLEANUP_TASK=$AETHERDESK_CLEANUP_TASK_ID" --build-arg AETHER_CLEANUP_PROJECT=aetherdesk \
       --from docker.io/library/almalinux:8 --platform linux/amd64 \
       --target artifact --output "type=local,dest=$output" \
       -f agent/linux/Dockerfile.bundle .

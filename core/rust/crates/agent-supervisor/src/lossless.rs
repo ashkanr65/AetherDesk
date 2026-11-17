@@ -2,13 +2,14 @@
 //! Compare against the last SENT complete image, never just the newest capture's
 //! damage: the watch channel is allowed to skip intermediate captures.
 use std::{
+    collections::HashMap,
     sync::Arc,
     time::{Duration, Instant},
 };
 
 use ad_stream_client::{ArppSession, TransportError};
 use ad_stream_protocol::{
-    lossless::{LosslessTile, TILE_EDGE},
+    lossless::{LosslessTile, TileEncoding, TILE_EDGE},
     ArppMessage, DisplayMessage, Rectangle,
 };
 use agent_wayland::damage::CapturedFrame;
@@ -35,10 +36,20 @@ fn overlaps(a: Rectangle, b: Rectangle) -> bool {
         && u64::from(b.y) < u64::from(a.y) + u64::from(a.height)
 }
 
+#[cfg(test)]
 fn build(
     frame: &CapturedFrame,
     previous: Option<&CapturedFrame>,
     monitors: &[Rectangle],
+) -> Result<Batch, &'static str> {
+    build_with_reuse(frame, previous, monitors, false)
+}
+
+fn build_with_reuse(
+    frame: &CapturedFrame,
+    previous: Option<&CapturedFrame>,
+    monitors: &[Rectangle],
+    reuse: bool,
 ) -> Result<Batch, &'static str> {
     if !ad_stream_protocol::valid_monitor_layout(frame.width, frame.height, monitors)
         || frame.stride < frame.width as usize * 4
@@ -59,6 +70,26 @@ fn build(
     });
     let mut tiles = Vec::new();
     let mut bytes = 0;
+    let mut reusable = HashMap::<(u32, u32, u64), Vec<usize>>::new();
+    let old_tiles = previous.and_then(|p| p.pixels_bgra.tiles());
+    if reuse {
+        if let Some(old) = old_tiles {
+            for (index, tile) in old.tiles.iter().enumerate() {
+                // Wholly unused canvas gaps were never sent to the consumer,
+                // so their pixels cannot be a valid client-side copy source.
+                if !monitors
+                    .iter()
+                    .any(|monitor| overlaps(tile.region, *monitor))
+                {
+                    continue;
+                }
+                reusable
+                    .entry((tile.region.width, tile.region.height, tile.content_hash()))
+                    .or_default()
+                    .push(index);
+            }
+        }
+    }
     for y in (0..frame.height).step_by(TILE_EDGE as usize) {
         for x in (0..frame.width).step_by(TILE_EDGE as usize) {
             let region = Rectangle {
@@ -93,7 +124,36 @@ fn build(
                 {
                     continue;
                 }
-                let tile = LosslessTile::encode(region, pixels.clone())?;
+                let copy = if reuse {
+                    reusable
+                        .get(&(
+                            region.width,
+                            region.height,
+                            snapshot.tiles[tile_index].content_hash(),
+                        ))
+                        .and_then(|indices| {
+                            old_tiles.and_then(|old| {
+                                indices
+                                    .iter()
+                                    .map(|&index| &old.tiles[index])
+                                    .find(|tile| tile.bytes == *pixels)
+                            })
+                        })
+                } else {
+                    None
+                };
+                let tile = if let Some(source) = copy {
+                    LosslessTile {
+                        region,
+                        encoding: TileEncoding::CopyBgra {
+                            x: source.region.x,
+                            y: source.region.y,
+                        },
+                        data: Vec::new(),
+                    }
+                } else {
+                    LosslessTile::encode(region, pixels.clone())?
+                };
                 bytes += tile.data.len();
                 tiles.push(tile);
                 continue;
@@ -128,6 +188,7 @@ pub(crate) async fn serve(
     mut source: Source,
     session: &Arc<ArppSession>,
     delivery: &DeliveryWindow,
+    reuse: bool,
 ) -> Result<(), AgentServerError> {
     // The receipt opt-in is emitted by the running display consumer, AFTER the
     // Start/Resume handshake. Never race display data against that handshake.
@@ -200,11 +261,12 @@ pub(crate) async fn serve(
         let started = Instant::now();
         let capture = frame.clone();
         // One compression job per session, away from input/control workers.
-        let batch =
-            tokio::task::spawn_blocking(move || build(&capture, base.as_deref(), &monitors))
-                .await
-                .map_err(|_| protocol_error("Lossless preparation worker stopped"))?
-                .map_err(protocol_error)?;
+        let batch = tokio::task::spawn_blocking(move || {
+            build_with_reuse(&capture, base.as_deref(), &monitors, reuse)
+        })
+        .await
+        .map_err(|_| protocol_error("Lossless preparation worker stopped"))?
+        .map_err(protocol_error)?;
         preparation_us += started.elapsed().as_micros();
         if batch.tiles.is_empty() {
             previous = Some(frame);
@@ -273,6 +335,92 @@ pub(crate) async fn serve(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn moved_tiles_reuse_exact_sent_pixels_only_after_opt_in() {
+        use ad_stream_protocol::pixels::PixelBuffer;
+        let mut first = frame(768, 64);
+        let mut before = Vec::new();
+        for _ in 0..64 {
+            for colour in [11_u8, 82, 193] {
+                before.extend([colour, 7, 29, 255].repeat(256));
+            }
+        }
+        first.pixels_bgra = PixelBuffer::capture(768, 64, 768 * 4, &before, &[], None).unwrap();
+        let mut after = Vec::new();
+        for _ in 0..64 {
+            for colour in [82_u8, 193, 11] {
+                after.extend([colour, 7, 29, 255].repeat(256));
+            }
+        }
+        let mut moved = first.clone();
+        let monitors = [Rectangle {
+            x: 0,
+            y: 0,
+            width: 768,
+            height: 64,
+        }];
+        moved.pixels_bgra = PixelBuffer::capture(
+            768,
+            64,
+            768 * 4,
+            &after,
+            &monitors,
+            Some(&first.pixels_bgra),
+        )
+        .unwrap();
+        let legacy = build_with_reuse(&moved, Some(&first), &monitors, false).unwrap();
+        assert!(legacy.bytes > 0);
+        assert!(legacy
+            .tiles
+            .iter()
+            .all(|t| !matches!(t.encoding, TileEncoding::CopyBgra { .. })));
+        let copied = build_with_reuse(&moved, Some(&first), &monitors, true).unwrap();
+        assert_eq!(copied.tiles.len(), 3);
+        assert_eq!(copied.bytes, 0);
+        assert_eq!(
+            copied.tiles[0].encoding,
+            TileEncoding::CopyBgra { x: 256, y: 0 }
+        );
+        assert_eq!(
+            copied.tiles[1].encoding,
+            TileEncoding::CopyBgra { x: 512, y: 0 }
+        );
+        assert_eq!(
+            copied.tiles[2].encoding,
+            TileEncoding::CopyBgra { x: 0, y: 0 }
+        );
+        let fresh = build_with_reuse(&moved, None, &monitors, true).unwrap();
+        assert!(fresh
+            .tiles
+            .iter()
+            .all(|t| !matches!(t.encoding, TileEncoding::CopyBgra { .. })));
+        let gaps = [
+            Rectangle {
+                x: 0,
+                y: 0,
+                width: 256,
+                height: 64,
+            },
+            Rectangle {
+                x: 512,
+                y: 0,
+                width: 256,
+                height: 64,
+            },
+        ];
+        let copied = build_with_reuse(&moved, Some(&first), &gaps, true).unwrap();
+        // The first changed tile matches the OLD gap at x=256. A client never
+        // received that gap; it must get real pixels instead of a copy command.
+        assert!(!matches!(
+            copied.tiles[0].encoding,
+            TileEncoding::CopyBgra { .. }
+        ));
+        assert_eq!(
+            copied.tiles[1].encoding,
+            TileEncoding::CopyBgra { x: 0, y: 0 }
+        );
+    }
     fn frame(width: u32, height: u32) -> CapturedFrame {
         CapturedFrame {
             frame_id: 1,
@@ -510,6 +658,7 @@ mod tests {
                 },
                 &host_write,
                 &credits,
+                false,
             )
             .await
         });

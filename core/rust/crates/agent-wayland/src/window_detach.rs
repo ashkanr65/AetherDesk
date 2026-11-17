@@ -513,6 +513,151 @@ pub(super) fn verify_minimized(
         }
     };
     mirror.select(window).unwrap();
+    // A covered window may retain keyboard focus. Explicit activation from its
+    // independent image must raise it before clicking, not click the cover.
+    mirror.handle(wire::Request::Focus).unwrap();
+    let cover = controller.generate_id().unwrap();
+    let desktop = controller.get_geometry(root).unwrap().reply().unwrap();
+    controller
+        .create_window(
+            0,
+            cover,
+            root,
+            0,
+            0,
+            desktop.width,
+            desktop.height,
+            0,
+            WindowClass::INPUT_OUTPUT,
+            0,
+            &CreateWindowAux::new()
+                .background_pixel(0x202020)
+                .event_mask(EventMask::BUTTON_PRESS),
+        )
+        .unwrap()
+        .check()
+        .unwrap();
+    controller.map_window(cover).unwrap().check().unwrap();
+    let deadline = Instant::now() + Duration::from_secs(3);
+    let cover_frame = loop {
+        let parent = controller
+            .query_tree(cover)
+            .unwrap()
+            .reply()
+            .unwrap()
+            .parent;
+        if parent != root {
+            break parent;
+        }
+        assert!(Instant::now() < deadline, "WM did not manage the cover");
+        std::thread::sleep(Duration::from_millis(5));
+    };
+    mirror.handle(wire::Request::Focus).unwrap();
+    controller
+        .configure_window(
+            cover,
+            &ConfigureWindowAux::new()
+                .x(0)
+                .y(0)
+                .stack_mode(StackMode::ABOVE),
+        )
+        .unwrap()
+        .check()
+        .unwrap();
+    controller.flush().unwrap();
+    let deadline = Instant::now() + Duration::from_secs(3);
+    let point = controller
+        .translate_coordinates(window, root, 10, 10)
+        .unwrap()
+        .reply()
+        .unwrap();
+    xtest::fake_input(
+        controller,
+        MOTION_NOTIFY_EVENT,
+        0,
+        0,
+        root,
+        point.dst_x,
+        point.dst_y,
+        0,
+    )
+    .unwrap()
+    .check()
+    .unwrap();
+    loop {
+        if controller
+            .query_pointer(root)
+            .unwrap()
+            .reply()
+            .unwrap()
+            .child
+            == cover_frame
+        {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "fixture did not cover focused client: pointer={:?}, cover={:?}, root={:?}",
+            controller.query_pointer(root).unwrap().reply().unwrap(),
+            controller
+                .get_geometry(cover_frame)
+                .unwrap()
+                .reply()
+                .unwrap(),
+            controller
+                .query_tree(root)
+                .unwrap()
+                .reply()
+                .unwrap()
+                .children
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    controller
+        .set_input_focus(InputFocus::PARENT, window, x11rb::CURRENT_TIME)
+        .unwrap()
+        .check()
+        .unwrap();
+    let active = controller
+        .intern_atom(false, b"_NET_ACTIVE_WINDOW")
+        .unwrap()
+        .reply()
+        .unwrap()
+        .atom;
+    controller
+        .change_property32(PropMode::REPLACE, root, active, AtomEnum::WINDOW, &[window])
+        .unwrap()
+        .check()
+        .unwrap();
+    assert!(mirror.application_has_focus().unwrap());
+    while controller.poll_for_event().unwrap().is_some() {}
+    mirror.handle(wire::Request::Focus).unwrap();
+    for pressed in [true, false] {
+        mirror
+            .handle(wire::Request::Button {
+                button: 1,
+                pressed,
+                x: 10,
+                y: 10,
+            })
+            .unwrap();
+    }
+    controller.sync().unwrap();
+    let mut received = false;
+    while let Some(event) = controller.poll_for_event().unwrap() {
+        if let Event::ButtonPress(event) = event {
+            assert_ne!(
+                event.event, cover,
+                "independent click reached the covering host app"
+            );
+            received |= event.event == window;
+        }
+    }
+    controller.destroy_window(cover).unwrap().check().unwrap();
+    assert!(
+        received,
+        "covered focused application did not receive the independent click"
+    );
     minimize();
     let deadline = Instant::now() + Duration::from_secs(3);
     loop {
@@ -647,6 +792,53 @@ pub(super) fn verify_minimized(
         clicked,
         "hidden application did not receive a real modified click"
     );
+    mirror
+        .handle(wire::Request::InputBatch(vec![
+            wire::WindowInput::Focus,
+            wire::WindowInput::Key {
+                evdev: 29,
+                pressed: true,
+            },
+            wire::WindowInput::Move { x: 10, y: 10 },
+            wire::WindowInput::Button {
+                button: 1,
+                pressed: true,
+                x: 10,
+                y: 10,
+            },
+            wire::WindowInput::Button {
+                button: 1,
+                pressed: false,
+                x: 10,
+                y: 10,
+            },
+            wire::WindowInput::Wheel {
+                horizontal: 0,
+                vertical: 120,
+            },
+            wire::WindowInput::Key {
+                evdev: 29,
+                pressed: false,
+            },
+        ]))
+        .unwrap();
+    controller.sync().unwrap();
+    let mut batched_buttons = Vec::new();
+    while let Some(event) = controller.poll_for_event().unwrap() {
+        if let Event::ButtonPress(event) = event {
+            if event.event == window {
+                assert!(event.state.contains(KeyButMask::CONTROL));
+                batched_buttons.push(event.detail);
+            }
+        }
+    }
+    assert_eq!(
+        batched_buttons,
+        vec![1, 4],
+        "batched input missed the independently hosted client"
+    );
+    assert!(mirror.keys.is_empty());
+    assert!(mirror.buttons.is_empty());
     assert!(shape::get_rectangles(controller, holder, SK::INPUT)
         .unwrap()
         .reply()

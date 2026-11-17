@@ -480,6 +480,15 @@ impl Applications {
                 self.release();
                 self.input_window = foreground;
             }
+            // Run in the actual focused viewport, including native menus.
+            // Root-window/tab polling may be inactive or use a stale layout.
+            // Configure the existing authenticated host input channel before
+            // queuing this frame's physical keys; no Unicode or modifier keys
+            // are synthesized to emulate a different layout.
+            if !self.sync_keyboard_layout(crate::remote_keyboard::active_layout()) {
+                self.release();
+                return false;
+            }
             self.sync_modifiers(crate::remote_keyboard::current_modifiers(
                 ui.input(|i| i.modifiers),
             ));
@@ -646,6 +655,132 @@ impl Applications {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn focused_application_views_follow_layout_changes_and_resync_after_focus_loss() {
+        use ad_stream_protocol::{ArppMessage, ControlMessage};
+        use std::sync::Arc;
+        let ctx = egui::Context::default();
+        ctx.options_mut(|o| o.max_passes = 1.try_into().unwrap());
+        let client = crate::remote::RemoteClient::test_stub(ctx.clone());
+        let (commands, mut requests) = tokio::sync::mpsc::channel(64);
+        let mut app = Applications::new(None, uuid::Uuid::new_v4()).with_client(client.clone());
+        app.worker = Some(Worker {
+            commands,
+            state: Arc::new(parking_lot::Mutex::new(State::default())),
+            cancel: tokio_util::sync::CancellationToken::new(),
+        });
+        for (layout, focused, expected) in [
+            (Some(("es", "")), true, Some(("es", ""))),
+            (Some(("es", "")), true, None),
+            (Some(("de", "")), false, None),
+            (Some(("fr", "")), true, Some(("fr", ""))),
+            (Some(("us", "intl")), true, Some(("us", "intl"))),
+        ] {
+            crate::remote_keyboard::with_test_layout(layout, || {
+                crate::remote_keyboard::with_test_modifiers(egui::Modifiers::NONE, || {
+                    let _ = ctx.run(
+                        egui::RawInput {
+                            focused,
+                            events: vec![true, false]
+                                .into_iter()
+                                .map(|pressed| egui::Event::Key {
+                                    key: egui::Key::Semicolon,
+                                    physical_key: Some(egui::Key::Semicolon),
+                                    pressed,
+                                    repeat: false,
+                                    modifiers: egui::Modifiers::NONE,
+                                })
+                                .collect(),
+                            ..Default::default()
+                        },
+                        |ctx| {
+                            egui::CentralPanel::default().show(ctx, |ui| {
+                                let (image, response) = ui.allocate_exact_size(
+                                    egui::vec2(300.0, 160.0),
+                                    egui::Sense::click_and_drag(),
+                                );
+                                response.request_focus();
+                                app.application_input(
+                                    ui,
+                                    &response,
+                                    image,
+                                    (300, 160),
+                                    (0, 0),
+                                    false,
+                                    true,
+                                );
+                            });
+                        },
+                    );
+                });
+            });
+            if let Some((layout, variant)) = expected {
+                assert_eq!(
+                    client.test_next_input().await,
+                    ArppMessage::Control(ControlMessage::KeyboardLayout {
+                        layout: layout.into(),
+                        variant: variant.into(),
+                    })
+                );
+            } else {
+                assert!(
+                    tokio::time::timeout(Duration::from_millis(10), client.test_next_input())
+                        .await
+                        .is_err()
+                );
+            }
+            let mut keys = Vec::new();
+            while let Ok(request) = requests.try_recv() {
+                if let Request::Key { evdev, pressed } = request {
+                    keys.push((evdev, pressed));
+                }
+            }
+            assert_eq!(
+                keys,
+                if focused {
+                    vec![(39, true), (39, false)]
+                } else {
+                    vec![]
+                }
+            );
+        }
+        app.release();
+        assert!(app.sync_keyboard_layout(Some(("us", "intl"))));
+        assert!(
+            matches!(client.test_next_input().await, ArppMessage::Control(ControlMessage::KeyboardLayout {layout, variant}) if layout == "us" && variant == "intl")
+        );
+    }
+    #[tokio::test]
+    async fn application_layout_updates_preserve_held_modifiers_and_unknown_layouts() {
+        use ad_stream_protocol::{ArppMessage, ControlMessage};
+        let client = crate::remote::RemoteClient::test_stub(egui::Context::default());
+        let mut app = Applications::new(None, uuid::Uuid::new_v4()).with_client(client.clone());
+        app.keys.extend([29, 42, 100]);
+        app.modifiers = egui::Modifiers {
+            ctrl: true,
+            shift: true,
+            ..Default::default()
+        };
+        assert!(app.sync_keyboard_layout(None));
+        assert!(
+            tokio::time::timeout(Duration::from_millis(10), client.test_next_input())
+                .await
+                .is_err()
+        );
+        assert!(app.sync_keyboard_layout(Some(("es", ""))));
+        assert!(
+            matches!(client.test_next_input().await, ArppMessage::Control(ControlMessage::KeyboardLayout { layout, .. }) if layout == "es")
+        );
+        assert_eq!(app.keys, BTreeSet::from([29, 42, 100]));
+        assert!(app.modifiers.ctrl && app.modifiers.shift);
+        assert!(app.sync_keyboard_layout(None));
+        assert_eq!(app.keyboard_layout, Some(("es".into(), "".into())));
+        assert!(
+            tokio::time::timeout(Duration::from_millis(10), client.test_next_input())
+                .await
+                .is_err()
+        );
+    }
     #[test]
     fn unchanged_tiles_are_not_uploaded_again_and_skipped_paints_keep_every_patch() {
         use std::sync::Arc;

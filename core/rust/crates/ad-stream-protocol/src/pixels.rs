@@ -2,6 +2,7 @@
 //! it does not change the wire format or pixel values.
 use crate::{lossless::TILE_EDGE, Rectangle};
 use std::{
+    hash::{Hash, Hasher},
     ops::{Deref, DerefMut},
     sync::{Arc, OnceLock},
 };
@@ -10,6 +11,19 @@ use std::{
 pub struct PixelTile {
     pub region: Rectangle,
     pub bytes: Vec<u8>,
+    fingerprint: OnceLock<u64>,
+}
+
+impl PixelTile {
+    /// A search hint for immutable tiles, always followed by exact byte
+    /// comparison. Collisions can never substitute different pixels.
+    pub fn content_hash(&self) -> u64 {
+        *self.fingerprint.get_or_init(|| {
+            let mut hash = std::collections::hash_map::DefaultHasher::new();
+            self.bytes.hash(&mut hash);
+            hash.finish()
+        })
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -129,6 +143,7 @@ impl PixelBuffer {
                 tiles.push(Arc::new(PixelTile {
                     region: r,
                     bytes: pixels,
+                    fingerprint: OnceLock::new(),
                 }));
             }
         }
@@ -162,6 +177,7 @@ impl PixelBuffer {
                 tiles.push(Arc::new(PixelTile {
                     region: r,
                     bytes: [0, 0, 0, 255].repeat(r.width as usize * r.height as usize),
+                    fingerprint: OnceLock::new(),
                 }));
             }
         }
@@ -204,7 +220,11 @@ impl PixelBuffer {
         let index = (region.y / TILE_EDGE) as usize * width.div_ceil(TILE_EDGE) as usize
             + (region.x / TILE_EDGE) as usize;
         if t.tiles[index].bytes != bytes {
-            t.tiles[index] = Arc::new(PixelTile { region, bytes });
+            t.tiles[index] = Arc::new(PixelTile {
+                region,
+                bytes,
+                fingerprint: OnceLock::new(),
+            });
         }
         self.flat = OnceLock::new();
         Ok(())

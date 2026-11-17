@@ -42,4 +42,40 @@ function Invoke-NativeRegressions([string]$Root,[string]$Destination){
     New-Item -ItemType Directory -Force -Path (Split-Path $Destination -Parent)|Out-Null
     $record|ConvertTo-Json -Depth 7|Set-Content -LiteralPath $Destination -Encoding UTF8
 }
-if($MyInvocation.InvocationName -ne '.') {Invoke-NativeRegressions $Snapshot $Report}
+if($MyInvocation.InvocationName -ne '.') {$ownedTask=$null
+$oldTemp=$env:TEMP;$oldTmp=$env:TMP
+$oldTarget=$env:CARGO_TARGET_DIR; $oldHome=$env:CARGO_HOME
+$oldTaskId=$env:AETHERDESK_CLEANUP_TASK_ID; $oldTaskWork=$env:AETHERDESK_CLEANUP_TASK_WORK
+$failed=$true
+try {
+    if (!$env:AETHERDESK_CLEANUP_TASK_ID) {
+        Import-Module (Join-Path $PSScriptRoot 'Project-Cleanup.psm1') -Force -DisableNameChecking
+        if($Snapshot -match '\.cleanup-work'){throw 'Frozen regression workers must use their owning managed build task.'}
+        $out=Join-Path (Split-Path ([IO.Path]::GetFullPath($Snapshot)) -Parent) 'AetherDesk-Rust-output'
+        $recoveryPlan=@(Recover-ProjectTasks -Project aetherdesk)
+        foreach($entry in $recoveryPlan){Write-Host ($entry|ConvertTo-Json -Depth 8 -Compress)}
+        $null=Recover-ProjectTasks -Project aetherdesk -Apply
+        $ownedTask=Start-ProjectTask -Project aetherdesk -ProjectRoot $Snapshot -OutputRoot $out -CacheRoot (Join-Path $out 'cache') -SkipWsl
+        $env:CARGO_TARGET_DIR=Join-Path $ownedTask.Task.cacheRoot 'target'
+        $env:CARGO_HOME=Join-Path $ownedTask.Task.cacheRoot 'cargo-home'
+        $env:AETHERDESK_CLEANUP_TASK_ID=$ownedTask.Task.id
+        $env:AETHERDESK_CLEANUP_TASK_WORK=$ownedTask.Task.work
+        $env:TEMP=Join-Path $ownedTask.Task.work 'tmp';$env:TMP=$env:TEMP
+        New-Item -ItemType Directory -Path $env:TEMP -Force|Out-Null
+        Add-ProjectArtifact $ownedTask $Report -Role deliverable
+    }
+    Invoke-NativeRegressions $Snapshot $Report
+    $failed=$false
+} finally {
+    if($ownedTask){
+        try {
+            Show-ProjectCleanupReport (Complete-ProjectTask $ownedTask)
+            Show-ProjectCleanupReport (Complete-ProjectTask $ownedTask -Apply -Failed:$failed)
+        } finally {
+            if($ownedTask.CacheLease){$ownedTask.CacheLease.Dispose()};$ownedTask.Lease.Dispose()
+            $env:TEMP=$oldTemp;$env:TMP=$oldTmp
+            $env:CARGO_TARGET_DIR=$oldTarget;$env:CARGO_HOME=$oldHome
+            $env:AETHERDESK_CLEANUP_TASK_ID=$oldTaskId;$env:AETHERDESK_CLEANUP_TASK_WORK=$oldTaskWork
+        }
+    }
+}}

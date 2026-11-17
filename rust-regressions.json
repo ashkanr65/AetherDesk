@@ -9,6 +9,18 @@
       "checks": [
         {
           "phase": "windows",
+          "package": "ad-desktop",
+          "source": "ui/rust/crates/ad-desktop/src/remote_application_view.rs",
+          "test": "focused_application_views_follow_layout_changes_and_resync_after_focus_loss"
+        },
+        {
+          "phase": "windows",
+          "package": "ad-desktop",
+          "source": "ui/rust/crates/ad-desktop/src/remote_application_view.rs",
+          "test": "application_layout_updates_preserve_held_modifiers_and_unknown_layouts"
+        },
+        {
+          "phase": "windows",
           "package": "ad-desktop-model",
           "source": "ui/rust/crates/ad-desktop-model/src/profiles.rs",
           "test": "remote_applications_round_trip_without_changing_existing_connection_types"
@@ -72,6 +84,78 @@
     {
       "id": "display.shared_lossless_tiles",
       "checks": [
+        {
+          "phase": "windows",
+          "package": "ad-stream-protocol",
+          "source": "core/rust/crates/ad-stream-protocol/src/lossless.rs",
+          "test": "tile_reuse_negotiation_keeps_legacy_lossless_cursor_and_random_suffix"
+        },
+        {
+          "phase": "windows",
+          "package": "ad-display-decoder",
+          "source": "core/rust/crates/ad-display-decoder/src/lossless.rs",
+          "test": "copied_tiles_resolve_from_one_immutable_base_and_swaps_are_atomic"
+        },
+        {
+          "phase": "windows",
+          "package": "ad-display-decoder",
+          "source": "core/rust/crates/ad-display-decoder/src/lossless.rs",
+          "test": "copied_tiles_reject_missing_bases_payloads_and_invalid_source_regions"
+        },
+        {
+          "phase": "linux",
+          "package": "agent-wayland",
+          "source": "core/rust/crates/agent-wayland/src/frame_clock.rs",
+          "test": "idle_damage_wakes_immediately_without_rendering_unchanged_frames"
+        },
+        {
+          "phase": "linux",
+          "package": "agent-wayland",
+          "source": "core/rust/crates/agent-wayland/src/frame_clock.rs",
+          "test": "detached_damage_is_retained_and_resume_never_waits_for_an_idle_tick"
+        },
+        {
+          "phase": "linux",
+          "package": "agent-wayland",
+          "source": "core/rust/crates/agent-wayland/src/frame_clock.rs",
+          "test": "busy_damage_obeys_the_rate_without_adding_render_time_to_each_period"
+        },
+        {
+          "phase": "linux",
+          "package": "agent-wayland",
+          "source": "core/rust/crates/agent-wayland/src/frame_clock.rs",
+          "test": "independent_viewers_keep_callbacks_live_without_root_capture"
+        },
+        {
+          "phase": "linux",
+          "package": "agent-wayland",
+          "source": "core/rust/crates/agent-wayland/src/view_demand.rs",
+          "test": "independent_viewer_leases_outlive_other_views_and_release_without_pid_files"
+        },
+        {
+          "phase": "linux",
+          "package": "agent-wayland",
+          "source": "core/rust/crates/agent-wayland/src/view_demand.rs",
+          "test": "viewer_leases_reject_links_and_shared_runtime_directories"
+        },
+        {
+          "phase": "linux",
+          "package": "agent-wayland",
+          "source": "core/rust/crates/agent-wayland/src/compositor.rs",
+          "test": "detached_capture_keeps_children_running_and_resume_gets_current_dimensions"
+        },
+        {
+          "phase": "linux",
+          "package": "agent-supervisor",
+          "source": "core/rust/crates/agent-supervisor/src/supervisor.rs",
+          "test": "last_viewer_detaches_without_stopping_apps_and_reconnect_is_live"
+        },
+        {
+          "phase": "linux",
+          "package": "agent-supervisor",
+          "source": "core/rust/crates/agent-supervisor/src/lossless.rs",
+          "test": "moved_tiles_reuse_exact_sent_pixels_only_after_opt_in"
+        },
         {
           "phase": "windows",
           "package": "ad-stream-protocol",
@@ -149,6 +233,36 @@
           "package": "agent-supervisor",
           "source": "core/rust/crates/agent-supervisor/src/endpoint.rs",
           "test": "reaped_broker_exit_is_recorded_and_invalidates_stale_ready_health"
+        },
+        {
+          "phase": "linux",
+          "package": "agent-supervisor",
+          "source": "core/rust/crates/agent-supervisor/src/endpoint.rs",
+          "test": "reaped_closed_desktop_is_archived_without_touching_reused_pid_or_other_sessions"
+        },
+        {
+          "phase": "linux",
+          "package": "agent-supervisor",
+          "source": "core/rust/crates/agent-supervisor/src/endpoint.rs",
+          "test": "reaped_record_never_replaces_a_listening_endpoint_or_sends_it_a_command"
+        },
+        {
+          "phase": "linux",
+          "package": "agent-supervisor",
+          "source": "core/rust/crates/agent-supervisor/src/endpoint.rs",
+          "test": "exit_proof_requires_a_private_regular_complete_record_and_a_dead_session_process"
+        },
+        {
+          "phase": "linux",
+          "package": "agent-supervisor",
+          "source": "core/rust/crates/agent-supervisor/src/endpoint.rs",
+          "test": "cleanup_wait_accepts_watcher_exit_proof_published_after_the_close_attempt"
+        },
+        {
+          "phase": "linux",
+          "package": "agent-supervisor",
+          "source": "core/rust/crates/agent-supervisor/src/endpoint.rs",
+          "test": "exit_proof_is_not_visible_until_failed_health_has_committed"
         },
         {
           "phase": "linux",
@@ -1697,6 +1811,18 @@
           "package": "ad-desktop",
           "source": "ui/rust/crates/ad-desktop/src/terminal.rs",
           "test": "terminal_scrollbar_tracks_real_history_and_keeps_gutter_out_of_pty_input"
+        },
+        {
+          "phase": "windows",
+          "package": "ad-desktop",
+          "source": "ui/rust/crates/ad-desktop/src/terminal.rs",
+          "test": "right_click_copy_and_paste_keep_terminal_focus_for_immediate_typing"
+        },
+        {
+          "phase": "windows",
+          "package": "ad-desktop",
+          "source": "ui/rust/crates/ad-desktop/src/terminal.rs",
+          "test": "keyboard_paste_keeps_focus_and_disabled_or_mouse_reporting_terminals_do_not_paste_locally"
         },
         {
           "phase": "windows",
@@ -4033,6 +4159,12 @@
         {
           "phase": "windows",
           "package": "ad-desktop",
+          "source": "ui/rust/crates/ad-desktop/src/application_frames.rs",
+          "test": "input_rejections_keep_bounded_diagnostics_without_showing_focus_warnings"
+        },
+        {
+          "phase": "windows",
+          "package": "ad-desktop",
           "source": "ui/rust/crates/ad-desktop/src/application_stream.rs",
           "test": "ordered_input_does_not_wait_for_the_picture_reader"
         },
@@ -4173,6 +4305,24 @@
           "package": "ad-desktop",
           "source": "ui/rust/crates/ad-desktop/src/window_dpi.rs",
           "test": "native_offscreen_recovery_waits_for_drag_end_and_returns_its_title_to_a_monitor"
+        },
+        {
+          "phase": "windows",
+          "package": "ad-desktop",
+          "source": "ui/rust/crates/ad-desktop/src/window_dpi.rs",
+          "test": "native_restore_repairs_saved_placement_and_collapsed_windows_without_ending_sessions"
+        },
+        {
+          "phase": "windows",
+          "package": "ad-desktop",
+          "source": "ui/rust/crates/ad-desktop/src/window_dpi.rs",
+          "test": "collapsed_restore_bounds_use_last_normal_size_and_fit_the_remaining_monitor"
+        },
+        {
+          "phase": "windows",
+          "package": "ad-desktop",
+          "source": "ui/rust/crates/ad-desktop/src/window_dpi.rs",
+          "test": "normal_placement_workspace_offsets_preserve_top_and_left_taskbars_and_negative_origins"
         },
         {
           "phase": "windows",

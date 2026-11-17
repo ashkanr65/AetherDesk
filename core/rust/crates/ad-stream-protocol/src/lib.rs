@@ -21,7 +21,7 @@ use uuid::Uuid;
 
 pub const PROTOCOL_VERSION: u16 = 3;
 /// Optional shape-only cursor transport. Preserve the lossless prefix and the
-/// final 128 random nonce bits; channel authentication uses its separate token.
+/// final 128 nonce bits (which may hold other opt-ins); channel authentication uses its separate token.
 pub fn advertise_cursor_shapes(nonce: &mut [u8; 32]) {
     nonce[8..16].copy_from_slice(b"ADCS0001");
 }

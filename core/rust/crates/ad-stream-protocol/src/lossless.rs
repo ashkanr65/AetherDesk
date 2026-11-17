@@ -1,7 +1,8 @@
 //! Opt-in, bounded, exact BGRA tiles. No colour conversion or chroma subsampling.
 //!
 //! The hello nonce prefix advertises this extension without changing any v3
-//! message layout. The remaining 192 bits stay random. Nonces are NOT channel
+//! message layout. Other opt-ins reserve their own marker bytes; the unreserved
+//! suffix stays random. Nonces are NOT channel
 //! authentication: the separate random 256-bit channel token still is.
 //! An old peer ignores the prefix and uses the existing video messages. Only a
 //! client that understands these appended display variants may set the prefix.
@@ -23,10 +24,26 @@ pub fn supported(nonce: &[u8; 32]) -> bool {
     nonce.starts_with(HELLO_PREFIX)
 }
 
+/// Independent optional capability. Old agents still see the original lossless
+/// and cursor markers and ignore this one. The last 64 nonce bits stay random;
+/// channel authentication continues to use its separate random 256-bit token.
+pub fn advertise_tile_reuse(nonce: &mut [u8; 32]) {
+    nonce[16..24].copy_from_slice(b"ADTC0001");
+}
+pub fn tile_reuse_supported(nonce: &[u8; 32]) -> bool {
+    supported(nonce) && &nonce[16..24] == b"ADTC0001"
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum TileEncoding {
     Bgra,
     Lz4Bgra,
+    /// Copy a complete same-sized tile from the last COMMITTED baseline,
+    /// never from an earlier tile in this transaction. Data must be empty.
+    CopyBgra {
+        x: u32,
+        y: u32,
+    },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -72,6 +89,7 @@ impl LosslessTile {
                 }
                 Ok(output)
             }
+            TileEncoding::CopyBgra { .. } => Err("Copied tiles require a committed baseline"),
         }
     }
 }
@@ -91,6 +109,38 @@ pub fn tile_bytes(region: Rectangle) -> Result<usize, &'static str> {
 mod tests {
     use super::*;
     use crate::{ArppFrame, ArppMessage, DisplayMessage};
+
+    #[test]
+    fn tile_reuse_negotiation_keeps_legacy_lossless_cursor_and_random_suffix() {
+        let mut nonce = [91; 32];
+        advertise(&mut nonce);
+        crate::advertise_cursor_shapes(&mut nonce);
+        assert!(!tile_reuse_supported(&nonce));
+        advertise_tile_reuse(&mut nonce);
+        assert!(supported(&nonce));
+        assert!(crate::cursor_shapes_supported(&nonce));
+        assert!(tile_reuse_supported(&nonce));
+        assert_eq!(&nonce[24..], &[91; 8]);
+        let tile = LosslessTile {
+            region: Rectangle {
+                x: 0,
+                y: 0,
+                width: 256,
+                height: 64,
+            },
+            encoding: TileEncoding::CopyBgra { x: 256, y: 0 },
+            data: Vec::new(),
+        };
+        assert!(tile.clone().decode().is_err());
+        let message = ArppFrame::new(
+            2,
+            ArppMessage::Display(DisplayMessage::LosslessTile { frame_id: 3, tile }),
+        );
+        let mut wire = bytes::BytesMut::from(&crate::encode_frame(&message).unwrap()[..]);
+        assert_eq!(crate::decode_frame(&mut wire).unwrap().unwrap(), message);
+        nonce[0] ^= 1;
+        assert!(!tile_reuse_supported(&nonce));
+    }
 
     #[test]
     fn lossless_tiles_preserve_every_channel_and_bound_decompression() {

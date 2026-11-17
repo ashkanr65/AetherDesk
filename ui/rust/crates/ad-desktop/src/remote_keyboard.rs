@@ -121,6 +121,38 @@ pub fn keyboard_layout(id: u32) -> Option<(&'static str, &'static str)> {
         }
     })
 }
+pub(crate) fn active_layout() -> Option<(&'static str, &'static str)> {
+    #[cfg(test)]
+    {
+        TEST_LAYOUT.with(|value| value.get())
+    }
+    #[cfg(all(windows, not(test)))]
+    {
+        windows::layout()
+    }
+    #[cfg(all(not(windows), not(test)))]
+    {
+        None
+    }
+}
+#[cfg(test)]
+thread_local! {
+    static TEST_LAYOUT: std::cell::Cell<Option<(&'static str, &'static str)>> = const { std::cell::Cell::new(None) };
+}
+#[cfg(test)]
+pub(crate) fn with_test_layout<T>(
+    layout: Option<(&'static str, &'static str)>,
+    run: impl FnOnce() -> T,
+) -> T {
+    struct Restore(Option<(&'static str, &'static str)>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            TEST_LAYOUT.with(|value| value.set(self.0));
+        }
+    }
+    let _restore = Restore(TEST_LAYOUT.with(|value| value.replace(layout)));
+    run()
+}
 pub(crate) fn current_modifiers(_fallback: eframe::egui::Modifiers) -> eframe::egui::Modifiers {
     #[cfg(test)]
     if let Some(modifiers) = TEST_MODIFIERS.with(|value| value.get()) {
@@ -390,14 +422,7 @@ impl NativeKeyboard {
         self.exit.swap(false, Ordering::AcqRel)
     }
     pub fn layout(&self) -> Option<(&'static str, &'static str)> {
-        #[cfg(windows)]
-        {
-            windows::layout()
-        }
-        #[cfg(not(windows))]
-        {
-            None
-        }
+        active_layout()
     }
     pub fn unavailable(&self) -> bool {
         #[cfg(windows)]

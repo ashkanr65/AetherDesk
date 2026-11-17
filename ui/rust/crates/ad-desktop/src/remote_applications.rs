@@ -37,6 +37,7 @@ pub(crate) struct Applications {
     popup_native: std::collections::BTreeMap<u32, native::NativeWindow>,
     stream_active: Option<bool>,
     input_window: Option<isize>,
+    keyboard_layout: Option<(String, String)>,
     input_epoch: u64,
     sized_window: Option<u32>,
     content_zoom: f32,
@@ -75,6 +76,7 @@ impl Applications {
             popup_native: Default::default(),
             stream_active: None,
             input_window: None,
+            keyboard_layout: None,
             input_epoch: 0,
             sized_window: None,
             content_zoom: 1.0,
@@ -89,6 +91,42 @@ impl Applications {
             modifiers: egui::Modifiers::default(),
             error: None,
             title: format!("AetherDesk Remote Application {session}"),
+        }
+    }
+    pub(crate) fn with_client(
+        mut self,
+        client: std::sync::Arc<crate::remote::RemoteClient>,
+    ) -> Self {
+        self.cursor_client = Some(client);
+        self
+    }
+    fn sync_keyboard_layout(&mut self, layout: Option<(&str, &str)>) -> bool {
+        let Some((layout, variant)) = layout else {
+            // An unsupported Windows variant must not silently select US.
+            return true;
+        };
+        let Some(client) = &self.cursor_client else {
+            return true;
+        };
+        if self
+            .keyboard_layout
+            .as_ref()
+            .is_some_and(|value| value.0 == layout && value.1 == variant)
+        {
+            return true;
+        }
+        match client.send(crate::remote::Request::KeyboardLayout {
+            layout: layout.to_owned(),
+            variant: variant.to_owned(),
+        }) {
+            Ok(()) => {
+                self.keyboard_layout = Some((layout.to_owned(), variant.to_owned()));
+                true
+            }
+            Err(error) => {
+                self.error = Some(error);
+                false
+            }
         }
     }
     pub(crate) fn open_window(&mut self, ctx: &egui::Context, window: u32) {
@@ -133,6 +171,7 @@ impl Applications {
             return;
         };
         self.worker = Some(Worker::start(target, ctx.clone()));
+        self.keyboard_layout = None;
         self.sequence = 0;
         self.texture = None;
         self.titlebar_texture = None;
@@ -155,6 +194,9 @@ impl Applications {
         }
         self.focused = false;
         self.input_window = None;
+        // Each view shares its host session's keymap. Another focused view or
+        // the desktop may change it before this one regains keyboard ownership.
+        self.keyboard_layout = None;
         self.keys.clear();
         self.buttons.clear();
         self.modifiers = egui::Modifiers::default();

@@ -283,6 +283,9 @@ mod tests {
         assert!(prefix.starts_with(". '"));
         assert!(!prefix.contains("MIT-MAGIC-COOKIE"));
         let mut first = Mirror::connect_session(&session).unwrap();
+        // A separate independent view must keep working after the primary
+        // desktop stops consuming frames, including launch/capture/input below.
+        compositor.set_capture_demand(false).unwrap();
         first.handle(Request::Launch("printf '%s|%s' \"$APP_FIXTURE_EXPORT\" \"$PWD\" > \"$HOME/launch-result\"; sleep 60 & echo \"$!\" > \"$HOME/worker-pid\"".into())).unwrap();
         let result = home.path().join("launch-result");
         let pid_file = home.path().join("worker-pid");
@@ -750,7 +753,7 @@ mod tests {
             }
             assert!(
                 Instant::now() < deadline,
-                "Wheel buttons did not reach the host-managed application"
+                "Host input incomplete: wheel={wheel_buttons:?}, key_presses={key_presses}, key_released={key_released}"
             );
             std::thread::sleep(Duration::from_millis(5));
         }

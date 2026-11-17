@@ -498,6 +498,7 @@ async fn client_hello(
         .map_err(|_| LifecycleError::Random)?;
     if lossless_tiles {
         ad_stream_protocol::lossless::advertise(&mut nonce);
+        ad_stream_protocol::lossless::advertise_tile_reuse(&mut nonce);
     }
     if cursor_shapes {
         ad_stream_protocol::advertise_cursor_shapes(&mut nonce);

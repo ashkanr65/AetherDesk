@@ -34,6 +34,7 @@ impl Framebuffer {
         update: crate::LosslessUpdate,
     ) -> Result<(), PresentationError> {
         checked_size(update.width, update.height)?;
+        let baseline = self.pixels.clone();
         for patch in &update.patches {
             let r = patch.region;
             if r.width == 0
@@ -44,9 +45,32 @@ impl Framebuffer {
                 || !r.y.is_multiple_of(ad_stream_protocol::lossless::TILE_EDGE)
                 || r.width != ad_stream_protocol::lossless::TILE_EDGE.min(update.width - r.x)
                 || r.height != ad_stream_protocol::lossless::TILE_EDGE.min(update.height - r.y)
-                || patch.pixels_bgra.len() != r.width as usize * r.height as usize * 4
+                || (patch.copy_from.is_none()
+                    && patch.pixels_bgra.len() != r.width as usize * r.height as usize * 4)
             {
                 return Err(PresentationError::DecodedFrame);
+            }
+            if let Some((x, y)) = patch.copy_from {
+                let edge = ad_stream_protocol::lossless::TILE_EDGE;
+                if update.base_frame_id == 0
+                    || !patch.pixels_bgra.is_empty()
+                    || (self.width, self.height) != (update.width, update.height)
+                    || !x.is_multiple_of(edge)
+                    || !y.is_multiple_of(edge)
+                    || x.checked_add(r.width).is_none_or(|n| n > update.width)
+                    || y.checked_add(r.height).is_none_or(|n| n > update.height)
+                {
+                    return Err(PresentationError::DecodedFrame);
+                }
+                let index = (y / edge) as usize * update.width.div_ceil(edge) as usize
+                    + (x / edge) as usize;
+                let tile = baseline
+                    .tiles()
+                    .and_then(|t| t.tiles.get(index))
+                    .ok_or(PresentationError::DecodedFrame)?;
+                if (tile.region.width, tile.region.height) != (r.width, r.height) {
+                    return Err(PresentationError::DecodedFrame);
+                }
             }
         }
         if update.base_frame_id == 0 {
@@ -61,8 +85,21 @@ impl Framebuffer {
         }
         for patch in update.patches {
             let r = patch.region;
+            let pixels = if let Some((x, y)) = patch.copy_from {
+                let edge = ad_stream_protocol::lossless::TILE_EDGE;
+                let index = (y / edge) as usize * update.width.div_ceil(edge) as usize
+                    + (x / edge) as usize;
+                baseline
+                    .tiles()
+                    .ok_or(PresentationError::DecodedFrame)?
+                    .tiles[index]
+                    .bytes
+                    .clone()
+            } else {
+                patch.pixels_bgra
+            };
             Arc::make_mut(&mut self.pixels)
-                .replace_tile(update.width, update.height, r, patch.pixels_bgra)
+                .replace_tile(update.width, update.height, r, pixels)
                 .map_err(|_| PresentationError::DecodedFrame)?;
         }
         Ok(())
@@ -236,6 +273,7 @@ mod tests {
                 height: 64,
             },
             pixels_bgra: colour.repeat(256 * 64),
+            copy_from: None,
         };
         let mut buffer = Framebuffer::new(512, 64).unwrap();
         buffer

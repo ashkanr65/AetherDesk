@@ -215,6 +215,14 @@ impl Terminal {
         }
     }
     pub fn ui(&mut self, ui: &mut egui::Ui, enabled: bool) -> TerminalAction {
+        self.ui_with_clipboard(ui, enabled, || clipboard_text().ok())
+    }
+    fn ui_with_clipboard(
+        &mut self,
+        ui: &mut egui::Ui,
+        enabled: bool,
+        mut read_clipboard: impl FnMut() -> Option<String>,
+    ) -> TerminalAction {
         let (version, settings) = crate::terminal_settings::current();
         if version != self.settings_version {
             if settings.scrollback_lines != self.history_limit {
@@ -317,7 +325,12 @@ impl Terminal {
             ui.id().with("terminal-surface"),
             egui::Sense::click_and_drag(),
         );
-        if response.clicked() || response.drag_started() {
+        if response.clicked()
+            || response.drag_started()
+            || (enabled && response.secondary_clicked())
+        {
+            // Right click copies/pastes locally too. Keep stdin focused just
+            // like a primary click, including when returning from another app.
             response.request_focus();
         }
         let cell_at = |pos: egui::Pos2| {
@@ -630,7 +643,7 @@ impl Terminal {
                             || (modifiers.shift && key == Key::Insert)
                         {
                             if !has_paste {
-                                if let Ok(text) = clipboard_text() {
+                                if let Some(text) = read_clipboard() {
                                     action.input.extend(paste_bytes(
                                         &text,
                                         self.parser.screen().bracketed_paste(),
@@ -674,10 +687,13 @@ impl Terminal {
                 ui.ctx().copy_text(text);
                 self.clear_selection();
             } else if enabled {
-                if let Ok(text) = clipboard_text() {
-                    action
-                        .input
-                        .extend(paste_bytes(&text, self.parser.screen().bracketed_paste()));
+                if let Some(text) = read_clipboard() {
+                    let bytes = paste_bytes(&text, self.parser.screen().bracketed_paste());
+                    if !bytes.is_empty() {
+                        self.parser.screen_mut().set_scrollback(0);
+                        self.clear_selection();
+                    }
+                    action.input.extend(bytes);
                 }
             }
         }
@@ -1173,6 +1189,197 @@ fn scroll_offset(track: egui::Rect, thumb_height: f32, history: usize, top: f32)
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn clipboard_frame(
+        terminal: &mut Terminal,
+        ctx: &egui::Context,
+        events: Vec<Event>,
+        enabled: bool,
+        reads: &mut usize,
+    ) -> (TerminalAction, egui::FullOutput, egui::Id) {
+        let mut action = TerminalAction { input: Vec::new() };
+        let mut terminal_id = egui::Id::NULL;
+        let output = ctx.run(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(500.0, 300.0),
+                )),
+                events,
+                ..Default::default()
+            },
+            |ctx| {
+                egui::TopBottomPanel::top("clipboard-test-toolbar").show(ctx, |ui| {
+                    ui.add(
+                        egui::TextEdit::singleline(&mut String::new())
+                            .id(egui::Id::new("other-editor")),
+                    );
+                });
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    terminal_id = ui.id().with("terminal-surface");
+                    action = terminal.ui_with_clipboard(ui, enabled, || {
+                        *reads += 1;
+                        Some("pasted text".into())
+                    });
+                });
+            },
+        );
+        (action, output, terminal_id)
+    }
+    #[test]
+    fn right_click_copy_and_paste_keep_terminal_focus_for_immediate_typing() {
+        for focused_before in [false, true] {
+            for copy in [false, true] {
+                let ctx = egui::Context::default();
+                let mut terminal = Terminal::default();
+                let mut reads = 0;
+                let (_, _, terminal_id) =
+                    clipboard_frame(&mut terminal, &ctx, vec![], true, &mut reads);
+                clipboard_frame(&mut terminal, &ctx, vec![], true, &mut reads);
+                terminal.process(b"copyme");
+                if copy {
+                    terminal.selection = Some(((0, 0), (0, 2)));
+                } else {
+                    for _ in 0..40 {
+                        terminal.process(b"\r\nhistory");
+                    }
+                    terminal.parser.screen_mut().set_scrollback(2);
+                }
+                ctx.memory_mut(|m| {
+                    m.request_focus(if focused_before {
+                        terminal_id
+                    } else {
+                        egui::Id::new("other-editor")
+                    })
+                });
+                let mut pasted = Vec::new();
+                let mut copied = false;
+                for pressed in [true, false] {
+                    let pos = egui::pos2(100.0, 100.0);
+                    let (action, output, _) = clipboard_frame(
+                        &mut terminal,
+                        &ctx,
+                        vec![
+                            Event::PointerMoved(pos),
+                            Event::PointerButton {
+                                pos,
+                                button: egui::PointerButton::Secondary,
+                                pressed,
+                                modifiers: Modifiers::NONE,
+                            },
+                        ],
+                        true,
+                        &mut reads,
+                    );
+                    pasted.extend(action.input);
+                    copied |= output.platform_output.commands.iter().any(|command| matches!(command, egui::OutputCommand::CopyText(text) if text == "cop"));
+                }
+                assert_eq!(
+                    pasted,
+                    if copy {
+                        b"".as_slice()
+                    } else {
+                        b"pasted text".as_slice()
+                    }
+                );
+                assert_eq!(reads, usize::from(!copy));
+                assert_eq!(copied, copy);
+                assert_eq!(terminal.parser.screen().scrollback(), 0);
+                assert!(ctx.memory(|m| m.has_focus(terminal_id)), "right-click clipboard action lost terminal focus (copy={copy}, previously focused={focused_before})");
+                let (action, _, _) = clipboard_frame(
+                    &mut terminal,
+                    &ctx,
+                    vec![
+                        Event::Text("x".into()),
+                        Event::Key {
+                            key: Key::Enter,
+                            physical_key: Some(Key::Enter),
+                            pressed: true,
+                            repeat: false,
+                            modifiers: Modifiers::NONE,
+                        },
+                    ],
+                    true,
+                    &mut reads,
+                );
+                assert_eq!(
+                    action.input, b"x\r",
+                    "typing after clipboard use must reach the terminal without another click"
+                );
+            }
+        }
+    }
+    #[test]
+    fn keyboard_paste_keeps_focus_and_disabled_or_mouse_reporting_terminals_do_not_paste_locally() {
+        let ctx = egui::Context::default();
+        let mut terminal = Terminal::default();
+        let mut reads = 0;
+        let (_, _, id) = clipboard_frame(&mut terminal, &ctx, vec![], true, &mut reads);
+        ctx.memory_mut(|m| m.request_focus(id));
+        terminal.process(b"\x1b[?2004h");
+        let (action, _, _) = clipboard_frame(
+            &mut terminal,
+            &ctx,
+            vec![
+                Event::Paste("keyboard paste".into()),
+                Event::Key {
+                    key: Key::V,
+                    physical_key: Some(Key::V),
+                    pressed: true,
+                    repeat: false,
+                    modifiers: Modifiers::CTRL,
+                },
+            ],
+            true,
+            &mut reads,
+        );
+        assert_eq!(action.input, b"\x1b[200~keyboard paste\x1b[201~");
+        assert_eq!(reads, 0);
+        assert!(ctx.memory(|m| m.has_focus(id)));
+        let (action, _, _) = clipboard_frame(
+            &mut terminal,
+            &ctx,
+            vec![Event::Text("x".into())],
+            true,
+            &mut reads,
+        );
+        assert_eq!(action.input, b"x");
+        for mouse_reporting in [false, true] {
+            if mouse_reporting {
+                terminal.process(b"\x1b[?1000h\x1b[?1006h");
+            }
+            ctx.memory_mut(|m| m.request_focus(egui::Id::new("other-editor")));
+            let mut input = Vec::new();
+            for pressed in [true, false] {
+                let pos = egui::pos2(100.0, 100.0);
+                let (action, _, _) = clipboard_frame(
+                    &mut terminal,
+                    &ctx,
+                    vec![
+                        Event::PointerMoved(pos),
+                        Event::PointerButton {
+                            pos,
+                            button: egui::PointerButton::Secondary,
+                            pressed,
+                            modifiers: Modifiers::NONE,
+                        },
+                    ],
+                    mouse_reporting,
+                    &mut reads,
+                );
+                input.extend(action.input);
+            }
+            assert_eq!(
+                reads, 0,
+                "clipboard must not be read for disabled or host-handled right clicks"
+            );
+            if mouse_reporting {
+                assert!(!input.is_empty());
+            } else {
+                assert!(input.is_empty());
+                assert!(!ctx.memory(|m| m.has_focus(id)));
+            }
+        }
+    }
     fn selection_frame(
         terminal: &mut Terminal,
         ctx: &egui::Context,

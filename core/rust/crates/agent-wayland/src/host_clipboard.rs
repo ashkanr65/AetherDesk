@@ -27,7 +27,12 @@ const FORMATS: [&str; 6] = [
 
 enum DesktopCommand {
     Clipboard(ClipboardSelection),
-    Wheel(i32, i32),
+    Wheel {
+        horizontal: i32,
+        vertical: i32,
+        x: i16,
+        y: i16,
+    },
     Monitors(
         u32,
         u32,
@@ -73,9 +78,14 @@ impl HostClipboard {
     pub(crate) fn set(&self, selection: ClipboardSelection) {
         let _ = self.0.send(DesktopCommand::Clipboard(selection));
     }
-    pub(crate) fn wheel(&self, horizontal: i32, vertical: i32) -> bool {
+    pub(crate) fn wheel(&self, horizontal: i32, vertical: i32, x: i16, y: i16) -> bool {
         self.0
-            .send(DesktopCommand::Wheel(horizontal, vertical))
+            .send(DesktopCommand::Wheel {
+                horizontal,
+                vertical,
+                x,
+                y,
+            })
             .is_ok()
     }
 }
@@ -210,12 +220,31 @@ impl Bridge {
                         .connection
                         .set_selection_owner(bridge.window, bridge.clipboard, 0u32)?;
                 }
-                Ok(DesktopCommand::Wheel(horizontal, vertical)) => {
+                Ok(DesktopCommand::Wheel {
+                    horizontal,
+                    vertical,
+                    x,
+                    y,
+                }) => {
                     // Rootful Xwayland switches between its absolute and relative
                     // pointer devices for Wayland motion/axis events. GTK resets
                     // its smooth-scroll baseline on that switch. Send real X11
                     // wheel buttons once, as the independent-window path does.
                     use x11rb::protocol::xtest;
+                    // Wayland motion and this X11 connection are independent.
+                    // Put the exact pointer position before its wheel buttons
+                    // on ONE ordered connection; faster capture/flush timing
+                    // must not send the wheel to the old pointer target.
+                    xtest::fake_input(
+                        &bridge.connection,
+                        MOTION_NOTIFY_EVENT,
+                        0,
+                        0,
+                        root,
+                        x,
+                        y,
+                        0,
+                    )?;
                     for (index, value, positive, negative) in
                         [(0, horizontal, 7, 6), (1, vertical, 4, 5)]
                     {

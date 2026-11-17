@@ -36,6 +36,43 @@ foreach($feature in $catalog.features){foreach($check in $feature.checks){
     if($check.test -in @('hardware_decoders_precede_software','decodes_real_h264_across_growing_and_shrinking_resizes','moving_colour_frames_survive_the_real_video_pipeline') -and $check.phase -ne 'linux'){throw 'Linux decoder coverage was assigned to Windows.'}
 }}
 $linuxRecipe=[IO.File]::ReadAllText((Join-Path $sourceRoot 'agent/linux/Dockerfile.bundle'))
+function Assert-LinuxContainerRecipe([string]$Recipe) {
+    # Check top-level instruction boundaries before the expensive container
+    # build. Comments/blank lines do not end a continued instruction. This
+    # recipe uses ordinary backslash continuations, without Docker heredocs.
+    $continued=$false;$number=0
+    $instructions=@('FROM','ARG','LABEL','RUN','ENV','WORKDIR','COPY','ADD','CMD','ENTRYPOINT','EXPOSE','VOLUME','USER','ONBUILD','STOPSIGNAL','HEALTHCHECK','SHELL','MAINTAINER')
+    foreach($line in ($Recipe -split '\r?\n')) {
+        $number++
+        if ($line -match '^\s*(#|$)') {continue}
+        if (!$continued) {
+            $instruction=($line.TrimStart() -split '\s+',2)[0].ToUpperInvariant()
+            if ($instruction -notin $instructions) {
+                throw "Invalid Dockerfile instruction '$instruction' at line $number. Check the preceding line's continuation backslash."
+            }
+        }
+        $continued=$line.TrimEnd().EndsWith('\')
+    }
+    if ($continued) {throw 'Dockerfile ends with an unfinished continuation.'}
+}
+Assert-LinuxContainerRecipe $linuxRecipe
+# Reproduce the actual late-stage failure by removing one continuation from
+# the production recipe; it must now fail here in step 0 rather than step 2.
+$cleanupLine='    && python3 tools/rust-build-kit/test_project_cleanup_linux.py \'
+if (!$linuxRecipe.Contains($cleanupLine)) {throw 'Linux cleanup regression is missing from the container test chain.'}
+$brokenRecipe=$linuxRecipe.Replace($cleanupLine,$cleanupLine.TrimEnd('\').TrimEnd())
+$rejected=$false
+try {Assert-LinuxContainerRecipe $brokenRecipe}catch {
+    if ($_.Exception.Message -notlike "Invalid Dockerfile instruction '&&'*") {throw};$rejected=$true
+}
+if (!$rejected) {throw 'A broken RUN continuation passed Dockerfile preflight.'}
+Assert-LinuxContainerRecipe "FROM scratch`nRUN true \`n# comment inside a continued instruction`n    && true`n"
+$rejected=$false
+try {Assert-LinuxContainerRecipe "FROM scratch`nRUN true \"}catch {
+    if ($_.Exception.Message -ne 'Dockerfile ends with an unfinished continuation.') {throw};$rejected=$true
+}
+if (!$rejected) {throw 'An unfinished Dockerfile continuation passed preflight.'}
+Write-Host 'PASS: Linux Dockerfile instruction boundaries reject missing/dangling continuations before compilation.'
 if([regex]::Matches($linuxRecipe,'-p ad-display-decoder -- --(?:list|test-threads=1)').Count -ne 2){throw 'Linux decoder regressions must be registered and executed by the container recipe.'}
 if([regex]::Matches($linuxRecipe,'-p ad-stream-protocol -p ad-display-decoder -- --(?:list|test-threads=1)').Count -ne 2){throw 'Selected-window protocol regressions must be listed and executed on Linux.'}
 if (!$linuxRecipe.Contains('COPY tools/rust-build-kit/test_xwayland_download.py /tmp/test_xwayland_download.py') -or
@@ -161,8 +198,13 @@ try { Invoke-StepTool 'recipe_failure' @() } catch {
     $failed = $true
 }
 if (!$failed) { throw 'A failed command was accepted.' }
-$temporary = Join-Path ([IO.Path]::GetTempPath()) ('aetherdesk-rust-kit-test-' + [guid]::NewGuid().ToString('N'))
+$testParent=if($env:AETHERDESK_CLEANUP_TASK_WORK){$env:AETHERDESK_CLEANUP_TASK_WORK}else{[IO.Path]::GetTempPath()}
+$savedCleanupWork=$env:AETHERDESK_CLEANUP_TASK_WORK
+$savedCleanupId=$env:AETHERDESK_CLEANUP_TASK_ID
+$temporary = Join-Path $testParent ('aetherdesk-rust-kit-test-' + [guid]::NewGuid().ToString('N'))
 try {
+    $env:AETHERDESK_CLEANUP_TASK_WORK=Join-Path $temporary 'tracked-staging'
+    $env:AETHERDESK_CLEANUP_TASK_ID='aetherdesk-recipe-fixture-'+[guid]::NewGuid().ToString('N')
     $stateRoot = Join-Path $temporary 'state'
     New-Item -ItemType Directory -Path $temporary | Out-Null
     $outputFixture = Join-Path $temporary 'native-output.ps1'
@@ -212,130 +254,13 @@ exit $Result
         }
     }
     Write-Host 'PASS: elapsed timing supports long builds and persists running/success/failure details without a compiler.'
-    $cleanupRoot = Join-Path $temporary 'cleanup-output'
-    $cleanupSource = Join-Path $temporary 'cleanup-source'
-    $oldDirectories = @('agent','installer','logs','packages','reports','source','state')
-    $oldFiles = @('preflight.json','model-tests.json','LATEST-FOLDER.txt','LATEST-ZIP.txt','LATEST-INSTALLER.txt','LATEST-PREVIEW-FOLDER.txt','LATEST-PREVIEW-ZIP.txt','LATEST-PREVIEW-INSTALLER.txt')
-    foreach ($name in $oldDirectories + @('cache\target','cache\cargo-home','cache\locks','cache\x11')) {
-        $directory = Join-Path $cleanupRoot $name
-        $null = New-Item -ItemType Directory -Path $directory -Force
-        [IO.File]::WriteAllText((Join-Path $directory 'sentinel.txt'),'fixture')
-    }
-    $null = New-Item -ItemType Directory -Path $cleanupSource
-    [IO.File]::WriteAllText((Join-Path $cleanupSource 'sentinel.txt'),'source')
-    [IO.File]::WriteAllText((Join-Path $cleanupRoot 'my-file.txt'),'user file')
-    foreach ($name in $oldFiles) { [IO.File]::WriteAllText((Join-Path $cleanupRoot $name),'old build') }
-    Reset-BuildOutput $cleanupRoot $cleanupSource
-    foreach ($name in $oldDirectories + $oldFiles) {
-        if (Test-Path -LiteralPath (Join-Path $cleanupRoot $name)) { throw "Cleanup kept an old generated artifact: $name" }
-    }
-    foreach ($name in @('cache\target','cache\cargo-home','cache\locks','cache\x11')) {
-        if ([IO.File]::ReadAllText((Join-Path $cleanupRoot "$name\sentinel.txt")) -ne 'fixture') { throw 'Cleanup removed a reusable cache.' }
-    }
-    if ([IO.File]::ReadAllText((Join-Path $cleanupRoot 'my-file.txt')) -ne 'user file' -or
-        [IO.File]::ReadAllText((Join-Path $cleanupSource 'sentinel.txt')) -ne 'source') { throw 'Cleanup modified user or source files.' }
-    Reset-BuildOutput $cleanupRoot $cleanupSource
-    Reset-BuildOutput (Join-Path $temporary 'not-created') $cleanupSource
-    foreach ($unsafe in @([IO.Path]::GetPathRoot($temporary),$cleanupSource,(Join-Path $cleanupSource 'output'),$temporary)) {
-        $rejected = $false
-        try { Reset-BuildOutput $unsafe $cleanupSource } catch {
-            if ($_.Exception.Message -notlike 'Cleanup requires*') { throw }; $rejected = $true
-        }
-        if (!$rejected) { throw "Cleanup accepted an unsafe output root: $unsafe" }
-    }
-    # Junctions do not require elevation on Windows. The external target must
-    # survive and all generated artifacts must remain until validation succeeds.
-    $link = Join-Path $cleanupRoot 'packages'
-    $null = New-Item -ItemType Junction -Path $link -Target $cleanupSource
-    $null = New-Item -ItemType Directory -Path (Join-Path $cleanupRoot 'agent')
-    $rejected = $false
-    try {
-        try { Reset-BuildOutput $cleanupRoot $cleanupSource } catch {
-            if ($_.Exception.Message -notlike 'Cleanup refuses*linked artifact*') { throw }; $rejected = $true
-        }
-        if (!$rejected -or !(Test-Path -LiteralPath (Join-Path $cleanupRoot 'agent')) -or
-            [IO.File]::ReadAllText((Join-Path $cleanupSource 'sentinel.txt')) -ne 'source') { throw 'Cleanup followed a junction or deleted before validating all targets.' }
-        $rejected = $false
-        try { Reset-BuildOutput (Join-Path $link 'nested') $cleanupSource } catch {
-            if ($_.Exception.Message -notlike 'Cleanup refuses*linked output ancestor*') { throw }; $rejected = $true
-        }
-        if (!$rejected) { throw 'Cleanup followed an output ancestor junction.' }
-    } finally { [IO.Directory]::Delete($link) }
-    $nestedLink = Join-Path $cleanupRoot 'agent\linked-files'
-    $null = New-Item -ItemType Junction -Path $nestedLink -Target $cleanupSource
-    try {
-        $rejected = $false
-        try { Reset-BuildOutput $cleanupRoot $cleanupSource } catch {
-            if ($_.Exception.Message -notlike 'Cleanup refuses*linked artifact*') { throw }; $rejected = $true
-        }
-        if (!$rejected -or [IO.File]::ReadAllText((Join-Path $cleanupSource 'sentinel.txt')) -ne 'source') { throw 'Cleanup followed a nested artifact junction.' }
-    } finally { [IO.Directory]::Delete($nestedLink) }
-    Write-Host 'PASS: build cleanup removes generated artifacts, preserves caches/user/source files, is repeatable, and rejects unsafe roots/junctions before deletion.'
-    # Completed packages and evidence survive post-success cleanup. All local
-    # staging and compiler/download caches become disposable only at this point.
-    foreach ($name in @('agent','installer','source','state','cache\target','cache\cargo-home','packages','logs','reports','acceptance')) {
-        $directory = Join-Path $cleanupRoot $name
-        $null = New-Item -ItemType Directory -Path $directory -Force
-        [IO.File]::WriteAllText((Join-Path $directory 'sentinel.txt'),'completed fixture')
-    }
-    foreach ($name in @('preflight.json','model-tests.json','LATEST-FOLDER.txt','LATEST-ZIP.txt','LATEST-INSTALLER.txt')) {
-        [IO.File]::WriteAllText((Join-Path $cleanupRoot $name),'completed fixture')
-    }
-    $cacheLink = Join-Path $cleanupRoot 'cache\linked-files'
-    $null = New-Item -ItemType Junction -Path $cacheLink -Target $cleanupSource
-    try {
-        $rejected=$false
-        try { Reset-BuildOutput $cleanupRoot $cleanupSource -AfterSuccess } catch {
-            if ($_.Exception.Message -notlike 'Cleanup refuses*linked artifact*') { throw }; $rejected=$true
-        }
-        if (!$rejected -or !(Test-Path -LiteralPath (Join-Path $cleanupRoot 'agent'))) { throw 'Post-success cleanup followed a cache junction or deleted before validation.' }
-    } finally { [IO.Directory]::Delete($cacheLink) }
-    Reset-BuildOutput $cleanupRoot $cleanupSource -AfterSuccess
-    Reset-BuildOutput $cleanupRoot $cleanupSource -AfterSuccess
-    foreach ($name in @('agent','installer','source','state','cache','preflight.json','model-tests.json')) {
-        if (Test-Path -LiteralPath (Join-Path $cleanupRoot $name)) { throw "Post-success cleanup retained temporary files: $name" }
-    }
-    foreach ($name in @('packages','logs','reports','acceptance')) {
-        if ([IO.File]::ReadAllText((Join-Path $cleanupRoot "$name\sentinel.txt")) -ne 'completed fixture') { throw "Post-success cleanup removed completed outputs/evidence: $name" }
-    }
-    foreach ($name in @('LATEST-FOLDER.txt','LATEST-ZIP.txt','LATEST-INSTALLER.txt')) {
-        if ([IO.File]::ReadAllText((Join-Path $cleanupRoot $name)) -ne 'completed fixture') { throw 'Post-success cleanup removed latest package pointers.' }
-    }
-    if ([IO.File]::ReadAllText((Join-Path $cleanupRoot 'my-file.txt')) -ne 'user file' -or
-        [IO.File]::ReadAllText((Join-Path $cleanupSource 'sentinel.txt')) -ne 'source') { throw 'Post-success cleanup changed source or unrelated files.' }
-    # Fast mode retains only reusable caches, not unnecessary staging files.
-    foreach ($name in @('agent','installer','source','state','cache\target')) {
-        $fixtureDirectory = Join-Path $cleanupRoot $name
-        New-Item -ItemType Directory -Force -Path $fixtureDirectory | Out-Null
-        [IO.File]::WriteAllText((Join-Path $fixtureDirectory 'sentinel.txt'),'fast fixture')
-    }
-    Reset-BuildOutput $cleanupRoot $cleanupSource -AfterSuccess -KeepCache
-    foreach ($name in @('agent','installer','source','state')) {
-        if (Test-Path -LiteralPath (Join-Path $cleanupRoot $name)) { throw 'Fast build mode kept unnecessary staging.' }
-    }
-    if ([IO.File]::ReadAllText((Join-Path $cleanupRoot 'cache\target\sentinel.txt')) -ne 'fast fixture' -or
-        [IO.File]::ReadAllText((Join-Path $cleanupRoot 'packages\sentinel.txt')) -ne 'completed fixture') {
-        throw 'Fast build mode removed reusable caches or completed packages.'
-    }
-    Write-Host 'PASS: optional fast builds preserve compiler caches while deleting staging files.'
-    # Exercise the production Linux cleanup with a captured command, never WSL.
-    $realStepTool = ${function:Invoke-StepTool}
-    $savedDistribution = $env:AETHERDESK_WSL_DISTRIBUTION
-    try {
-        $env:AETHERDESK_WSL_DISTRIBUTION='fixture-distro'
-        function Invoke-StepTool([string]$Program,[string[]]$Arguments) {
-            if ($Program -ne 'wsl.exe' -or ($Arguments -join '|') -ne '-d|fixture-distro|-u|root|--exec|podman|--storage-driver=vfs|image|prune|--all|--force|--filter|label=io.aetherdesk.rust-build-cache=true') { throw 'Linux cleanup was not restricted to labelled Rust build images.' }
-            $script:cleanupCommandObserved=$true
-        }
-        $script:cleanupCommandObserved=$false
-        Clear-NativeAgentBuildCache
-        if (!$script:cleanupCommandObserved) { throw 'Linux cleanup did not invoke its labelled command.' }
-    } finally {
-        ${function:Invoke-StepTool}=$realStepTool
-        $env:AETHERDESK_WSL_DISTRIBUTION=$savedDistribution
-    }
-    if ([regex]::Matches($linuxRecipe,'(?m)^LABEL io\.aetherdesk\.rust-build-cache="true"').Count -ne 2) { throw 'Rust build stages must carry the cache ownership label.' }
-    Write-Host 'PASS: post-success cleanup removes staging/caches, keeps completed packages/evidence, rejects cache junctions, and restricts Linux pruning to owned labels.'
+    # The former broad output deletion and label-wide prune are deliberately
+    # disabled. Real deletion guards are exercised by Test-ProjectCleanup.ps1.
+    $rejected=$false; try { Reset-BuildOutput $temporary $sourceRoot } catch { $rejected=$true }
+    if (!$rejected) { throw 'Untracked directory cleanup was accepted.' }
+    $rejected=$false; try { Clear-NativeAgentBuildCache } catch { $rejected=$true }
+    if (!$rejected) { throw 'Shared-label image cleanup was accepted.' }
+    Write-Host 'PASS: untracked output deletion and broad image cleanup are disabled.'
     $artifact = Join-Path $temporary 'artifact.txt'
     [IO.File]::WriteAllText($artifact,'verified fixture')
     Write-Record 3 'fingerprint' $artifact @($artifact) 'test.log'
@@ -576,7 +501,8 @@ exit $Result
     $image[64]=80; $image[65]=69; $image[68]=100; $image[69]=134
     $exe = Join-Path $package 'AetherDesk.exe'
     [IO.File]::WriteAllBytes($exe,$image)
-    $companion=Join-Path $package 'aetherdesk-codex.exe'
+    New-Item -ItemType Directory -Path (Join-Path $package 'runtime\ai') -Force | Out-Null
+    $companion=Join-Path $package 'runtime\ai\aetherdesk-connector.exe'
     [IO.File]::WriteAllBytes($companion,$image)
     [IO.File]::WriteAllText((Join-Path $package 'verification/codex-connector.json'),(@{handshakePassed=$true;toolCatalogPassed=$true;disabledAccessPassed=$true;boundedInputPassed=$true;liveHostAcceptancePassed=$false;executableSha256=(Get-FileHash -LiteralPath $companion -Algorithm SHA256).Hash}|ConvertTo-Json))
     foreach ($name in @('Cargo.lock','READ-ME-FIRST.txt','THIRD-PARTY-NOTICES.txt')) {
@@ -613,6 +539,14 @@ exit $Result
         }
     }
     Verify-RustPackage $package
+    $legacyHelper=Join-Path $package 'aetherdesk-codex.exe'
+    [IO.File]::WriteAllBytes($legacyHelper,$image)
+    $rejected=$false
+    try { Verify-RustPackage $package } catch {
+        if ($_.Exception.Message -notlike '*application root*') { throw }
+        $rejected=$true
+    } finally { Remove-Item -LiteralPath $legacyHelper -Force }
+    if (!$rejected) { throw 'A root-level integration helper was accepted.' }
     $windowsEvidence=Join-Path $package 'verification/windows-regressions.json'
     $badEvidence=$fixtureReport|ConvertFrom-Json;$badEvidence.catalogSha256='wrong-catalog'
     [IO.File]::WriteAllText($windowsEvidence,($badEvidence|ConvertTo-Json))
@@ -638,10 +572,12 @@ exit $Result
 
 } finally {
     $full = [IO.Path]::GetFullPath($temporary)
-    $prefix = [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd('\') + '\'
+    $prefix = [IO.Path]::GetFullPath($testParent).TrimEnd('\') + '\'
     if (!$full.StartsWith($prefix,[StringComparison]::OrdinalIgnoreCase) -or
         [IO.Path]::GetFileName($full) -notlike 'aetherdesk-rust-kit-test-*') { throw 'Unsafe fixture cleanup.' }
     if (Test-Path -LiteralPath $full) { Remove-Item -LiteralPath $full -Recurse -Force }
+    $env:AETHERDESK_CLEANUP_TASK_WORK=$savedCleanupWork
+    $env:AETHERDESK_CLEANUP_TASK_ID=$savedCleanupId
 }
 $worker = [IO.File]::ReadAllText((Join-Path $PSScriptRoot 'Build-Worker.ps1'))
 if ($realFiles -notcontains 'ui/rust/crates/ad-desktop/src/process_health.rs') { throw 'Snapshot omitted background GUI hang diagnostics.' }
@@ -662,3 +598,6 @@ $global:LASTEXITCODE = 0
 Write-Host 'PASS: Rust recipe syntax, workspace test routing, separate dependency locks, failure propagation, resume hashes, isolated versions, root dependency notices and x64 package validation.'
 
 & (Join-Path $PSScriptRoot 'Test-Public-Publisher.ps1')
+
+& (Join-Path $PSScriptRoot 'Test-ProjectCleanup.ps1')
+& (Join-Path $PSScriptRoot 'Test-ReleaseRetention.ps1')

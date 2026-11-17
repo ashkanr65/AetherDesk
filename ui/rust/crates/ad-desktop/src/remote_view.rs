@@ -106,7 +106,8 @@ impl RemoteView {
         Self {
             wheel: Default::default(),
             cursor: Default::default(),
-            applications: crate::remote_applications::Applications::new(client.window_target(), id),
+            applications: crate::remote_applications::Applications::new(client.window_target(), id)
+                .with_client(client.clone()),
             action: None,
             input_focus: false,
             client,

@@ -242,9 +242,10 @@ async fn run_client(
     let client_id = Uuid::new_v4();
     let mut attached = false;
     let mut lossless = false;
+    let mut tile_reuse = false;
     let mut cursor_shapes = false;
     let mut hello_received = false;
-    let (media_mode_tx, mut media_mode_rx) = tokio::sync::watch::channel(None::<bool>);
+    let (media_mode_tx, mut media_mode_rx) = tokio::sync::watch::channel(None::<(bool, bool)>);
     let (mut width, mut height) = *dimensions;
     let mut packets = supervisor.subscribe_packets();
     let delivery = crate::delivery::DeliveryWindow::default();
@@ -333,7 +334,7 @@ async fn run_client(
             // Only per-window streams carry pixels in this connection mode.
             return std::future::pending::<Result<(), AgentServerError>>().await;
         }
-        let lossless = loop {
+        let (lossless, tile_reuse) = loop {
             let mode = *media_mode_rx.borrow_and_update();
             if let Some(enabled) = mode {
                 break enabled;
@@ -344,7 +345,13 @@ async fn run_client(
                 .map_err(|_| AgentServerError::SupervisorStopped)?;
         };
         if lossless {
-            crate::lossless::serve(supervisor.lossless_source(), &session, &delivery).await
+            crate::lossless::serve(
+                supervisor.lossless_source(),
+                &session,
+                &delivery,
+                tile_reuse,
+            )
+            .await
         } else {
             legacy_output.await
         }
@@ -385,6 +392,7 @@ async fn run_client(
                             }
                             hello_received = true;
                             lossless = ad_stream_protocol::lossless::supported(&client_nonce);
+                            tile_reuse = ad_stream_protocol::lossless::tile_reuse_supported(&client_nonce);
                             cursor_shapes = ad_stream_protocol::cursor_shapes_supported(&client_nonce);
                             supervisor.set_lossless_mode(lossless).await?;
                             session.send(ArppMessage::Control(ControlMessage::ServerHello {
@@ -407,7 +415,7 @@ async fn run_client(
                                 session_id: supervisor.session_id(),
                                 resumed: false,
                             })).await?;
-                            media_mode_tx.send_replace(Some(lossless));
+                            media_mode_tx.send_replace(Some((lossless, tile_reuse)));
                         }
                         ArppMessage::Control(ControlMessage::ResumeSession { session_id, .. }) if hello_received => {
                             ensure_session(supervisor, session_id)?;
@@ -423,7 +431,7 @@ async fn run_client(
                                 height,
                                 full_refresh_required: true,
                             })).await?;
-                            media_mode_tx.send_replace(Some(lossless));
+                            media_mode_tx.send_replace(Some((lossless, tile_reuse)));
                         }
                         ArppMessage::Control(ControlMessage::Resize { width: next_width, height: next_height, .. }) => {
                             if attached && ad_stream_protocol::valid_desktop_size(next_width, next_height) {
