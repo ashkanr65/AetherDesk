@@ -65,7 +65,28 @@ function Assert-RegisteredRegressions($Catalog,[string]$Phase,[string]$Text) {
     }
     return [pscustomobject]@{registered=$registered.Count;required=$required.Count;names=$registered}
 }
+function Assert-LinuxTestPackages($Catalog,[string]$Recipe) {
+    # Check packages before spending time compiling the container. Preparation,
+    # compiler registration and execution must each cover the Linux catalog.
+    $required=@($Catalog.features|ForEach-Object{$_.checks}|Where-Object{$_.phase -eq 'linux'}|Select-Object -ExpandProperty package -Unique)
+    $flat=$Recipe -replace '\\\r?\n',' '
+    $commands=[regex]::Matches($flat,'\bcargo\s+test\b[^&;\r\n]*')
+    $modes=@{}
+    foreach($command in $commands){
+        $mode=if($command.Value -match '(?:^|\s)--no-run(?:\s|$)'){'compile'}elseif($command.Value -match '(?:^|\s)--list(?:\s|$)'){'list'}else{'execute'}
+        $modes[$mode]=$true
+        $packages=@([regex]::Matches($command.Value,'(?:^|\s)(?:-p|--package)(?:\s+|=)(?<name>[A-Za-z0-9_-]+)')|ForEach-Object{$_.Groups['name'].Value})
+        foreach($package in $required){
+            if($package -notin $packages){throw "Linux $mode command omits catalog package: $package"}
+        }
+    }
+    foreach($mode in @('compile','list','execute')){
+        if(!$modes.ContainsKey($mode)){throw "Linux recipe is missing its $mode test command."}
+    }
+}
 if($MyInvocation.InvocationName -ne '.'){
+    if(!$Repository){$Repository=[IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))}
     $catalog=Get-RegressionCatalog $Repository ([bool]$CheckReferences)
+    Assert-LinuxTestPackages $catalog ([IO.File]::ReadAllText((Join-Path $Repository 'agent/linux/Dockerfile.bundle')))
     Write-Host "PASS: $($catalog.features.Count) behavior groups and $($catalog.originalSuites.Count) original suites mapped to native regressions. Compiler/live results are separate."
 }

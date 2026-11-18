@@ -106,7 +106,16 @@ async fn launch(options: Options) -> Result<(), Box<dyn std::error::Error>> {
     tokio::fs::create_dir_all(&session_directory).await?;
     tokio::fs::set_permissions(&session_directory, std::fs::Permissions::from_mode(0o700)).await?;
     let endpoint_path = session_directory.join("endpoint");
+    if agent_supervisor::endpoint::viewer_connected(&endpoint_path).await? {
+        println!("{}", ad_stream_protocol::SESSION_BUSY_MARKER);
+        return Ok(());
+    }
     if let Some(endpoint) = read_live_endpoint(&endpoint_path).await? {
+        if agent_supervisor::endpoint::supports_channel_groups(&session_directory, &endpoint)
+            .await?
+        {
+            println!("{}", ad_stream_protocol::CHANNEL_GROUPS_MARKER);
+        }
         println!("{endpoint}");
         return Ok(());
     }
@@ -162,6 +171,11 @@ async fn launch(options: Options) -> Result<(), Box<dyn std::error::Error>> {
     loop {
         if let Some(endpoint) = read_live_endpoint(&endpoint_path).await? {
             println!("AETHERDESK_AGENT_CREATED_V1");
+            if agent_supervisor::endpoint::supports_channel_groups(&session_directory, &endpoint)
+                .await?
+            {
+                println!("{}", ad_stream_protocol::CHANNEL_GROUPS_MARKER);
+            }
             println!("{endpoint}");
             return Ok(());
         }

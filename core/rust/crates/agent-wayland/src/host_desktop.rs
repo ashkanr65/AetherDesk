@@ -130,10 +130,13 @@ impl AgentCompositorState {
         Ok(())
     }
 
-    pub(crate) fn poll_host_desktop(&mut self) -> Result<(), CompositorError> {
+    pub(crate) fn poll_host_desktop(&mut self, terminal_viewed: bool) -> Result<(), CompositorError> {
         let Some(desktop) = &mut self.host_desktop else {
             return Ok(());
         };
+        if let Some(terminals) = &desktop.terminal_flow_control {
+            terminals.set_active(terminal_viewed);
+        }
         if let Some(status) = desktop.child.try_wait()? {
             return Err(CompositorError::XWayland(format!(
                 "host desktop server exited: {status}"
@@ -151,6 +154,7 @@ impl AgentCompositorState {
                         Some(crate::terminal_flow_control::TerminalFlowControl::start(
                             display_number,
                             desktop.authority.clone(),
+                            terminal_viewed,
                         )?);
                     desktop.clipboard = Some(crate::host_clipboard::HostClipboard::start(
                         display_number,

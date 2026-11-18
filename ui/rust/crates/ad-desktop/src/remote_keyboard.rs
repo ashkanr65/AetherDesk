@@ -236,6 +236,20 @@ fn route_status<T>(
 ) -> Option<bool> {
     state.try_lock().map(|state| inspect(&state))
 }
+
+#[cfg(any(windows, test))]
+const CAPTURE_LEASE: std::time::Duration = std::time::Duration::from_millis(600);
+
+/// Activity on an already verified route is a liveness signal independent of
+/// GUI rendering. Never resurrect an expired route or extend idle ownership.
+#[cfg(any(windows, test))]
+fn renew_input_activity(until: &mut std::time::Instant, now: std::time::Instant) -> bool {
+    if now > *until {
+        return false;
+    }
+    *until = now + CAPTURE_LEASE;
+    true
+}
 /// Keep GUI forwarding active while a repeatedly failing native hook cools
 /// down. Reinstalling at display-frame rate churns modifier ownership.
 #[derive(Default)]
@@ -471,7 +485,7 @@ mod windows {
             atomic::{AtomicI32, AtomicUsize},
             OnceLock, Weak,
         },
-        time::{Duration, Instant},
+        time::Instant,
     };
     use windows_sys::Win32::{
         Foundation::*,
@@ -720,6 +734,10 @@ mod windows {
                     clear(active);
                     return false;
                 }
+                // Windows repeats keep a physically held key alive even when
+                // the GUI is briefly busy preparing/presenting a frame. Xwayland
+                // still owns repeat; this does not synthesize any extra keys.
+                renew_input_activity(&mut current.until, Instant::now());
                 !pass
             },
             || unsafe { CallNextHookEx(std::ptr::null_mut(), code, wp, lp) },
@@ -728,10 +746,9 @@ mod windows {
     unsafe extern "system" fn mouse_callback(code: i32, wp: WPARAM, lp: LPARAM) -> LRESULT {
         use ad_stream_protocol::InputMessage;
         let next = || unsafe { CallNextHookEx(std::ptr::null_mut(), code, wp, lp) };
-        // Wheels always use the window's GUI event route. A best-effort hook
-        // can pass through during contention or lease renewal; suppressing its
-        // GUI copy based on keyboard ownership silently loses those scrolls.
-        if code != HC_ACTION as i32 || matches!(wp as u32, WM_MOUSEWHEEL | WM_MOUSEHWHEEL) {
+        // Wheels remain exclusively on the GUI route. The hook observes their
+        // activity only; forwarding or suppressing a second copy loses scrolls.
+        if code != HC_ACTION as i32 {
             return next();
         }
         let event = unsafe { &*(lp as *const MSLLHOOKSTRUCT) };
@@ -764,6 +781,18 @@ mod windows {
                             .is_some_and(|r| Surface::contains(r, x, y))
                         || hit != current.window)
                 {
+                    if matches!(
+                        wp as u32,
+                        WM_LBUTTONDOWN | WM_RBUTTONDOWN | WM_MBUTTONDOWN | WM_XBUTTONDOWN
+                    ) {
+                        // A click on local controls revokes capture immediately,
+                        // even if the GUI has not processed that click yet.
+                        clear(active);
+                    }
+                    return false;
+                }
+                if matches!(wp as u32, WM_MOUSEWHEEL | WM_MOUSEHWHEEL) {
+                    renew_input_activity(&mut current.until, Instant::now());
                     return false;
                 }
                 let (x, y) = current.surface.point(x, y);
@@ -789,6 +818,8 @@ mod windows {
                 events.push(message);
                 if !send(current, events) {
                     clear(active);
+                } else {
+                    renew_input_activity(&mut current.until, Instant::now());
                 }
                 false // Mouse events still reach the local window for normal UI handling.
             },
@@ -829,7 +860,7 @@ mod windows {
             .is_some_and(|r| r.id == id && r.window == window)
         {
             let current = active.as_mut().unwrap();
-            current.until = Instant::now() + Duration::from_millis(600);
+            current.until = Instant::now() + CAPTURE_LEASE;
             current.surface = surface;
             let events = current.held.reconcile_windows_modifiers(&held);
             if !send(current, events) {
@@ -845,7 +876,7 @@ mod windows {
             client: Arc::downgrade(client),
             exit: Arc::downgrade(exit),
             held: Held::default(),
-            until: Instant::now() + Duration::from_millis(600),
+            until: Instant::now() + CAPTURE_LEASE,
             surface,
             buttons: buttons.clone(),
             point,
@@ -893,6 +924,52 @@ mod windows {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn continuous_input_survives_a_slow_gui_frame_without_extending_expired_capture() {
+        use std::time::{Duration, Instant};
+        let now = Instant::now();
+        let mut until = now + CAPTURE_LEASE;
+        let mut held = Held::default();
+        for key in [29, 42, 30] {
+            held.event(key, true, 0);
+        }
+        // Five seconds with no GUI lease renewal: a real held key's repeat
+        // events keep the verified route live without inventing new presses.
+        for tick in 1..=100 {
+            assert!(renew_input_activity(
+                &mut until,
+                now + Duration::from_millis(tick * 50)
+            ));
+            let events = held.event(30, true, tick as u32 * 50);
+            assert_eq!(events.len(), 1);
+            assert!(matches!(
+                events[0],
+                ad_stream_protocol::InputMessage::Keyboard {
+                    scan_code: 30,
+                    pressed: true,
+                    repeat: true,
+                    ..
+                }
+            ));
+            assert!(held.keys.contains(&29) && held.keys.contains(&42) && held.keys.contains(&30));
+        }
+        // Idle expiry is unchanged. Activity cannot reacquire an expired or
+        // revoked route; releases remain exactly-once, including Ctrl/Shift.
+        let expired = until + Duration::from_millis(1);
+        assert!(!renew_input_activity(&mut until, expired));
+        let releases = held.release();
+        assert_eq!(releases.len(), 3);
+        assert!(releases.iter().all(|event| matches!(
+            event,
+            ad_stream_protocol::InputMessage::Keyboard {
+                pressed: false,
+                repeat: false,
+                ..
+            }
+        )));
+        assert!(held.release().is_empty());
+    }
+
     #[test]
     fn hooks_never_wait_for_route_ownership_or_hold_it_across_the_next_hook() {
         use std::{sync::mpsc, time::Duration};

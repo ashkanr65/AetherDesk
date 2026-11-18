@@ -191,6 +191,30 @@
           "package": "agent-wayland",
           "source": "core/rust/crates/agent-wayland/src/terminal_flow_control.rs",
           "test": "terminal_discovery_is_cached_while_known_terminals_are_revalidated"
+        },
+        {
+          "phase": "linux",
+          "package": "agent-wayland",
+          "source": "core/rust/crates/agent-wayland/src/terminal_flow_control.rs",
+          "test": "terminal_discovery_stays_idle_until_pty_lifecycle_changes"
+        },
+        {
+          "phase": "linux",
+          "package": "agent-wayland",
+          "source": "core/rust/crates/agent-wayland/src/terminal_flow_control.rs",
+          "test": "terminal_policy_retains_one_anchor_per_pty_and_ignores_foreground_exit"
+        },
+        {
+          "phase": "linux",
+          "package": "agent-wayland",
+          "source": "core/rust/crates/agent-wayland/src/terminal_flow_control.rs",
+          "test": "terminal_discovery_retries_after_pty_creation_before_shell_startup"
+        },
+        {
+          "phase": "linux",
+          "package": "agent-wayland",
+          "source": "core/rust/crates/agent-wayland/src/terminal_flow_control.rs",
+          "test": "terminal_discovery_notification_failure_uses_a_bounded_fallback"
         }
       ],
       "liveAcceptance": "Rebuild both client and bundled agent. Compare matched resolution and lossless colour settings with typing, scrolling, monitor changes and skipped-frame recovery; microbenchmarks are not end-to-end input latency."
@@ -3363,6 +3387,34 @@
           "package": "ad-remote-session",
           "source": "core/rust/crates/ad-remote-session/src/bootstrap.rs",
           "test": "validates_every_file_in_a_bundled_runtime_manifest"
+        },
+        {
+          "phase": "windows",
+          "package": "ad-remote-session",
+          "source": "core/rust/crates/ad-remote-session/src/bootstrap.rs",
+          "test": "agent_and_runtime_content_identity_keeps_same_version_updates_separate"
+        },
+        {
+          "phase": "windows",
+          "package": "ad-remote-session",
+          "source": "core/rust/crates/ad-remote-session/src/bootstrap.rs",
+          "test": "corrupted_published_agent_is_preserved_without_upload_or_replacement"
+        },
+        {
+          "phase": "windows",
+          "package": "ad-remote-session",
+          "source": "core/rust/crates/ad-remote-session/src/ssh_host.rs",
+          "test": "occupied_launcher_reply_is_not_mistaken_for_a_bad_endpoint"
+        },
+        {
+          "phase": "offline",
+          "script": "tools/rust-build-kit/test_agent_upgrade.py"
+        },
+        {
+          "phase": "linux",
+          "package": "ad-remote-session",
+          "test": "native_side_by_side_deployment_preserves_old_bytes_and_rejects_linked_roots",
+          "source": "core/rust/crates/ad-remote-session/src/bootstrap.rs"
         }
       ],
       "liveAcceptance": "Native lifecycle uses checksummed bundled agent/runtime and production retained-session handshake; live host validation remains."
@@ -3987,6 +4039,12 @@
           "package": "ad-desktop",
           "source": "ui/rust/crates/ad-desktop/src/process_health.rs",
           "test": "native_health_probes_include_owned_windows_and_collect_only_wait_metadata"
+        },
+        {
+          "phase": "windows",
+          "package": "ad-desktop",
+          "source": "ui/rust/crates/ad-desktop/src/remote_keyboard.rs",
+          "test": "continuous_input_survives_a_slow_gui_frame_without_extending_expired_capture"
         }
       ],
       "liveAcceptance": "R6 source preserves physical Windows keypad/sided modifiers/AltGr/Win/menu/Print/Pause, lock flags, repeat, native mouse order and focus/lease release; exact foreground routing excludes injected events and toolbar/other windows. Existing IME path retains agent capability limits. Compile source regressions and verify live keyboard/drag/system shortcuts under R12. Mouse contract repairs add required client-route parity, wire/evdev mappings, Wayland axis frames and a real X11 application button/wheel bridge check. Run native checks during the next build, then manually compare mouse clicks, scrolling and EDA zoom in tab/fullscreen/all-monitor modes."
@@ -4689,6 +4747,12 @@
           "package": "ad-remote-session",
           "source": "core/rust/crates/ad-remote-session/tests/lifecycle_integration.rs",
           "test": "invalid_control_responses_keep_diagnostics_before_rollback_and_preserve_saved_desktops"
+        },
+        {
+          "phase": "windows",
+          "package": "ad-remote-session",
+          "source": "core/rust/crates/ad-remote-session/tests/lifecycle_integration.rs",
+          "test": "occupied_desktop_refusal_never_detaches_or_terminates_the_existing_viewer"
         }
       ],
       "liveAcceptance": "R1: cancellation owns bounded launch/partial handshake, rolls back positively identified fresh agents and preserves existing desktops; unclaimed launches expire. Duplicate IDs persist before launch and reopen through Saved desktop tabs; confirmed End removes records. Compile and validate live cancellation/restart/termination."
@@ -4956,6 +5020,12 @@
         },
         {
           "phase": "linux",
+          "package": "agent-wayland",
+          "source": "core/rust/crates/agent-wayland/src/terminal_flow_control.rs",
+          "test": "terminal_guard_parks_without_viewers_and_resumes_without_touching_other_flags"
+        },
+        {
+          "phase": "linux",
           "package": "agent-supervisor",
           "source": "core/rust/crates/agent-supervisor/src/endpoint.rs",
           "test": "legacy_recovery_requires_terminal_failure_after_latest_start"
@@ -4989,6 +5059,30 @@
           "package": "agent-supervisor",
           "source": "core/rust/crates/agent-supervisor/src/endpoint.rs",
           "test": "modern_failed_health_recovers_but_eof_without_cleanup_never_allows_replacement"
+        },
+        {
+          "phase": "linux",
+          "package": "agent-supervisor",
+          "source": "core/rust/crates/agent-supervisor/src/endpoint.rs",
+          "test": "occupied_endpoint_checks_only_established_owned_loopback_server_sockets"
+        },
+        {
+          "phase": "linux",
+          "package": "agent-supervisor",
+          "source": "core/rust/crates/agent-supervisor/src/endpoint.rs",
+          "test": "legacy_occupancy_check_preserves_the_listener_and_private_endpoint"
+        },
+        {
+          "phase": "linux",
+          "package": "agent-supervisor",
+          "source": "core/rust/crates/agent-supervisor/src/endpoint.rs",
+          "test": "grouped_channel_capability_is_bound_to_the_private_endpoint_token"
+        },
+        {
+          "phase": "linux",
+          "package": "agent-supervisor",
+          "source": "core/rust/crates/agent-supervisor/src/server.rs",
+          "test": "grouped_channels_never_mix_abandoned_or_interleaved_attempts"
         }
       ],
       "liveAcceptance": "Existing production Rust agent is retained and included by the native build recipe, which runs its integration tests when the user builds."

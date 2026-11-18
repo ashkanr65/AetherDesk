@@ -163,20 +163,29 @@ impl<H: RemoteAgentHost> AgentBootstrap<H> {
         runtime: Option<&AgentRuntimeBundle>,
     ) -> Result<AgentDeployment, AgentBootstrapError> {
         validate_component(&artifact.version)?;
-        let directory = format!(".aetherdesk/agent/{}", artifact.version);
+        // Agent semver alone is insufficient: several client builds can ship
+        // different binaries/libraries with the same version. Never replace a
+        // running desktop's executable or its future dlopen dependencies.
+        let directory = deployment_directory(artifact, runtime)?;
         let final_path = format!("{directory}/ad-agent");
         let digest_hex = hex_encode(&artifact.sha256);
         let temporary_path = format!("{directory}/.ad-agent.{digest_hex}.part");
         let command_path = format!("$HOME/{final_path}");
 
+        let mkdir = private_directory_command(&directory)?;
+        ensure_success(
+            self.host.command(&mkdir, COMMAND_TIMEOUT).await?,
+            "create agent directory",
+        )?;
+
         let probe = format!(
-            "if [ -f {path} ] && [ -x {path} ]; then sha256sum -- {path} | cut -d' ' -f1; fi",
+            "if [ -e {path} ] || [ -L {path} ]; then if [ -f {path} ] && [ -x {path} ] && [ ! -L {path} ]; then sha256sum -- {path} | cut -d' ' -f1; else printf 'invalid'; fi; fi",
             path = shell_quote_expand_home(&command_path)?
         );
         let current = self.host.command(&probe, COMMAND_TIMEOUT).await?;
         if current.success() && current.stdout_text().eq_ignore_ascii_case(&digest_hex) {
             if let Some(runtime) = runtime {
-                self.ensure_runtime_deployed(&directory, runtime).await?;
+                self.verify_runtime_files(&directory, runtime).await?;
             }
             self.verify_runtime(&command_path, &artifact.version)
                 .await?;
@@ -189,15 +198,9 @@ impl<H: RemoteAgentHost> AgentBootstrap<H> {
                 bundled_runtime: runtime.is_some(),
             });
         }
-
-        let mkdir = format!(
-            "umask 077 && mkdir -p -- {}",
-            shell_quote_expand_home(&format!("$HOME/{directory}"))?
-        );
-        ensure_success(
-            self.host.command(&mkdir, COMMAND_TIMEOUT).await?,
-            "create agent directory",
-        )?;
+        if !current.success() || !current.stdout_text().is_empty() {
+            return Err(AgentBootstrapError::PublishedBundleMismatch);
+        }
 
         // The digest-specific partial name makes retries idempotent. The SFTP
         // implementation resumes at the existing size after a network drop.
@@ -212,11 +215,13 @@ impl<H: RemoteAgentHost> AgentBootstrap<H> {
             digest = shell_quote(&digest_hex)?,
             final_path = shell_quote_expand_home(&command_path)?,
         );
-        let result = self.host.command(&install, COMMAND_TIMEOUT).await?;
-        ensure_success(result, "verify and install agent")?;
         if let Some(runtime) = runtime {
             self.ensure_runtime_deployed(&directory, runtime).await?;
         }
+        // Publish the executable last. Its presence means all libraries have
+        // already been staged and checked; a retry can resume incomplete uploads.
+        let result = self.host.command(&install, COMMAND_TIMEOUT).await?;
+        ensure_success(result, "verify and install agent")?;
         self.verify_runtime(&command_path, &artifact.version)
             .await?;
         self.host.cache_verified(&artifact.version).await;
@@ -230,16 +235,38 @@ impl<H: RemoteAgentHost> AgentBootstrap<H> {
         })
     }
 
+    async fn verify_runtime_files(
+        &self,
+        directory: &str,
+        runtime: &AgentRuntimeBundle,
+    ) -> Result<(), AgentBootstrapError> {
+        let validate = private_directory_command(&format!("{directory}/libs"))?;
+        ensure_success(
+            self.host.command(&validate, COMMAND_TIMEOUT).await?,
+            "validate runtime directory",
+        )?;
+        for library in &runtime.manifest.files {
+            let path =
+                shell_quote_expand_home(&format!("$HOME/{directory}/libs/{}", library.file_name))?;
+            let result = self.host.command(
+                &format!("if [ -f {path} ] && [ ! -L {path} ]; then sha256sum -- {path} | cut -d' ' -f1; fi"),
+                COMMAND_TIMEOUT,
+            ).await?;
+            if !result.success() || !result.stdout_text().eq_ignore_ascii_case(&library.sha256) {
+                return Err(AgentBootstrapError::RuntimeLibraryMismatch(
+                    library.file_name.clone(),
+                ));
+            }
+        }
+        Ok(())
+    }
+
     async fn ensure_runtime_deployed(
         &self,
         directory: &str,
         runtime: &AgentRuntimeBundle,
     ) -> Result<(), AgentBootstrapError> {
-        let remote_libs = format!("$HOME/{directory}/libs");
-        let mkdir = format!(
-            "umask 077 && mkdir -p -- {}",
-            shell_quote_expand_home(&remote_libs)?
-        );
+        let mkdir = private_directory_command(&format!("{directory}/libs"))?;
         ensure_success(
             self.host.command(&mkdir, COMMAND_TIMEOUT).await?,
             "create bundled runtime directory",
@@ -309,6 +336,39 @@ impl<H: RemoteAgentHost> AgentBootstrap<H> {
         }
         Ok(())
     }
+}
+
+/// Shared with the offline staging tool: sorted manifest entries make the
+/// content identity independent of JSON whitespace, case and file ordering.
+pub fn deployment_directory(
+    artifact: &AgentArtifact,
+    runtime: Option<&AgentRuntimeBundle>,
+) -> Result<String, AgentBootstrapError> {
+    validate_component(&artifact.version)?;
+    let mut identity = Context::new(&SHA256);
+    identity.update(b"AetherDesk agent deployment v1\0");
+    identity.update(&artifact.sha256);
+    if let Some(runtime) = runtime {
+        let mut libraries = runtime.manifest.files.iter().collect::<Vec<_>>();
+        libraries.sort_by(|a, b| a.file_name.cmp(&b.file_name));
+        for library in libraries {
+            validate_component(&library.file_name)?;
+            if library.sha256.len() != 64 || !library.sha256.bytes().all(|c| c.is_ascii_hexdigit())
+            {
+                return Err(AgentBootstrapError::InvalidRuntimeManifest);
+            }
+            identity.update(library.file_name.as_bytes());
+            identity.update(&[0]);
+            identity.update(&library.size.to_be_bytes());
+            // Hex is deliberately normalized before hashing in both tools.
+            identity.update(library.sha256.to_ascii_lowercase().as_bytes());
+        }
+    }
+    Ok(format!(
+        ".aetherdesk/agent/{}/bundles/{}",
+        artifact.version,
+        hex_encode(identity.finish().as_ref())
+    ))
 }
 
 async fn validate_manifest(
@@ -384,6 +444,7 @@ fn ensure_success(
 
 fn validate_component(component: &str) -> Result<(), AgentBootstrapError> {
     if component.is_empty()
+        || matches!(component, "." | "..")
         || component.len() > 64
         || !component
             .bytes()
@@ -392,6 +453,21 @@ fn validate_component(component: &str) -> Result<(), AgentBootstrapError> {
         return Err(AgentBootstrapError::InvalidVersion);
     }
     Ok(())
+}
+
+fn private_directory_command(directory: &str) -> Result<String, AgentBootstrapError> {
+    let mut prefix = String::new();
+    let mut command = "umask 077 && ".to_owned();
+    for part in directory.split('/') {
+        validate_component(part)?;
+        if !prefix.is_empty() {
+            prefix.push('/');
+        }
+        prefix.push_str(part);
+        let path = shell_quote_expand_home(&format!("$HOME/{prefix}"))?;
+        command.push_str(&format!("if [ -e {path} ] || [ -L {path} ]; then [ -d {path} ] && [ ! -L {path} ] && [ \"$(stat -c %u -- {path})\" = \"$(id -u)\" ] || exit 1; else mkdir -- {path} || exit 1; fi; "));
+    }
+    Ok(command)
 }
 
 fn shell_quote(value: &str) -> Result<String, AgentBootstrapError> {
@@ -429,6 +505,8 @@ fn redact_and_bound(value: &str, maximum: usize) -> String {
 
 #[derive(Debug, Error)]
 pub enum AgentBootstrapError {
+    #[error("An existing content-addressed agent bundle does not match its identity. It was preserved; no running agent was replaced.")]
+    PublishedBundleMismatch,
     #[error("agent version is not a safe path component")]
     InvalidVersion,
     #[error("agent artifact must be a regular file between 1 byte and 512 MiB")]
@@ -515,7 +593,10 @@ mod tests {
         {
             let files = host.files.lock().unwrap();
             let path = files.keys().next().unwrap();
-            assert!(path.starts_with(".aetherdesk/agent/1.2.3/.ad-agent."));
+            assert!(path.starts_with(&format!(
+                "{}/.ad-agent.",
+                deployment_directory(&artifact, None).unwrap()
+            )));
             assert!(path.ends_with(".part"));
         }
         assert!(host
@@ -531,6 +612,173 @@ mod tests {
     async fn rejects_path_traversal_in_versions() {
         let result = AgentArtifact::inspect("../latest", "missing").await;
         assert!(matches!(result, Err(AgentBootstrapError::InvalidVersion)));
+        for version in [".", ".."] {
+            assert!(matches!(
+                AgentArtifact::inspect(version, "missing").await,
+                Err(AgentBootstrapError::InvalidVersion)
+            ));
+        }
+    }
+
+    #[test]
+    fn agent_and_runtime_content_identity_keeps_same_version_updates_separate() {
+        let mut agent = AgentArtifact {
+            version: "1.2.3".into(),
+            local_path: "unused".into(),
+            size: 1,
+            sha256: [1; 32],
+        };
+        let mut runtime = AgentRuntimeBundle {
+            directory: "unused".into(),
+            manifest_path: "unused".into(),
+            manifest: RuntimeManifest {
+                schema_version: 1,
+                files: vec![
+                    RuntimeLibrary {
+                        file_name: "a.so".into(),
+                        size: 3,
+                        sha256: "02".repeat(32),
+                    },
+                    RuntimeLibrary {
+                        file_name: "b.so".into(),
+                        size: 4,
+                        sha256: "03".repeat(32),
+                    },
+                ],
+            },
+        };
+        let first = deployment_directory(&agent, Some(&runtime)).unwrap();
+        assert!(first.ends_with("984f5d22efb8afaf3aaaa72211bd6ce6bad7b24feb59446d052d06b5d59286d1"));
+        assert!(first.starts_with(".aetherdesk/agent/1.2.3/bundles/"));
+        runtime.manifest.files.reverse();
+        assert_eq!(first, deployment_directory(&agent, Some(&runtime)).unwrap());
+        runtime.manifest.files[0].sha256 = "04".repeat(32);
+        assert_ne!(first, deployment_directory(&agent, Some(&runtime)).unwrap());
+        agent.sha256 = [5; 32];
+        assert_ne!(first, deployment_directory(&agent, Some(&runtime)).unwrap());
+        assert_ne!(first, deployment_directory(&agent, None).unwrap());
+        assert!(!private_directory_command(&first)
+            .unwrap()
+            .contains("mkdir -p"));
+    }
+
+    #[tokio::test]
+    async fn corrupted_published_agent_is_preserved_without_upload_or_replacement() {
+        struct ExistingHost;
+        #[async_trait]
+        impl RemoteAgentHost for ExistingHost {
+            async fn command(
+                &self,
+                _: &str,
+                _: Duration,
+            ) -> Result<RemoteCommandResult, AgentBootstrapError> {
+                Ok(RemoteCommandResult {
+                    stdout: "ff".repeat(32).into_bytes(),
+                    stderr: vec![],
+                    exit_status: 0,
+                })
+            }
+            async fn upload_resumable(&self, _: &Path, _: &str) -> Result<(), AgentBootstrapError> {
+                panic!("published bundle must never be repaired in place");
+            }
+        }
+        let agent = AgentArtifact {
+            version: "1.2.3".into(),
+            local_path: "unused".into(),
+            size: 1,
+            sha256: [1; 32],
+        };
+        assert!(matches!(
+            AgentBootstrap::new(Arc::new(ExistingHost))
+                .ensure_deployed(&agent)
+                .await,
+            Err(AgentBootstrapError::PublishedBundleMismatch)
+        ));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn native_side_by_side_deployment_preserves_old_bytes_and_rejects_linked_roots() {
+        struct LocalHost {
+            home: PathBuf,
+        }
+        #[async_trait]
+        impl RemoteAgentHost for LocalHost {
+            async fn command(
+                &self,
+                command: &str,
+                _: Duration,
+            ) -> Result<RemoteCommandResult, AgentBootstrapError> {
+                let output = tokio::process::Command::new("/bin/sh")
+                    .args(["-c", command])
+                    .env("HOME", &self.home)
+                    .output()
+                    .await?;
+                Ok(RemoteCommandResult {
+                    stdout: output.stdout,
+                    stderr: output.stderr,
+                    exit_status: output.status.code().unwrap_or(255) as u32,
+                })
+            }
+            async fn upload_resumable(
+                &self,
+                local: &Path,
+                remote: &str,
+            ) -> Result<(), AgentBootstrapError> {
+                assert!(remote.starts_with(".aetherdesk/agent/"));
+                assert!(!remote.split('/').any(|p| p == ".."));
+                tokio::fs::copy(local, self.home.join(remote)).await?;
+                Ok(())
+            }
+        }
+        struct TestRoot(PathBuf);
+        impl Drop for TestRoot {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+        let root =
+            TestRoot(std::env::temp_dir().join(format!("ad-deploy-{}", uuid::Uuid::new_v4())));
+        std::fs::create_dir(&root.0).unwrap();
+        let home = root.0.join("home");
+        std::fs::create_dir(&home).unwrap();
+        let source = root.0.join("ad-agent");
+        let host = Arc::new(LocalHost { home: home.clone() });
+        let bootstrap = AgentBootstrap::new(host.clone());
+        let old_bytes = b"#!/bin/sh\nprintf 'ad-agent 1.2.3\\n'\n# old\n";
+        std::fs::write(&source, old_bytes).unwrap();
+        let old = AgentArtifact::inspect("1.2.3", &source).await.unwrap();
+        let old_deploy = bootstrap.ensure_deployed(&old).await.unwrap();
+        std::fs::write(
+            &source,
+            b"#!/bin/sh\nprintf 'ad-agent 1.2.3\\n'\n# updated\n",
+        )
+        .unwrap();
+        let new = AgentArtifact::inspect("1.2.3", &source).await.unwrap();
+        let new_deploy = bootstrap.ensure_deployed(&new).await.unwrap();
+        assert_ne!(old_deploy.remote_path, new_deploy.remote_path);
+        assert_eq!(
+            std::fs::read(home.join(&old_deploy.remote_path)).unwrap(),
+            old_bytes
+        );
+        assert!(!bootstrap.ensure_deployed(&new).await.unwrap().uploaded);
+        // A directory symlink must not redirect even a matching published hash.
+        let moved = root.0.join("moved-agent");
+        std::fs::rename(home.join(".aetherdesk/agent"), &moved).unwrap();
+        std::os::unix::fs::symlink(&moved, home.join(".aetherdesk/agent")).unwrap();
+        assert!(bootstrap.ensure_deployed(&new).await.is_err());
+        assert_eq!(
+            std::fs::read(
+                moved.join(
+                    old_deploy
+                        .remote_path
+                        .strip_prefix(".aetherdesk/agent/")
+                        .unwrap()
+                )
+            )
+            .unwrap(),
+            old_bytes
+        );
     }
 
     #[tokio::test]

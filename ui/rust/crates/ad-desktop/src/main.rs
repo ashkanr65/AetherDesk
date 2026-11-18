@@ -338,7 +338,7 @@ impl RustDesktop {
                             for (title, kind) in if profile.is_deleted() {
                                 vec![("Restore", "restore"), ("Delete permanently", "purge")]
                             } else {
-                                vec![
+                                let mut items = vec![
                                     ("Edit", "edit"),
                                     ("Duplicate", "duplicate"),
                                     (
@@ -350,7 +350,14 @@ impl RustDesktop {
                                         "favorite",
                                     ),
                                     ("Delete session", "trash"),
-                                ]
+                                ];
+                                if profile.connection_type.has_host_session() {
+                                    items.insert(
+                                        0,
+                                        ("Open independent host session", "independent"),
+                                    );
+                                }
+                                items
                             } {
                                 if ui.button(title).clicked() {
                                     action = Some((index, kind));
@@ -364,6 +371,9 @@ impl RustDesktop {
                     }
                     if let Some((index, kind)) = action {
                         match kind {
+                            "independent" => {
+                                self.open_profile_with_mode(self.profiles[index].clone(), true);
+                            }
                             "edit" => self.new_profile = Some(self.profiles[index].clone().into()),
                             "duplicate" => {
                                 let mut p = self.profiles[index].clone();
@@ -518,13 +528,16 @@ impl RustDesktop {
         self.workspace.selected = Some(index);
     }
     fn open_profile(&mut self, profile: SavedSession) {
+        self.open_profile_with_mode(profile, false);
+    }
+    fn open_profile_with_mode(&mut self, profile: SavedSession, independent: bool) {
         let duplicate = self
             .workspace
             .tabs
             .iter()
             .any(|t| t.profile.id == profile.id);
         let mut tab = session::SessionTab::new(profile);
-        if duplicate {
+        if duplicate || independent {
             tab.make_independent_desktop();
         }
         if let Some(previous) = self

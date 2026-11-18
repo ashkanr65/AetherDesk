@@ -36,6 +36,20 @@ foreach($feature in $catalog.features){foreach($check in $feature.checks){
     if($check.test -in @('hardware_decoders_precede_software','decodes_real_h264_across_growing_and_shrinking_resizes','moving_colour_frames_survive_the_real_video_pipeline') -and $check.phase -ne 'linux'){throw 'Linux decoder coverage was assigned to Windows.'}
 }}
 $linuxRecipe=[IO.File]::ReadAllText((Join-Path $sourceRoot 'agent/linux/Dockerfile.bundle'))
+Assert-LinuxTestPackages $catalog $linuxRecipe
+# Reproduce the reported omission in --no-run, --list and test execution.
+$flatLinuxRecipe=$linuxRecipe -replace '\\\r?\n',' '
+foreach($command in [regex]::Matches($flatLinuxRecipe,'\bcargo\s+test\b[^&;\r\n]*')){
+    $broken=$command.Value.Replace('-p ad-remote-session ','')
+    if($broken -eq $command.Value){throw 'Agent deployment regression package is absent from the Linux test recipe.'}
+    $badRecipe=$flatLinuxRecipe.Remove($command.Index,$command.Length).Insert($command.Index,$broken)
+    $rejected=$false
+    try{Assert-LinuxTestPackages $catalog $badRecipe}catch{
+        if($_.Exception.Message -notlike 'Linux * command omits catalog package: ad-remote-session'){throw};$rejected=$true
+    }
+    if(!$rejected){throw 'A Linux test command omitted a catalog package without failing preflight.'}
+}
+Write-Host 'PASS: Linux catalog packages are compiled, registered and executed; omitted-package fixtures fail before compilation.'
 function Assert-LinuxContainerRecipe([string]$Recipe) {
     # Check top-level instruction boundaries before the expensive container
     # build. Comments/blank lines do not end a continued instruction. This

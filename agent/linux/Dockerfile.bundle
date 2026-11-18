@@ -49,9 +49,11 @@ COPY tools/rust-build-kit/test_host_cleanup.py /src/tools/rust-build-kit/test_ho
 RUN cargo build --locked --release --manifest-path core/rust/Cargo.toml \
       -p agent-supervisor \
     && cargo test --locked --release --no-run --manifest-path core/rust/Cargo.toml \
-      -p agent-wayland -p agent-supervisor -p agent-input -p agent-encoder -p ad-ssh -p ad-stream-protocol -p ad-display-decoder
+      -p agent-wayland -p agent-supervisor -p agent-input -p agent-encoder -p ad-remote-session -p ad-ssh -p ad-stream-protocol -p ad-display-decoder
 
 COPY tools/package-linux-agent.sh /src/tools/package-linux-agent.sh
+COPY tools/agent-upgrade.py /src/tools/agent-upgrade.py
+COPY tools/rust-build-kit/test_agent_upgrade.py /src/tools/rust-build-kit/test_agent_upgrade.py
 COPY tools/test_x11_icons.py /src/tools/test_x11_icons.py
 COPY rust-regressions.json /src/rust-regressions.json
 COPY tools/rust-build-kit/check_regression_registry.py /src/tools/rust-build-kit/check_regression_registry.py
@@ -64,14 +66,15 @@ COPY tools/rust-build-kit/project_cleanup_linux.py tools/rust-build-kit/test_pro
 COPY ui/rust/crates/ad-desktop/src/connection.rs /src/ui/rust/crates/ad-desktop/src/connection.rs
 RUN install -d -m 1777 /tmp/.X11-unix \
     && cargo test --locked --release --manifest-path core/rust/Cargo.toml \
-      -p agent-wayland -p agent-supervisor -p agent-input -p agent-encoder -p ad-ssh -p ad-stream-protocol -p ad-display-decoder -- --list > /tmp/native-tests.list \
+      -p agent-wayland -p agent-supervisor -p agent-input -p agent-encoder -p ad-remote-session -p ad-ssh -p ad-stream-protocol -p ad-display-decoder -- --list > /tmp/native-tests.list \
     && python3 tools/rust-build-kit/check_regression_registry.py --catalog rust-regressions.json --phase linux --list /tmp/native-tests.list \
     && cargo test --locked --release --manifest-path core/rust/Cargo.toml \
-      -p agent-wayland -p agent-supervisor -p agent-input -p agent-encoder -p ad-ssh -p ad-stream-protocol -p ad-display-decoder -- --test-threads=1 \
+      -p agent-wayland -p agent-supervisor -p agent-input -p agent-encoder -p ad-remote-session -p ad-ssh -p ad-stream-protocol -p ad-display-decoder -- --test-threads=1 \
     && python3 tools/rust-build-kit/test_scoped_command.py \
     && python3 tools/rust-build-kit/test_terminal_integration.py \
     && python3 tools/rust-build-kit/test_monitoring_collector.py \
     && python3 tools/rust-build-kit/test_project_cleanup_linux.py \
+    && python3 tools/rust-build-kit/test_agent_upgrade.py \
     && python3 tools/test_x11_icons.py \
     && python3 tools/rust-build-kit/test_regression_registry.py \
     && bash tools/package-linux-agent.sh core/rust/target/release/ad-agent /src/agent-bundle \

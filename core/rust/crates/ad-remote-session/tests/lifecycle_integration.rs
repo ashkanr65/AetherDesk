@@ -40,6 +40,11 @@ struct AgentState {
     reject_hello: bool,
     wrong_resume: bool,
     diagnostic_reads: usize,
+    busy_launch: bool,
+    busy_hello: bool,
+    busy_errors: usize,
+    remote_closes: usize,
+    transport_closes: usize,
 }
 
 #[derive(Default)]
@@ -108,6 +113,9 @@ impl AgentConnection for MockConnection {
         _session_id: Uuid,
         _parameters: Option<&SessionParameters>,
     ) -> Result<AgentEndpoint, LifecycleError> {
+        if self.state.lock().unwrap().busy_launch {
+            return Err(LifecycleError::SessionBusy);
+        }
         let newly_created = {
             let mut state = self.state.lock().unwrap();
             assert!(state.installed);
@@ -126,6 +134,7 @@ impl AgentConnection for MockConnection {
             port: 41000,
             token: [7; 32],
             newly_created,
+            channel_groups: true,
         })
     }
 
@@ -175,8 +184,22 @@ impl TransportAdapter for MockTransport {
     }
 
     async fn send(&self, frame: ArppFrame) -> Result<(), TransportError> {
+        if matches!(
+            &frame.message,
+            ArppMessage::Control(ControlMessage::Close { .. })
+        ) {
+            self.state.lock().unwrap().remote_closes += 1;
+        }
         match frame.message {
             ArppMessage::Control(ControlMessage::ClientHello { .. }) => {
+                if self.state.lock().unwrap().busy_hello {
+                    self.reply(ArppMessage::Control(ControlMessage::Close {
+                        reason_code: ad_stream_protocol::SESSION_BUSY_REASON,
+                        detail: ad_stream_protocol::SESSION_BUSY_DETAIL.into(),
+                    }))
+                    .await;
+                    return Ok(());
+                }
                 if let Some(cancel) = &self.state.lock().unwrap().cancel_hello {
                     cancel.cancel();
                 }
@@ -280,6 +303,13 @@ impl TransportAdapter for MockTransport {
     }
 
     async fn receive(&self) -> Result<ArppFrame, TransportError> {
+        {
+            let mut state = self.state.lock().unwrap();
+            if state.busy_errors > 0 {
+                state.busy_errors -= 1;
+                return Err(TransportError::Closed);
+            }
+        }
         let frame = self
             .inbound_rx
             .lock()
@@ -301,6 +331,7 @@ impl TransportAdapter for MockTransport {
     }
 
     async fn close(&self, _reason: &str) -> Result<(), TransportError> {
+        self.state.lock().unwrap().transport_closes += 1;
         let delay = self.state.lock().unwrap().close_delay;
         tokio::time::sleep(delay).await;
         let mut state = self.state.lock().unwrap();
@@ -325,6 +356,48 @@ fn early_cursor(x: i32) -> ArppMessage {
         visible: true,
         rgba: vec![255; 4].into(),
     })
+}
+
+#[tokio::test]
+async fn occupied_desktop_refusal_never_detaches_or_terminates_the_existing_viewer() {
+    let binary = std::env::temp_dir().join(format!("ad-agent-busy-{}", Uuid::new_v4()));
+    tokio::fs::write(&binary, b"fixture").await.unwrap();
+    let artifact = AgentArtifact::inspect("0.1.0", &binary).await.unwrap();
+    for (launch_refusal, early_errors) in
+        [(true, 0), (false, 0), (false, 1), (false, 2), (false, 3)]
+    {
+        let connection = Arc::new(MockConnection::default());
+        {
+            let mut state = connection.state.lock().unwrap();
+            state.retained = true;
+            state.attached = true;
+            state.busy_launch = launch_refusal;
+            state.busy_hello = !launch_refusal;
+            state.busy_errors = early_errors;
+        }
+        let id = Uuid::new_v4();
+        let mut client = RemoteSessionLifecycle::new(connection.clone(), id);
+        let result = tokio::time::timeout(
+            Duration::from_secs(1),
+            client.connect_saved_desktop_cancellable(
+                &artifact,
+                None,
+                &handshake_parameters(id),
+                &tokio_util::sync::CancellationToken::new(),
+            ),
+        )
+        .await
+        .unwrap();
+        assert!(matches!(result, Err(LifecycleError::SessionBusy)));
+        assert!(client.session().is_none());
+        let state = connection.state.lock().unwrap();
+        assert!(state.retained && state.attached);
+        assert!(!state.ending);
+        assert_eq!(state.remote_closes, 0);
+        assert_eq!(state.transport_closes, 0);
+        assert_eq!(state.diagnostic_reads, 0);
+    }
+    tokio::fs::remove_file(binary).await.unwrap();
 }
 
 #[tokio::test]

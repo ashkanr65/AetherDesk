@@ -2,10 +2,10 @@
 //! Only PTY inputs belonging to this authenticated desktop are eligible. This
 //! does not change shell startup files, terminal preferences or keyboard events.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read};
-use std::os::fd::AsRawFd;
+use std::os::fd::{AsRawFd, FromRawFd};
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::{FileTypeExt, MetadataExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
@@ -16,6 +16,7 @@ use std::time::{Duration, Instant};
 
 const CHECK_INTERVAL: Duration = Duration::from_millis(500);
 const DISCOVERY_INTERVAL: Duration = Duration::from_secs(2);
+const FALLBACK_INTERVAL: Duration = Duration::from_secs(30);
 
 struct DesktopScope {
     display: Vec<u8>,
@@ -59,19 +60,28 @@ impl DesktopScope {
 
 pub(crate) struct TerminalFlowControl {
     stop: Arc<AtomicBool>,
+    active: Arc<AtomicBool>,
     worker: Option<JoinHandle<()>>,
 }
 
 impl TerminalFlowControl {
-    pub(crate) fn start(display: u32, authority: PathBuf) -> io::Result<Self> {
+    pub(crate) fn start(display: u32, authority: PathBuf, active: bool) -> io::Result<Self> {
         let scope = DesktopScope::new(display, &authority);
         let stop = Arc::new(AtomicBool::new(false));
         let stopping = stop.clone();
+        let active = Arc::new(AtomicBool::new(active));
+        let viewed = active.clone();
         let worker = thread::Builder::new()
             .name("aetherdesk-terminal-flow".into())
             .spawn(move || {
                 let mut terminals = TerminalCache::default();
                 while !stopping.load(Ordering::Acquire) {
+                    if !viewed.load(Ordering::Acquire) {
+                        // Retained applications keep running. A desktop with no
+                        // viewers needs no terminal inspection or polling.
+                        thread::park();
+                        continue;
+                    }
                     // Process inspection and terminal ioctls stay off the
                     // compositor/input/render thread. Catch newly opened PTYs
                     // and shells that restore IXON after a foreground program.
@@ -84,8 +94,17 @@ impl TerminalFlowControl {
             })?;
         Ok(Self {
             stop,
+            active,
             worker: Some(worker),
         })
+    }
+
+    pub(crate) fn set_active(&self, active: bool) {
+        if self.active.swap(active, Ordering::AcqRel) != active {
+            if let Some(worker) = &self.worker {
+                worker.thread().unpark();
+            }
+        }
     }
 }
 
@@ -99,17 +118,17 @@ impl Drop for TerminalFlowControl {
     }
 }
 
-fn start_time(process: &Path) -> io::Result<String> {
+fn start_time(process: &Path) -> io::Result<u64> {
     let stat = fs::read_to_string(process.join("stat"))?;
     // comm can contain spaces and parentheses. Field 22 is starttime; fields
     // following its final ')' begin at field 3, the process state.
     stat.rsplit_once(')')
         .and_then(|(_, rest)| rest.split_ascii_whitespace().nth(19))
-        .map(str::to_owned)
+        .and_then(|value| value.parse().ok())
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "invalid process identity"))
 }
 
-fn session_terminal(process: &Path, scope: &DesktopScope) -> io::Result<Option<File>> {
+fn session_terminal(process: &Path, scope: &DesktopScope) -> io::Result<Option<(File, u64)>> {
     if fs::metadata(process)?.uid() != unsafe { libc::geteuid() } {
         return Ok(None);
     }
@@ -145,15 +164,164 @@ fn session_terminal(process: &Path, scope: &DesktopScope) -> io::Result<Option<F
     {
         return Ok(None);
     }
-    Ok(Some(terminal))
+    Ok(Some((terminal, identity)))
+}
+
+type TerminalId = (u64, u64, u64);
+type OwnedPtys = HashMap<Vec<u8>, TerminalId>;
+
+fn owned_ptys() -> io::Result<OwnedPtys> {
+    let mut result = HashMap::new();
+    for entry in fs::read_dir("/dev/pts")?.filter_map(Result::ok) {
+        let name = entry.file_name();
+        let name = name.as_bytes();
+        if name.is_empty() || !name.iter().all(u8::is_ascii_digit) {
+            continue;
+        }
+        let Ok(metadata) = entry.metadata() else {
+            continue;
+        };
+        if metadata.file_type().is_char_device() && metadata.uid() == unsafe { libc::geteuid() } {
+            result.insert(
+                name.to_vec(),
+                (metadata.dev(), metadata.ino(), metadata.rdev()),
+            );
+        }
+    }
+    Ok(result)
+}
+
+#[derive(Default)]
+struct PtyChanges {
+    names: HashSet<Vec<u8>>,
+    overflow: bool,
+}
+
+struct PtyWatch(File);
+impl PtyWatch {
+    fn open() -> io::Result<Self> {
+        // Only device lifecycle/ownership events, never terminal input bytes.
+        let fd = unsafe { libc::inotify_init1(libc::IN_NONBLOCK | libc::IN_CLOEXEC) };
+        if fd < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let file = unsafe { File::from_raw_fd(fd) };
+        let mask = libc::IN_CREATE
+            | libc::IN_DELETE
+            | libc::IN_ATTRIB
+            | libc::IN_DELETE_SELF
+            | libc::IN_MOVE_SELF;
+        if unsafe { libc::inotify_add_watch(fd, c"/dev/pts".as_ptr(), mask) } < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(Self(file))
+    }
+
+    fn changes(&mut self) -> io::Result<PtyChanges> {
+        let mut result = PtyChanges::default();
+        let mut bytes = [0; 4096];
+        // A busy shared devpts mount cannot monopolize this worker.
+        for _ in 0..4 {
+            let count = match self.0.read(&mut bytes) {
+                Ok(count) => count,
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => break,
+                Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+                Err(error) => return Err(error),
+            };
+            if count == 0 {
+                break;
+            }
+            let mut at = 0;
+            while at + 16 <= count {
+                let mask = u32::from_ne_bytes(bytes[at + 4..at + 8].try_into().unwrap());
+                let len = u32::from_ne_bytes(bytes[at + 12..at + 16].try_into().unwrap()) as usize;
+                let end = at + 16 + len;
+                if end > count {
+                    return Err(io::ErrorKind::InvalidData.into());
+                }
+                if mask & (libc::IN_IGNORED | libc::IN_DELETE_SELF | libc::IN_MOVE_SELF) != 0 {
+                    return Err(io::Error::other("terminal device watch was removed"));
+                }
+                result.overflow |= mask & libc::IN_Q_OVERFLOW != 0;
+                let name = bytes[at + 16..end].split(|byte| *byte == 0).next().unwrap();
+                if !name.is_empty() && name.iter().all(u8::is_ascii_digit) {
+                    result.names.insert(name.to_vec());
+                }
+                at = end;
+            }
+        }
+        Ok(result)
+    }
 }
 
 #[derive(Default)]
 struct TerminalCache {
     processes: Vec<PathBuf>,
     discover_at: Option<Instant>,
+    retry_at: Option<Instant>,
+    fallback_at: Option<Instant>,
+    initialized: bool,
+    pending: bool,
+    watch: Option<PtyWatch>,
+    ptys: OwnedPtys,
+    #[cfg(test)]
+    discovery_passes: usize,
 }
 impl TerminalCache {
+    fn discovery_due(&mut self, now: Instant) -> io::Result<bool> {
+        if !self.initialized {
+            self.initialized = true;
+            self.pending = true;
+            self.watch = match PtyWatch::open() {
+                Ok(watch) => Some(watch),
+                Err(error) => {
+                    tracing::warn!(%error, "terminal device notifications unavailable; using bounded fallback discovery");
+                    None
+                }
+            };
+            // Install the watch before taking the snapshot: no PTY can appear
+            // in the gap between the snapshot and event registration.
+            self.ptys = owned_ptys()?;
+        } else if let Some(watch) = &mut self.watch {
+            match watch.changes() {
+                Ok(changes) if changes.overflow || !changes.names.is_empty() => {
+                    let current = owned_ptys()?;
+                    self.pending |= changes.overflow
+                        || current != self.ptys
+                        || changes
+                            .names
+                            .iter()
+                            .any(|name| self.ptys.contains_key(name) || current.contains_key(name));
+                    self.ptys = current;
+                }
+                Ok(_) => {}
+                Err(error) => {
+                    tracing::warn!(%error, "terminal device notifications stopped; using bounded fallback discovery");
+                    self.watch = None;
+                    self.fallback_at = None;
+                }
+            }
+        }
+        if self.watch.is_none() && self.fallback_at.is_none_or(|at| now >= at) {
+            self.pending = true;
+            self.ptys = owned_ptys()?;
+            // Do not synchronize fallback scans across retained agents.
+            self.fallback_at = Some(
+                now + FALLBACK_INTERVAL + Duration::from_secs(u64::from(std::process::id() % 17)),
+            );
+        }
+        let discovery = self.discover_at.is_none_or(|at| now >= at)
+            && (self.pending || self.retry_at.is_some_and(|at| now >= at));
+        if discovery {
+            // One settled follow-up catches PTY creation before fork/exec has
+            // published the shell's final environment. No endless idle scans.
+            self.retry_at = self.pending.then_some(now + DISCOVERY_INTERVAL);
+            self.pending = false;
+            self.discover_at = Some(now + DISCOVERY_INTERVAL);
+        }
+        Ok(discovery)
+    }
+
     fn update(&mut self, scope: &DesktopScope, stop: &AtomicBool) -> io::Result<()> {
         self.update_at(scope, stop, Instant::now())
     }
@@ -164,9 +332,12 @@ impl TerminalCache {
         stop: &AtomicBool,
         now: Instant,
     ) -> io::Result<()> {
-        let discovery = self.discover_at.is_none_or(|at| now >= at);
+        let discovery = self.discovery_due(now)?;
         let candidates = if discovery {
-            self.discover_at = Some(now + DISCOVERY_INTERVAL);
+            #[cfg(test)]
+            {
+                self.discovery_passes += 1;
+            }
             fs::read_dir("/proc")?
                 .filter_map(Result::ok)
                 .filter(|p| p.file_name().as_bytes().iter().all(u8::is_ascii_digit))
@@ -177,6 +348,7 @@ impl TerminalCache {
         };
         self.processes.clear();
         let mut visited = HashSet::new();
+        let mut anchors: HashMap<TerminalId, (u64, PathBuf)> = HashMap::new();
         for process in candidates {
             if stop.load(Ordering::Acquire) {
                 break;
@@ -185,19 +357,31 @@ impl TerminalCache {
             // Fail closed: no matching identity/environment/input means no changes.
             // Revalidate identity, environment and fd even on a cached path: PID
             // reuse, exec or a redirected stdin must never affect another session.
-            let Ok(Some(terminal)) = session_terminal(&process, scope) else {
+            let Ok(Some((terminal, started))) = session_terminal(&process, scope) else {
+                // Rediscover a replacement for an exited/redirected anchor,
+                // not every transient foreground child of the same PTY.
+                if !discovery {
+                    self.pending = true;
+                }
                 continue;
             };
             let Ok(metadata) = terminal.metadata() else {
                 continue;
             };
-            self.processes.push(process);
-            if visited.insert((metadata.dev(), metadata.ino(), metadata.rdev())) {
+            let id = (metadata.dev(), metadata.ino(), metadata.rdev());
+            let anchor = anchors
+                .entry(id)
+                .or_insert_with(|| (started, process.clone()));
+            if started < anchor.0 {
+                *anchor = (started, process);
+            }
+            if visited.insert(id) {
                 if let Err(error) = prevent_output_pausing(&terminal) {
                     tracing::debug!(%error, "could not update a desktop terminal's flow control");
                 }
             }
         }
+        self.processes = anchors.into_values().map(|(_, process)| process).collect();
         Ok(())
     }
 }
@@ -408,7 +592,7 @@ mod tests {
             value.c_iflag |= libc::IXON;
             set_attributes(slave, &value);
         }
-        let guard = TerminalFlowControl::start(60998, authority).unwrap();
+        let guard = TerminalFlowControl::start(60998, authority, true).unwrap();
         let deadline = Instant::now() + Duration::from_secs(5);
         while attributes(&owned).c_iflag & libc::IXON != 0 {
             assert!(Instant::now() < deadline, "owned terminal was not updated");
@@ -520,5 +704,192 @@ mod tests {
         ] {
             assert!(!scope.contains(environment));
         }
+    }
+
+    #[test]
+    fn terminal_discovery_stays_idle_until_pty_lifecycle_changes() {
+        let directory = tempfile::tempdir().unwrap();
+        let authority = directory.path().join("event.Xauthority");
+        let scope = DesktopScope::new(60995, &authority);
+        let (_master, slave) = pty();
+        let _child = terminal_child(&slave, 60995, &authority);
+        let mut cache = TerminalCache::default();
+        let stop = AtomicBool::new(false);
+        let now = Instant::now();
+        cache.update_at(&scope, &stop, now).unwrap();
+        assert!(
+            cache.watch.is_some(),
+            "native devpts notifications unavailable"
+        );
+        cache
+            .update_at(&scope, &stop, now + DISCOVERY_INTERVAL)
+            .unwrap();
+        let settled = cache.discovery_passes;
+        // Hundreds of elapsed discovery intervals must not cause server-wide
+        // PID/fd inspection when device identities have not changed.
+        for seconds in [5, 10, 30, 60, 600] {
+            let mut restored = attributes(&slave);
+            restored.c_iflag |= libc::IXON;
+            set_attributes(&slave, &restored);
+            cache
+                .update_at(&scope, &stop, now + Duration::from_secs(seconds))
+                .unwrap();
+            assert_eq!(attributes(&slave).c_iflag & libc::IXON, 0);
+        }
+        assert_eq!(
+            cache.discovery_passes, settled,
+            "idle terminal policy rescanned /proc"
+        );
+
+        let (_new_master, new_slave) = pty();
+        let _new_child = terminal_child(&new_slave, 60995, &authority);
+        let mut flags = attributes(&new_slave);
+        flags.c_iflag |= libc::IXON;
+        set_attributes(&new_slave, &flags);
+        cache
+            .update_at(&scope, &stop, now + Duration::from_secs(602))
+            .unwrap();
+        assert_eq!(cache.discovery_passes, settled + 1);
+        assert_eq!(
+            attributes(&new_slave).c_iflag & libc::IXON,
+            0,
+            "PTY event missed the new terminal"
+        );
+    }
+
+    #[test]
+    fn terminal_policy_retains_one_anchor_per_pty_and_ignores_foreground_exit() {
+        let directory = tempfile::tempdir().unwrap();
+        let authority = directory.path().join("anchor.Xauthority");
+        let scope = DesktopScope::new(60994, &authority);
+        let (_master, slave) = pty();
+        let shell = terminal_child(&slave, 60994, &authority);
+        thread::sleep(Duration::from_millis(20));
+        let mut foreground = terminal_child(&slave, 60994, &authority);
+        let mut cache = TerminalCache::default();
+        let stop = AtomicBool::new(false);
+        let now = Instant::now();
+        cache.update_at(&scope, &stop, now).unwrap();
+        assert_eq!(
+            cache.processes,
+            [PathBuf::from(format!("/proc/{}", shell.0.id()))]
+        );
+        cache
+            .update_at(&scope, &stop, now + DISCOVERY_INTERVAL)
+            .unwrap();
+        let settled = cache.discovery_passes;
+        foreground.0.kill().unwrap();
+        foreground.0.wait().unwrap();
+        cache
+            .update_at(&scope, &stop, now + Duration::from_secs(5))
+            .unwrap();
+        assert_eq!(cache.processes.len(), 1);
+        assert_eq!(
+            cache.discovery_passes, settled,
+            "foreground exit caused a global scan"
+        );
+    }
+
+    #[test]
+    fn terminal_discovery_retries_after_pty_creation_before_shell_startup() {
+        let directory = tempfile::tempdir().unwrap();
+        let authority = directory.path().join("startup.Xauthority");
+        let scope = DesktopScope::new(60991, &authority);
+        let mut cache = TerminalCache::default();
+        let stop = AtomicBool::new(false);
+        let now = Instant::now();
+        cache.update_at(&scope, &stop, now).unwrap();
+        cache
+            .update_at(&scope, &stop, now + DISCOVERY_INTERVAL)
+            .unwrap();
+        let (_master, slave) = pty();
+        // The event can precede the terminal emulator's child fork/exec.
+        cache
+            .update_at(&scope, &stop, now + Duration::from_secs(4))
+            .unwrap();
+        assert!(cache.processes.is_empty());
+        let _child = terminal_child(&slave, 60991, &authority);
+        cache
+            .update_at(&scope, &stop, now + Duration::from_secs(6))
+            .unwrap();
+        assert_eq!(cache.processes.len(), 1);
+        assert_eq!(attributes(&slave).c_iflag & libc::IXON, 0);
+    }
+
+    #[test]
+    fn terminal_discovery_notification_failure_uses_a_bounded_fallback() {
+        let directory = tempfile::tempdir().unwrap();
+        let authority = directory.path().join("fallback.Xauthority");
+        let scope = DesktopScope::new(60990, &authority);
+        let (_master, slave) = pty();
+        let _child = terminal_child(&slave, 60990, &authority);
+        let mut cache = TerminalCache {
+            initialized: true,
+            ..TerminalCache::default()
+        };
+        let stop = AtomicBool::new(false);
+        let now = Instant::now();
+        cache.update_at(&scope, &stop, now).unwrap();
+        let next = cache.fallback_at.unwrap();
+        assert!(
+            (FALLBACK_INTERVAL..=FALLBACK_INTERVAL + Duration::from_secs(16))
+                .contains(&next.duration_since(now))
+        );
+        cache
+            .update_at(&scope, &stop, now + DISCOVERY_INTERVAL)
+            .unwrap();
+        for seconds in 3..30 {
+            cache
+                .update_at(&scope, &stop, now + Duration::from_secs(seconds))
+                .unwrap();
+        }
+        assert_eq!(
+            cache.discovery_passes, 2,
+            "fallback recreated the two-second scan loop"
+        );
+        cache.update_at(&scope, &stop, next).unwrap();
+        assert_eq!(cache.discovery_passes, 3);
+        assert_eq!(attributes(&slave).c_iflag & libc::IXON, 0);
+    }
+
+    #[test]
+    fn terminal_guard_parks_without_viewers_and_resumes_without_touching_other_flags() {
+        let directory = tempfile::tempdir().unwrap();
+        let authority = directory.path().join("viewed.Xauthority");
+        let (_master, slave) = pty();
+        let _child = terminal_child(&slave, 60993, &authority);
+        let mut original = attributes(&slave);
+        original.c_iflag |= libc::IXON | libc::IXOFF | libc::ICRNL;
+        set_attributes(&slave, &original);
+        let guard = TerminalFlowControl::start(60993, authority, false).unwrap();
+        thread::sleep(CHECK_INTERVAL * 2);
+        assert_ne!(
+            attributes(&slave).c_iflag & libc::IXON,
+            0,
+            "unviewed guard was active"
+        );
+        guard.set_active(true);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while attributes(&slave).c_iflag & libc::IXON != 0 {
+            assert!(
+                Instant::now() < deadline,
+                "resumed guard did not revalidate its PTY"
+            );
+            thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(attributes(&slave).c_iflag, original.c_iflag & !libc::IXON);
+        guard.set_active(false);
+        thread::sleep(CHECK_INTERVAL * 2);
+        let mut restored = attributes(&slave);
+        restored.c_iflag |= libc::IXON;
+        set_attributes(&slave, &restored);
+        thread::sleep(CHECK_INTERVAL * 2);
+        assert_ne!(attributes(&slave).c_iflag & libc::IXON, 0);
+        let before = Instant::now();
+        drop(guard);
+        assert!(
+            before.elapsed() < Duration::from_secs(1),
+            "parked guard did not stop promptly"
+        );
     }
 }

@@ -22,6 +22,7 @@ esac
 rm -rf -- "$output"
 mkdir -p -- "$output/libs"
 install -m 700 -- "$agent" "$output/ad-agent"
+install -m 500 -- "$(dirname -- "${BASH_SOURCE[0]}")/agent-upgrade.py" "$output/agent-upgrade.py"
 
 declare -A seen=()
 seen["ad-agent"]=1

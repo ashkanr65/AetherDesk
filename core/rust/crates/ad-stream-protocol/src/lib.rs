@@ -20,6 +20,11 @@ use thiserror::Error;
 use uuid::Uuid;
 
 pub const PROTOCOL_VERSION: u16 = 3;
+/// Existing Close framing also works with clients predating occupied-session replies.
+pub const SESSION_BUSY_REASON: u16 = 409;
+pub const SESSION_BUSY_MARKER: &str = "AETHERDESK_SESSION_BUSY_V1";
+pub const CHANNEL_GROUPS_MARKER: &str = "AETHERDESK_CHANNEL_GROUPS_V2";
+pub const SESSION_BUSY_DETAIL: &str = "This desktop is already open in another AetherDesk window or device. Use that view, disconnect its viewer, or open an independent desktop. Host applications are still running.";
 /// Optional shape-only cursor transport. Preserve the lossless prefix and the
 /// final 128 nonce bits (which may hold other opt-ins); channel authentication uses its separate token.
 pub fn advertise_cursor_shapes(nonce: &mut [u8; 32]) {

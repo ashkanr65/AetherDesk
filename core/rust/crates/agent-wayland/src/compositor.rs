@@ -677,7 +677,7 @@ impl AgentCompositorState {
     }
 
     fn process_commands(&mut self) -> Result<(), CompositorError> {
-        self.poll_host_desktop()?;
+        self.poll_host_desktop(self.frame_clock.viewed() || self.viewer_probe.active())?;
         while let Ok(command) = self.command_rx.try_recv() {
             match command {
                 CompositorCommand::Launch(application) => {

@@ -1,6 +1,9 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Component, Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
 use std::time::Duration;
 
 use ad_stream_client::{
@@ -86,9 +89,14 @@ impl AgentServer {
         let mut dimensions = (self.initial_width, self.initial_height);
         info!(port = self.endpoint.port, session_id = %supervisor.session_id(), "agent broker ready");
         let claimed = tokio_util::sync::CancellationToken::new();
-        let serving = async {
+        let occupied = AtomicBool::new(false);
+        let (accepted_tx, mut accepted_rx) = tokio::sync::mpsc::channel(1);
+        // Admission lives across viewer transitions. Cancelling an in-progress
+        // accept/preface when the old viewer disconnects would reset the next
+        // viewer's control socket and strand its input/media channels.
+        let admission = async {
             loop {
-                let channels = match self.accept_channel_set().await {
+                let channels = match self.accept_available_channels(Some(&occupied)).await {
                     Ok(channels) => channels,
                     Err(AgentServerError::ChannelTimeout) => {
                         // A detached desktop has no expiration. The timeout only
@@ -98,26 +106,37 @@ impl AgentServer {
                     }
                     Err(error) => return Err(error),
                 };
-                match run_client(
+                occupied.store(true, Ordering::Release);
+                if accepted_tx.send(channels).await.is_err() {
+                    return Ok::<(), AgentServerError>(());
+                }
+            }
+        };
+        let serving = async {
+            while let Some(channels) = accepted_rx.recv().await {
+                let result = run_client(
                     &supervisor,
                     channels,
                     &self.config.session_directory,
                     &mut dimensions,
                     &claimed,
                 )
-                .await
-                {
+                .await;
+                occupied.store(false, Ordering::Release);
+                match result {
                     Ok(ClientDisposition::Detached) => {}
-                    Ok(ClientDisposition::Terminate(session)) => break Ok(session),
+                    Ok(ClientDisposition::Terminate(session)) => return Ok(session),
                     Err(error) => warn!(%error, "client dropped; retaining remote session"),
                 }
             }
+            Err(AgentServerError::SupervisorStopped)
         };
         // A launch that never reaches Start/Resume must not leave a compositor
         // behind indefinitely after a cancelled upload/handshake or network loss.
         // Once claimed, a detached desktop keeps its existing unlimited lifetime.
         let closing_session = tokio::select! {
             result = wait_for_claim_or_end(serving, &claimed, Duration::from_secs(60)) => result,
+            result = admission => Some(Err(result.err().unwrap_or(AgentServerError::SupervisorStopped))),
             _ = wait_for_failure(|| supervisor.state()) => {
                 warn!(session_id = %supervisor.session_id(), "failed desktop is no longer resumable; stopping its broker");
                 if let Err(error) = crate::endpoint::publish_health(&self.config.session_directory, &self.endpoint, true).await {
@@ -153,45 +172,130 @@ impl AgentServer {
         Ok(())
     }
 
+    #[cfg(test)]
     async fn accept_channel_set(&self) -> Result<[TcpStream; 3], AgentServerError> {
+        self.accept_available_channels(None).await
+    }
+
+    async fn accept_available_channels(
+        &self,
+        occupied: Option<&AtomicBool>,
+    ) -> Result<[TcpStream; 3], AgentServerError> {
         timeout(CHANNEL_SET_TIMEOUT, async {
-            let mut channels: [Option<TcpStream>; 3] = [None, None, None];
-            while channels.iter().any(Option::is_none) {
+            // A grouped client cannot inherit orphan input/media sockets from
+            // another attempt. Bound incomplete groups, including abandoned ones.
+            let mut sets: HashMap<Option<[u8; 16]>, [Option<TcpStream>; 3]> = HashMap::new();
+            loop {
                 let (mut stream, peer) = self.listener.accept().await?;
                 if !peer.ip().is_loopback() {
                     continue;
                 }
                 stream.set_nodelay(true)?;
-                let mut prelude = [0_u8; CHANNEL_PREFACE_BYTES];
-                if !matches!(
-                    timeout(Duration::from_secs(3), stream.read_exact(&mut prelude)).await,
-                    Ok(Ok(_))
-                ) || prelude[..4] != CHANNEL_MAGIC
-                    || prelude[4] != CHANNEL_VERSION
+                let (channel, group) = match timeout(
+                    Duration::from_secs(3),
+                    read_authenticated_preface(&mut stream, &self.endpoint.token),
+                )
+                .await
                 {
-                    warn!(%peer, "rejected incomplete or invalid agent channel");
+                    Ok(Ok(value)) => value,
+                    _ => {
+                        warn!(%peer, "rejected incomplete or invalid agent channel");
+                        continue;
+                    }
+                };
+                if occupied.is_some_and(|value| value.load(Ordering::Acquire)) {
+                    if channel == 0 {
+                        let _ = timeout(Duration::from_secs(3), async {
+                            busy_reply(&mut stream).await?;
+                            // Drain a concurrent ClientHello so the peer can
+                            // receive the refusal before any channel closes.
+                            let _ = stream.read(&mut [0; 4096]).await;
+                            Ok::<_, std::io::Error>(())
+                        })
+                        .await;
+                    }
                     continue;
                 }
-                let channel = usize::from(prelude[5]);
-                if channel >= 3 || channels[channel].is_some() {
-                    warn!(%peer, channel, "rejected duplicate agent channel");
+                // Old clients open control first. Discard their stale orphan
+                // input/media sockets rather than assigning them to a new view.
+                if group.is_none() && channel != 0 && !sets.contains_key(&group) {
                     continue;
                 }
-                if !bool::from(prelude[6..].ct_eq(&self.endpoint.token)) {
-                    warn!(%peer, "rejected unauthenticated agent channel");
+                if !sets.contains_key(&group) && sets.len() >= 8 {
+                    if channel == 0 {
+                        let _ = timeout(Duration::from_millis(100), busy_reply(&mut stream)).await;
+                    }
+                    continue;
+                }
+                let channels = sets.entry(group).or_insert_with(|| [None, None, None]);
+                if channels[channel].is_some() {
+                    if channel == 0 {
+                        let _ = timeout(Duration::from_millis(100), busy_reply(&mut stream)).await;
+                    }
                     continue;
                 }
                 channels[channel] = Some(stream);
+                if channels.iter().all(Option::is_some) {
+                    let mut selected = sets.remove(&group).expect("complete group");
+                    for other in sets.values_mut() {
+                        if let Some(control) = other[0].as_mut() {
+                            let _ = timeout(Duration::from_millis(100), busy_reply(control)).await;
+                        }
+                    }
+                    return Ok::<_, AgentServerError>([
+                        selected[0].take().unwrap(),
+                        selected[1].take().unwrap(),
+                        selected[2].take().unwrap(),
+                    ]);
+                }
             }
-            Ok::<_, AgentServerError>([
-                channels[0].take().expect("control channel"),
-                channels[1].take().expect("input channel"),
-                channels[2].take().expect("media channel"),
-            ])
         })
         .await
         .map_err(|_| AgentServerError::ChannelTimeout)?
     }
+}
+
+async fn read_authenticated_preface(
+    stream: &mut TcpStream,
+    token: &[u8; 32],
+) -> Result<(usize, Option<[u8; 16]>), std::io::Error> {
+    let mut header = [0; CHANNEL_PREFACE_BYTES];
+    stream.read_exact(&mut header).await?;
+    if header[..4] != CHANNEL_MAGIC
+        || !matches!(header[4], CHANNEL_VERSION | 2)
+        || header[5] >= 3
+        || !bool::from(header[6..].ct_eq(token))
+    {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "Invalid agent channel",
+        ));
+    }
+    let group = if header[4] == 2 {
+        let mut group = [0; 16];
+        stream.read_exact(&mut group).await?;
+        if group == [0; 16] {
+            return Err(std::io::ErrorKind::InvalidData.into());
+        }
+        Some(group)
+    } else {
+        None
+    };
+    Ok((usize::from(header[5]), group))
+}
+
+async fn busy_reply(stream: &mut TcpStream) -> Result<(), std::io::Error> {
+    let frame = ad_stream_protocol::ArppFrame::new(
+        1,
+        ArppMessage::Control(ControlMessage::Close {
+            reason_code: ad_stream_protocol::SESSION_BUSY_REASON,
+            detail: ad_stream_protocol::SESSION_BUSY_DETAIL.into(),
+        }),
+    );
+    stream
+        .write_all(&ad_stream_protocol::encode_frame(&frame).map_err(std::io::Error::other)?)
+        .await?;
+    stream.flush().await
 }
 
 async fn wait_for_failure(state: impl Fn() -> crate::SessionState) {
@@ -1128,6 +1232,78 @@ pub enum AgentServerError {
 mod tests {
     use super::*;
     #[tokio::test]
+    async fn grouped_channels_never_mix_abandoned_or_interleaved_attempts() {
+        use agent_wayland::compositor::{ApplicationSpec, CompositorConfig};
+        let root = tempfile::tempdir().unwrap();
+        let server = Arc::new(
+            AgentServer::bind(AgentServerConfig {
+                session_directory: root.path().join("session"),
+                supervisor: SupervisorConfig {
+                    session_id: Uuid::new_v4(),
+                    compositor: CompositorConfig {
+                        width: 320,
+                        height: 200,
+                        refresh_millihz: 30_000,
+                        runtime_dir: root.path().join("runtime"),
+                        enable_xwayland: false,
+                        host_window_manager: false,
+                    },
+                    input: agent_input::InputConfig::default(),
+                    encoder: agent_encoder::EncoderConfig {
+                        width: 320,
+                        height: 200,
+                        framerate: 30,
+                        bitrate_kbps: 512,
+                        keyframe_interval: 30,
+                        codec: VideoCodec::H264,
+                    },
+                    application: ApplicationSpec::new("/bin/false"),
+                },
+            })
+            .await
+            .unwrap(),
+        );
+        let accepting = {
+            let server = server.clone();
+            tokio::spawn(async move { server.accept_channel_set().await })
+        };
+        let mut peers = Vec::new();
+        // A never supplies control; B arrives interleaved but must receive only
+        // its own streams. Nothing starts a compositor/application in this test.
+        for (group, channel, tag) in [
+            (1u8, 2u8, 11u8),
+            (2, 0, 20),
+            (1, 1, 10),
+            (2, 2, 22),
+            (2, 1, 21),
+        ] {
+            let mut stream =
+                TcpStream::connect((std::net::Ipv4Addr::LOCALHOST, server.endpoint.port))
+                    .await
+                    .unwrap();
+            let mut prelude = [0; 54];
+            prelude[..4].copy_from_slice(&CHANNEL_MAGIC);
+            prelude[4] = 2;
+            prelude[5] = channel;
+            prelude[6..38].copy_from_slice(&server.endpoint.token);
+            prelude[38..].fill(group);
+            stream.write_all(&prelude).await.unwrap();
+            stream.write_all(&[tag]).await.unwrap();
+            peers.push(stream);
+        }
+        let selected = timeout(Duration::from_secs(2), accepting)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        for (channel, mut stream) in selected.into_iter().enumerate() {
+            let mut tag = [0];
+            stream.read_exact(&mut tag).await.unwrap();
+            assert_eq!(tag[0], 20 + channel as u8);
+        }
+    }
+
+    #[tokio::test]
     async fn application_only_session_keeps_control_without_sending_full_desktop_frames() {
         use agent_wayland::compositor::{ApplicationSpec, CompositorConfig};
         use std::os::unix::fs::PermissionsExt;
@@ -1382,16 +1558,18 @@ mod tests {
         let endpoint = server.endpoint().clone();
         let task = tokio::spawn(server.run());
         async fn open(endpoint: &AgentServerEndpoint, lossless: bool) -> Arc<ArppSession> {
+            let group = Uuid::new_v4();
             let mut streams = Vec::new();
             for channel in 0..3 {
                 let mut stream = TcpStream::connect((std::net::Ipv4Addr::LOCALHOST, endpoint.port))
                     .await
                     .unwrap();
-                let mut prelude = [0; 38];
+                let mut prelude = [0; 54];
                 prelude[..4].copy_from_slice(&CHANNEL_MAGIC);
-                prelude[4] = CHANNEL_VERSION;
+                prelude[4] = 2;
                 prelude[5] = channel;
-                prelude[6..].copy_from_slice(&endpoint.token);
+                prelude[6..38].copy_from_slice(&endpoint.token);
+                prelude[38..].copy_from_slice(group.as_bytes());
                 stream.write_all(&prelude).await.unwrap();
                 streams.push(stream);
             }
@@ -1456,6 +1634,72 @@ mod tests {
         })
         .await
         .unwrap();
+        // A competing viewer must be refused promptly, while the original
+        // desktop, its application, and its control pump remain alive.
+        let competing_group = Uuid::new_v4();
+        let mut competing = Vec::new();
+        for channel in 0..3 {
+            let mut stream = TcpStream::connect((std::net::Ipv4Addr::LOCALHOST, endpoint.port))
+                .await
+                .unwrap();
+            let mut prelude = [0; 54];
+            prelude[..4].copy_from_slice(&CHANNEL_MAGIC);
+            prelude[4] = 2;
+            prelude[5] = channel;
+            prelude[6..38].copy_from_slice(&endpoint.token);
+            prelude[38..].copy_from_slice(competing_group.as_bytes());
+            stream.write_all(&prelude).await.unwrap();
+            competing.push(stream);
+        }
+        let mut competing = competing.into_iter();
+        let rejected = ArppSession::new(Arc::new(SshTransportAdapter::new(
+            SshChannelIo::from_stream(competing.next().unwrap()),
+            SshChannelIo::from_stream(competing.next().unwrap()),
+            SshChannelIo::from_stream(competing.next().unwrap()),
+        )));
+        rejected
+            .send(ArppMessage::Control(ControlMessage::ClientHello {
+                protocol_version: PROTOCOL_VERSION,
+                client_nonce: [21; 32],
+            }))
+            .await
+            .unwrap();
+        let reply = timeout(Duration::from_secs(2), rejected.receive_startup_control())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            matches!(reply.message, ArppMessage::Control(ControlMessage::Close {reason_code, ..})
+            if reason_code == ad_stream_protocol::SESSION_BUSY_REASON)
+        );
+        drop(rejected);
+        // An incomplete socket must not stall the active viewer while waiting
+        // for the rest of its preface. No input events are synthesized here.
+        let mut incomplete = TcpStream::connect((std::net::Ipv4Addr::LOCALHOST, endpoint.port))
+            .await
+            .unwrap();
+        incomplete.write_all(b"AD").await.unwrap();
+        first
+            .send(ArppMessage::Metrics(MetricsMessage::Ping {
+                nonce: 12345,
+                sent_at_us: 0,
+            }))
+            .await
+            .unwrap();
+        timeout(Duration::from_secs(2), async {
+            loop {
+                if matches!(
+                    first.receive().await.unwrap().message,
+                    ArppMessage::Metrics(MetricsMessage::Pong { nonce: 12345, .. })
+                ) {
+                    break;
+                }
+            }
+        })
+        .await
+        .unwrap();
+        drop(incomplete);
+        assert!(!task.is_finished());
         first
             .send(ArppMessage::Control(ControlMessage::Close {
                 reason_code: 1,

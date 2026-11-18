@@ -148,6 +148,14 @@ impl AgentConnection for SshAgentHost {
             .execute_command_output(&command, launch_timeout)
             .await
             .map_err(|error| LifecycleError::Launch(error.to_string()))?;
+        if output.exit_status == 0
+            && output
+                .stdout
+                .split(|b| *b == b'\n')
+                .any(|line| line == ad_stream_protocol::SESSION_BUSY_MARKER.as_bytes())
+        {
+            return Err(LifecycleError::SessionBusy);
+        }
         if output.exit_status != 0 {
             return Err(LifecycleError::Launch(format!(
                 "agent launcher exited with status {}: {}",
@@ -162,9 +170,10 @@ impl AgentConnection for SshAgentHost {
         &self,
         endpoint: &AgentEndpoint,
     ) -> Result<Arc<dyn TransportAdapter>, LifecycleError> {
-        let control = self.open_channel(endpoint, 0).await?;
-        let input = self.open_channel(endpoint, 1).await?;
-        let media = self.open_channel(endpoint, 2).await?;
+        let group = *Uuid::new_v4().as_bytes();
+        let control = self.open_channel(endpoint, 0, &group).await?;
+        let input = self.open_channel(endpoint, 1, &group).await?;
+        let media = self.open_channel(endpoint, 2, &group).await?;
         Ok(Arc::new(SshTransportAdapter::new(control, input, media)))
     }
 }
@@ -203,6 +212,7 @@ impl SshAgentHost {
         &self,
         endpoint: &AgentEndpoint,
         channel_id: u8,
+        group: &[u8; 16],
     ) -> Result<SshChannelIo, LifecycleError> {
         let channel = if channel_id == 2 {
             self.session.open_bulk_loopback_channel(endpoint.port).await
@@ -213,8 +223,13 @@ impl SshAgentHost {
         }
         .map_err(|error| LifecycleError::Launch(error.to_string()))?;
         let mut stream = channel.into_stream();
+        let prelude = if endpoint.channel_groups {
+            crate::lifecycle::grouped_channel_prelude(channel_id, &endpoint.token, group)?
+        } else {
+            channel_prelude(channel_id, &endpoint.token)?.to_vec()
+        };
         stream
-            .write_all(&channel_prelude(channel_id, &endpoint.token)?)
+            .write_all(&prelude)
             .await
             .map_err(|error| LifecycleError::Launch(error.to_string()))?;
         stream
@@ -226,6 +241,12 @@ impl SshAgentHost {
 }
 
 fn parse_endpoint(output: &[u8]) -> Result<AgentEndpoint, LifecycleError> {
+    if output
+        .split(|b| *b == b'\n')
+        .any(|line| line == ad_stream_protocol::SESSION_BUSY_MARKER.as_bytes())
+    {
+        return Err(LifecycleError::SessionBusy);
+    }
     if output.len() > 4096 {
         return Err(LifecycleError::InvalidEndpoint);
     }
@@ -253,6 +274,9 @@ fn parse_endpoint(output: &[u8]) -> Result<AgentEndpoint, LifecycleError> {
         newly_created: text
             .lines()
             .any(|line| line == "AETHERDESK_AGENT_CREATED_V1"),
+        channel_groups: text
+            .lines()
+            .any(|line| line == ad_stream_protocol::CHANNEL_GROUPS_MARKER),
     })
 }
 
@@ -317,11 +341,33 @@ mod tests {
         assert_eq!(endpoint.port, 41234);
         assert_eq!(endpoint.token, [1; 32]);
         assert!(!endpoint.newly_created);
+        assert!(!endpoint.channel_groups);
         let fresh = parse_endpoint(
             format!("AETHERDESK_AGENT_CREATED_V1\nAETHERDESK_AGENT_V1 41234 {token}\n").as_bytes(),
         )
         .unwrap();
         assert!(fresh.newly_created);
+        let grouped = parse_endpoint(
+            format!(
+                "{}\nAETHERDESK_AGENT_V1 41234 {token}\n",
+                ad_stream_protocol::CHANNEL_GROUPS_MARKER
+            )
+            .as_bytes(),
+        )
+        .unwrap();
+        assert!(grouped.channel_groups);
+    }
+
+    #[test]
+    fn occupied_launcher_reply_is_not_mistaken_for_a_bad_endpoint() {
+        assert!(matches!(
+            parse_endpoint(b"AETHERDESK_SESSION_BUSY_V1\n"),
+            Err(LifecycleError::SessionBusy)
+        ));
+        assert!(matches!(
+            parse_endpoint(b"prefix AETHERDESK_SESSION_BUSY_V1 suffix\n"),
+            Err(LifecycleError::InvalidEndpoint)
+        ));
     }
 
     #[test]

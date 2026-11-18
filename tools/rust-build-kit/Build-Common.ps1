@@ -81,6 +81,7 @@ function Get-RustSourceFiles {
     }
     # ad-ssh embeds this source even when the current connection does not use X11.
     $paths.Add('tools/x11-icons.py')
+    $paths.Add('tools/agent-upgrade.py')
     foreach ($relative in @('agent/linux/Dockerfile.bundle','tools/package-linux-agent.sh','tools/build-xwayland.sh','tools/xwayland-monitors.patch','tools/build-kit/Bundle-X11.ps1','tools/build-kit/Release-Version.ps1','tools/build-kit/toolchain.json')) { $paths.Add($relative) }
     foreach ($name in @('LICENSE','LICENSE-MIT','LICENSE-APACHE','release.json','update-config.json','rust-migration.json','RUST-MIGRATION.md','RUST-FEATURE-PARITY.md','rust-feature-inventory.json','rust-regressions.json')) { $paths.Add($name) }
     $paths.Add('tools/test_x11_icons.py')

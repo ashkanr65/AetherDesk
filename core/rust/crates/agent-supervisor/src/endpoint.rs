@@ -77,7 +77,43 @@ pub async fn publish_health(
 
 pub async fn publish_ready(directory: &Path, endpoint: &AgentServerEndpoint) -> Result<(), Error> {
     publish_health(directory, endpoint, false).await?;
+    publish(
+        &directory.join("channel-groups"),
+        &format!(
+            "{} {}\n",
+            ad_stream_protocol::CHANNEL_GROUPS_MARKER,
+            hex(&endpoint.token)
+        ),
+    )
+    .await?;
     publish(&directory.join("endpoint"), &endpoint_text(endpoint)).await
+}
+
+pub async fn supports_channel_groups(directory: &Path, text: &str) -> Result<bool, Error> {
+    let endpoint = parse(text).ok_or_else(|| Error::other("Invalid endpoint"))?;
+    let path = directory.join("channel-groups");
+    let mut file = match tokio::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(path)
+        .await
+    {
+        Ok(file) => file,
+        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(error),
+    };
+    let metadata = file.metadata().await?;
+    if !metadata.is_file() || !private(&metadata) || metadata.len() > 256 {
+        return Err(Error::other("Invalid channel capability record"));
+    }
+    let mut record = String::new();
+    (&mut file).take(257).read_to_string(&mut record).await?;
+    Ok(record.trim()
+        == format!(
+            "{} {}",
+            ad_stream_protocol::CHANNEL_GROUPS_MARKER,
+            hex(&endpoint.token)
+        ))
 }
 
 /// Called by the independent watcher after it has reaped the broker. A stale
@@ -431,11 +467,150 @@ pub async fn read_live_endpoint(path: &Path) -> Result<Option<String>, Error> {
     }
 }
 
+/// Read-only compatibility guard for brokers predating occupied-session replies.
+/// Inspect established server-side sockets BEFORE making any health connection.
+/// A busy or uncertain desktop is preserved; this never signals a process.
+pub async fn viewer_connected(path: &Path) -> Result<bool, Error> {
+    let mut file = match tokio::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(path)
+        .await
+    {
+        Ok(file) => file,
+        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(error),
+    };
+    let metadata = file.metadata().await?;
+    let parent = tokio::fs::symlink_metadata(
+        path.parent()
+            .ok_or_else(|| Error::other("Missing session directory"))?,
+    )
+    .await?;
+    if !metadata.is_file()
+        || !private(&metadata)
+        || metadata.len() > 4096
+        || !parent.is_dir()
+        || !private(&parent)
+    {
+        return Err(Error::other(
+            "Desktop ownership could not be verified; leaving it unchanged",
+        ));
+    }
+    let mut text = String::new();
+    (&mut file).take(4097).read_to_string(&mut text).await?;
+    let endpoint = parse(&text).ok_or_else(|| Error::other("Invalid retained desktop endpoint"))?;
+    let tcp = tokio::fs::read_to_string("/proc/net/tcp").await?;
+    let occupied = occupied_tcp(&tcp, endpoint.port, unsafe { libc::geteuid() });
+    if tokio::fs::read_to_string(path).await? != text {
+        return Err(Error::other(
+            "Desktop endpoint changed during occupancy check",
+        ));
+    }
+    Ok(occupied)
+}
+
+fn occupied_tcp(table: &str, port: u16, uid: u32) -> bool {
+    let local = format!("0100007F:{port:04X}");
+    table.lines().skip(1).any(|line| {
+        let fields: Vec<_> = line.split_ascii_whitespace().collect();
+        fields.len() >= 10
+            && fields[1] == local
+            && fields[2].starts_with("0100007F:")
+            && fields[3] == "01"
+            && fields[7].parse::<u32>() == Ok(uid)
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt;
     use tokio::net::TcpListener;
+
+    #[test]
+    fn occupied_endpoint_checks_only_established_owned_loopback_server_sockets() {
+        let row =
+            "0: 0100007F:A123 0100007F:B123 01 00000000:00000000 00:00000000 00000000 1000 0 99";
+        let table = format!("header\n{row}\n");
+        assert!(occupied_tcp(&table, 0xA123, 1000));
+        assert!(!occupied_tcp(&table, 0xB123, 1000));
+        assert!(!occupied_tcp(&table, 0xA123, 1001));
+        for next in ["0A", "06", "08"] {
+            assert!(!occupied_tcp(
+                &table.replace(" 01 ", &format!(" {next} ")),
+                0xA123,
+                1000
+            ));
+        }
+        assert!(!occupied_tcp(
+            &table.replace("0100007F:B123", "00000000:0000"),
+            0xA123,
+            1000
+        ));
+    }
+
+    #[tokio::test]
+    async fn grouped_channel_capability_is_bound_to_the_private_endpoint_token() {
+        let root = tempfile::tempdir().unwrap();
+        let endpoint = AgentServerEndpoint {
+            port: 12345,
+            token: [18; 32],
+        };
+        assert!(
+            !supports_channel_groups(root.path(), &endpoint_text(&endpoint))
+                .await
+                .unwrap()
+        );
+        publish_ready(root.path(), &endpoint).await.unwrap();
+        assert!(
+            supports_channel_groups(root.path(), &endpoint_text(&endpoint))
+                .await
+                .unwrap()
+        );
+        let other = AgentServerEndpoint {
+            port: 12345,
+            token: [19; 32],
+        };
+        assert!(
+            !supports_channel_groups(root.path(), &endpoint_text(&other))
+                .await
+                .unwrap()
+        );
+    }
+
+    #[tokio::test]
+    async fn legacy_occupancy_check_preserves_the_listener_and_private_endpoint() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let endpoint = AgentServerEndpoint {
+            port: listener.local_addr().unwrap().port(),
+            token: [19; 32],
+        };
+        publish_ready(root.path(), &endpoint).await.unwrap();
+        let path = root.path().join("endpoint");
+        assert!(!viewer_connected(&path).await.unwrap());
+        let client = TcpStream::connect(listener.local_addr().unwrap())
+            .await
+            .unwrap();
+        let (server, _) = listener.accept().await.unwrap();
+        assert!(viewer_connected(&path).await.unwrap());
+        assert_eq!(
+            tokio::fs::read_to_string(&path).await.unwrap(),
+            endpoint_text(&endpoint)
+        );
+        // No probe socket was created and no command/bytes were sent.
+        assert!(timeout(Duration::from_millis(20), listener.accept())
+            .await
+            .is_err());
+        assert!(timeout(Duration::from_millis(20), server.readable())
+            .await
+            .is_err());
+        drop(client);
+        drop(server);
+        assert!(!viewer_connected(&path).await.unwrap());
+    }
 
     async fn reaped_fixture(directory: &Path, pid: u32, port: u16) -> AgentServerEndpoint {
         tokio::fs::create_dir(directory).await.unwrap();

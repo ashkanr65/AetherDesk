@@ -30,6 +30,7 @@ pub struct AgentEndpoint {
     pub token: [u8; 32],
     /// Only a positively identified fresh launch may be rolled back on cancel.
     pub newly_created: bool,
+    pub channel_groups: bool,
 }
 
 #[async_trait]
@@ -200,6 +201,15 @@ impl<C: AgentConnection> RemoteSessionLifecycle<C> {
         let result = self
             .connect_inner(artifact, runtime, parameters, true, Some(cancel))
             .await;
+        if matches!(result, Err(LifecycleError::SessionBusy)) {
+            // The rejected attempt never owned the retained desktop. Closing
+            // its local transports is sufficient; no remote Detach/Close or
+            // startup rollback may be sent to someone else's active viewer.
+            self.session = None;
+            self.endpoint = None;
+            self.state = LifecycleState::Failed;
+            return result;
+        }
         if result.is_err() {
             if !cancel.is_cancelled() {
                 if let Ok(Ok(text)) = timeout(
@@ -503,12 +513,15 @@ async fn client_hello(
     if cursor_shapes {
         ad_stream_protocol::advertise_cursor_shapes(&mut nonce);
     }
-    session
+    let hello = session
         .send(ArppMessage::Control(ControlMessage::ClientHello {
             protocol_version: PROTOCOL_VERSION,
             client_nonce: nonce,
         }))
-        .await?;
+        .await;
+    if let Err(error) = hello {
+        return Err(startup_transport_error(session, error).await);
+    }
 
     let mut server_hello = false;
     let mut capabilities = None;
@@ -516,7 +529,11 @@ async fn client_hello(
     for _ in 0..8 {
         let frame = tokio::time::timeout_at(deadline, session.receive_startup_control())
             .await
-            .map_err(|_| LifecycleError::HandshakeTimeout)??;
+            .map_err(|_| LifecycleError::HandshakeTimeout)?;
+        let frame = match frame {
+            Ok(frame) => frame,
+            Err(error) => return Err(startup_transport_error(session, error).await),
+        };
         match frame.message {
             ArppMessage::Control(ControlMessage::ServerHello {
                 protocol_version, ..
@@ -539,6 +556,33 @@ async fn client_hello(
         }
     }
     Err(LifecycleError::UnexpectedHandshakeMessage)
+}
+
+async fn startup_transport_error(
+    session: &ArppSession,
+    error: ad_stream_client::TransportError,
+) -> LifecycleError {
+    // Separate SSH channel readers can observe input/media EOF just before the
+    // authenticated control refusal. Preserve that actionable reply over EOF;
+    // no retry or cleanup request is sent to the occupied desktop.
+    let deadline = tokio::time::Instant::now() + Duration::from_millis(250);
+    // Each of the three readers can report EOF independently. Do not let a
+    // second EOF hide the control reply; bound both reads and elapsed time.
+    for _ in 0..4 {
+        match tokio::time::timeout_at(deadline, session.receive_startup_control()).await {
+            Ok(Ok(frame)) => {
+                if matches!(frame.message, ArppMessage::Control(ControlMessage::Close {reason_code, ..})
+                    if reason_code == ad_stream_protocol::SESSION_BUSY_REASON)
+                {
+                    return LifecycleError::SessionBusy;
+                }
+                break;
+            }
+            Ok(Err(_)) => continue,
+            Err(_) => break,
+        }
+    }
+    LifecycleError::Transport(error)
 }
 
 fn validate_capabilities(
@@ -597,6 +641,11 @@ async fn wait_for_resume_state(
 }
 
 fn unexpected_handshake(phase: &'static str, message: &ArppMessage) -> LifecycleError {
+    if matches!(message, ArppMessage::Control(ControlMessage::Close { reason_code, .. })
+        if *reason_code == ad_stream_protocol::SESSION_BUSY_REASON)
+    {
+        return LifecycleError::SessionBusy;
+    }
     let kind = match message {
         ArppMessage::Control(ControlMessage::ServerHello { .. }) => "ServerHello",
         ArppMessage::Control(ControlMessage::Capabilities(_)) => "Capabilities",
@@ -628,8 +677,24 @@ pub fn channel_prelude(channel: u8, token: &[u8; 32]) -> Result<[u8; 38], Lifecy
     Ok(output)
 }
 
+pub fn grouped_channel_prelude(
+    channel: u8,
+    token: &[u8; 32],
+    group: &[u8; 16],
+) -> Result<Vec<u8>, LifecycleError> {
+    if *group == [0; 16] {
+        return Err(LifecycleError::InvalidEndpoint);
+    }
+    let mut prefix = channel_prelude(channel, token)?.to_vec();
+    prefix[4] = 2;
+    prefix.extend_from_slice(group);
+    Ok(prefix)
+}
+
 #[derive(Debug, Error)]
 pub enum LifecycleError {
+    #[error("{}", ad_stream_protocol::SESSION_BUSY_DETAIL)]
+    SessionBusy,
     #[error("Connection cancelled")]
     Cancelled,
     #[error(
