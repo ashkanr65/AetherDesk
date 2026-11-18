@@ -385,6 +385,17 @@ impl RemoteClient {
         result
     }
 }
+fn clipboard_transfer_result<T>(result: Result<T, ClipboardError>) -> Result<(), String> {
+    match result {
+        Ok(_) => Ok(()),
+        Err(error @ ClipboardError::Transport(_)) => Err(error.to_string()),
+        Err(error) => {
+            tracing::debug!(%error, "discarded rejected desktop clipboard transfer");
+            Ok(())
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn run_session(
     lifecycle: &mut RemoteSessionLifecycle<SshAgentHost>,
@@ -436,13 +447,17 @@ async fn run_session(
         loop {
             tokio::select! {
                 message = channels.clipboard.recv() => {
-                    clipboard.handle_remote(message.ok_or("clipboard channel closed")?).await.map_err(|e| e.to_string())?;
+                    clipboard_transfer_result(
+                        clipboard.handle_remote(message.ok_or("clipboard channel closed")?).await,
+                    )?;
                 }
                 changed = clipboard_rx.changed() => {
                     changed.map_err(|_| "clipboard sender closed")?;
                     let text = clipboard_rx.borrow_and_update().clone();
                     if let Some(text) = text {
-                        clipboard.publish_local(vec![ClipboardContent { mime_type: "text/plain;charset=utf-8".into(), data: text.into_bytes() }]).await.map_err(|e| e.to_string())?;
+                        clipboard_transfer_result(
+                            clipboard.publish_local(vec![ClipboardContent { mime_type: "text/plain;charset=utf-8".into(), data: text.into_bytes() }]).await,
+                        )?;
                     }
                 }
             }

@@ -106,6 +106,23 @@ impl<B: ClipboardBackend> ClipboardBridge<B> {
     }
 
     pub async fn handle_remote(&self, message: ClipboardMessage) -> Result<(), ClipboardError> {
+        let data_revision = match &message {
+            ClipboardMessage::Data { revision, .. }
+            | ClipboardMessage::DataChunk { revision, .. } => Some(*revision),
+            _ => None,
+        };
+        let result = self.handle_remote_message(message).await;
+        if let Some(revision) = data_revision.filter(|_| result.is_err()) {
+            self.remote_offers.lock().await.remove(&revision);
+            self.pending_remote
+                .lock()
+                .await
+                .retain(|(current, _), _| *current != revision);
+        }
+        result
+    }
+
+    async fn handle_remote_message(&self, message: ClipboardMessage) -> Result<(), ClipboardError> {
         match message {
             ClipboardMessage::Offer {
                 revision,
@@ -125,6 +142,10 @@ impl<B: ClipboardBackend> ClipboardBridge<B> {
                 offers.clear();
                 offers.insert(revision, mime_types);
                 drop(offers);
+                self.pending_remote
+                    .lock()
+                    .await
+                    .retain(|(current, _), _| *current == revision);
                 self.session
                     .send(ArppMessage::Clipboard(ClipboardMessage::Request {
                         revision,
@@ -435,9 +456,29 @@ mod tests {
             Err(ClipboardError::InvalidChunk)
         ));
 
+        assert!(matches!(
+            bridge
+                .handle_remote(ClipboardMessage::DataChunk {
+                    revision: 9,
+                    mime_type: "image/png".into(),
+                    offset: 8,
+                    total_size: 12,
+                    data: vec![1, 2, 3, 4],
+                })
+                .await,
+            Err(ClipboardError::StaleRevision)
+        ));
+        assert!(backend.0.lock().unwrap().is_empty());
+        bridge
+            .handle_remote(ClipboardMessage::Offer {
+                revision: 10,
+                mime_types: vec!["image/png".into()],
+            })
+            .await
+            .unwrap();
         bridge
             .handle_remote(ClipboardMessage::DataChunk {
-                revision: 9,
+                revision: 10,
                 mime_type: "image/png".into(),
                 offset: 0,
                 total_size: 12,
@@ -447,7 +488,7 @@ mod tests {
             .unwrap();
         bridge
             .handle_remote(ClipboardMessage::DataChunk {
-                revision: 9,
+                revision: 10,
                 mime_type: "image/png".into(),
                 offset: 8,
                 total_size: 12,

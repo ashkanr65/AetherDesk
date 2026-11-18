@@ -13,6 +13,7 @@ use ad_stream_protocol::{
     ArppMessage, AudioCodec, BulkMessage, Capabilities, CaptureBackend, ClipboardMessage,
     ControlMessage, DisplayMessage, InputMessage, MetricsMessage, VideoCodec, PROTOCOL_VERSION,
 };
+use agent_wayland::compositor::ClipboardSelection;
 use ring::digest::{Context, SHA256};
 use ring::rand::{SecureRandom, SystemRandom};
 use subtle::ConstantTimeEq;
@@ -478,7 +479,14 @@ async fn run_client(
                     }
                 },
                 clipboard_event = clipboard_events.recv(), if attached => match clipboard_event {
-                    Ok(value) => clipboard.publish_remote(&session, value.mime_type, value.data).await?,
+                    Ok(value) => {
+                        match clipboard.publish_remote(&session, value.mime_type, value.data).await {
+                            Err(AgentServerError::UnsupportedClipboard) => {
+                                tracing::debug!("discarded invalid host clipboard selection");
+                            }
+                            result => result?,
+                        }
+                    }
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => return Err(AgentServerError::SupervisorStopped),
                 },
@@ -568,8 +576,8 @@ async fn run_client(
                         }
                         ArppMessage::Input(_) => unreachable!("input is handled by its own receiver"),
                         ArppMessage::Clipboard(message) => {
-                            if let Some((mime_type, data)) = clipboard.handle(&session, message).await? {
-                                supervisor.set_clipboard(mime_type, data).await?;
+                            if let Some(selection) = clipboard.receive(&session, message).await? {
+                                supervisor.apply_clipboard(selection).await?;
                             }
                         }
                         ArppMessage::Bulk(message) => files.handle(&session, message).await?,
@@ -706,10 +714,10 @@ fn random_token() -> Result<[u8; 32], AgentServerError> {
 
 #[derive(Default)]
 struct AgentClipboardRelay {
-    offers: HashMap<u64, Vec<String>>,
+    offers: HashMap<u64, String>,
     values: HashMap<String, Vec<u8>>,
     published: HashMap<u64, String>,
-    pending: HashMap<(u64, String), Vec<u8>>,
+    pending: HashMap<u64, (u64, Vec<u8>)>,
     next_revision: u64,
     last_injected: Option<(String, Vec<u8>)>,
     last_sent_at: Option<std::time::Instant>,
@@ -755,11 +763,39 @@ impl AgentClipboardRelay {
         Ok(())
     }
 
+    async fn receive(
+        &mut self,
+        session: &Arc<ArppSession>,
+        message: ClipboardMessage,
+    ) -> Result<Option<ClipboardSelection>, AgentServerError> {
+        let incoming_revision = match &message {
+            ClipboardMessage::Offer { revision, .. }
+            | ClipboardMessage::Data { revision, .. }
+            | ClipboardMessage::DataChunk { revision, .. } => Some(*revision),
+            // Requests refer to our own offers, a separate revision namespace.
+            ClipboardMessage::Request { .. } => None,
+        };
+        match self.handle(session, message).await {
+            Err(
+                error @ (AgentServerError::UnsupportedClipboard
+                | AgentServerError::ClipboardRevision),
+            ) => {
+                if let Some(revision) = incoming_revision {
+                    self.offers.remove(&revision);
+                    self.pending.remove(&revision);
+                }
+                tracing::debug!(%error, "discarded rejected clipboard transfer");
+                Ok(None)
+            }
+            result => result,
+        }
+    }
+
     async fn handle(
         &mut self,
         session: &Arc<ArppSession>,
         message: ClipboardMessage,
-    ) -> Result<Option<(String, Vec<u8>)>, AgentServerError> {
+    ) -> Result<Option<ClipboardSelection>, AgentServerError> {
         match message {
             ClipboardMessage::Offer {
                 revision,
@@ -775,7 +811,10 @@ impl AgentClipboardRelay {
                     })
                     .cloned()
                     .ok_or(AgentServerError::UnsupportedClipboard)?;
-                self.offers.insert(revision, mime_types);
+                if self.offers.contains_key(&revision) {
+                    return Err(AgentServerError::ClipboardRevision);
+                }
+                self.offers.insert(revision, requested.clone());
                 session
                     .send(ArppMessage::Clipboard(ClipboardMessage::Request {
                         revision,
@@ -793,12 +832,10 @@ impl AgentClipboardRelay {
                     .offers
                     .remove(&revision)
                     .ok_or(AgentServerError::ClipboardRevision)?;
-                if !offered.contains(&mime_type) || data.len() > CLIPBOARD_LIMIT_BYTES {
+                if offered != mime_type || self.pending.contains_key(&revision) {
                     return Err(AgentServerError::UnsupportedClipboard);
                 }
-                self.values.insert(mime_type.clone(), data.clone());
-                self.last_injected = Some((mime_type.clone(), data.clone()));
-                Ok(Some((mime_type, data)))
+                self.prepare_selection(mime_type, data).map(Some)
             }
             ClipboardMessage::DataChunk {
                 revision,
@@ -811,33 +848,30 @@ impl AgentClipboardRelay {
                     || total_size > CLIPBOARD_LIMIT_BYTES as u64
                     || data.is_empty()
                     || data.len() > CLIPBOARD_CHUNK_BYTES
-                    || !self
-                        .offers
-                        .get(&revision)
-                        .is_some_and(|formats| formats.contains(&mime_type))
+                    || self.offers.get(&revision) != Some(&mime_type)
                 {
                     return Err(AgentServerError::UnsupportedClipboard);
                 }
-                let key = (revision, mime_type.clone());
-                let value = self.pending.entry(key.clone()).or_default();
-                if offset != value.len() as u64
+                let (expected_size, value) = self
+                    .pending
+                    .entry(revision)
+                    .or_insert_with(|| (total_size, Vec::new()));
+                if *expected_size != total_size
+                    || offset != value.len() as u64
                     || offset.saturating_add(data.len() as u64) > total_size
                 {
-                    self.pending.remove(&key);
                     return Err(AgentServerError::ClipboardRevision);
                 }
                 value.extend_from_slice(&data);
                 if value.len() as u64 != total_size {
                     return Ok(None);
                 }
-                let complete = self
+                let (_, complete) = self
                     .pending
-                    .remove(&key)
+                    .remove(&revision)
                     .ok_or(AgentServerError::ClipboardRevision)?;
                 self.offers.remove(&revision);
-                self.values.insert(mime_type.clone(), complete.clone());
-                self.last_injected = Some((mime_type.clone(), complete.clone()));
-                Ok(Some((mime_type, complete)))
+                self.prepare_selection(mime_type, complete).map(Some)
             }
             ClipboardMessage::Request {
                 revision,
@@ -877,6 +911,17 @@ impl AgentClipboardRelay {
                 Ok(None)
             }
         }
+    }
+
+    fn prepare_selection(
+        &mut self,
+        mime_type: String,
+        data: Vec<u8>,
+    ) -> Result<ClipboardSelection, AgentServerError> {
+        let selection = ClipboardSelection::new(mime_type.clone(), data.clone())
+            .map_err(|_| AgentServerError::UnsupportedClipboard)?;
+        self.last_injected = Some((mime_type, data));
+        Ok(selection)
     }
 }
 
@@ -1612,6 +1657,88 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
+        // Clipboard frames share one ordered media channel. Getting each
+        // subsequent Request proves the preceding rejection did not detach
+        // this viewer. The resized display frame below verifies media survives.
+        async fn send_clipboard(session: &ArppSession, message: ClipboardMessage) {
+            session.send(ArppMessage::Clipboard(message)).await.unwrap();
+        }
+        async fn expect_clipboard_request(session: &ArppSession, revision: u64, mime: &str) {
+            send_clipboard(
+                session,
+                ClipboardMessage::Offer {
+                    revision,
+                    mime_types: vec![mime.into()],
+                },
+            )
+            .await;
+            timeout(Duration::from_secs(5), async {
+                loop {
+                    if let ArppMessage::Clipboard(ClipboardMessage::Request {
+                        revision: actual,
+                        mime_type,
+                    }) = session.receive().await.unwrap().message
+                    {
+                        assert_eq!((actual, mime_type.as_str()), (revision, mime));
+                        break;
+                    }
+                }
+            })
+            .await
+            .unwrap();
+        }
+        send_clipboard(
+            &first,
+            ClipboardMessage::Offer {
+                revision: 1,
+                mime_types: vec!["application/unsupported".into()],
+            },
+        )
+        .await;
+        expect_clipboard_request(&first, 2, "image/png").await;
+        send_clipboard(
+            &first,
+            ClipboardMessage::Data {
+                revision: 2,
+                mime_type: "image/png".into(),
+                data: b"invalid image".to_vec(),
+            },
+        )
+        .await;
+        expect_clipboard_request(&first, 3, "text/plain").await;
+        for (offset, total_size) in [(0, 2), (1, 3), (1, 2)] {
+            send_clipboard(
+                &first,
+                ClipboardMessage::DataChunk {
+                    revision: 3,
+                    mime_type: "text/plain".into(),
+                    offset,
+                    total_size,
+                    data: vec![b'x'],
+                },
+            )
+            .await;
+        }
+        send_clipboard(
+            &first,
+            ClipboardMessage::Request {
+                revision: 99,
+                mime_type: "text/plain".into(),
+            },
+        )
+        .await;
+        expect_clipboard_request(&first, 4, "text/plain").await;
+        send_clipboard(
+            &first,
+            ClipboardMessage::Data {
+                revision: 4,
+                mime_type: "text/plain".into(),
+                data: b"clipboard after rejection".to_vec(),
+            },
+        )
+        .await;
+        expect_clipboard_request(&first, 5, "text/plain").await;
+
         first
             .send(ArppMessage::Control(ControlMessage::Resize {
                 width: 640,

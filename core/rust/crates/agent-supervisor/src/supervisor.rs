@@ -398,7 +398,14 @@ impl AgentSupervisor {
         mime_type: String,
         data: Vec<u8>,
     ) -> Result<(), SupervisorError> {
-        let selection = ClipboardSelection::new(mime_type, data)?;
+        self.apply_clipboard(ClipboardSelection::new(mime_type, data)?)
+            .await
+    }
+
+    pub(crate) async fn apply_clipboard(
+        &self,
+        selection: ClipboardSelection,
+    ) -> Result<(), SupervisorError> {
         self.capture_tx
             .send(CaptureCommand::Clipboard(selection))
             .await

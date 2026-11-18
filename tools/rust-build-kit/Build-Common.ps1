@@ -326,7 +326,18 @@ function Build-NativeAgent([string]$Snapshot,[string]$Destination) {
 function Copy-NativeRuntimes([string]$Snapshot,[string]$Agent,[string]$Destination) {
     Test-AgentBundle $Agent
     Copy-Item -Path (Join-Path $gstreamerRoot 'bin\*.dll') -Destination $Destination
-    Copy-Item -LiteralPath (Join-Path $gstreamerRoot 'lib\gstreamer-1.0') -Destination $Destination -Recurse
+    # The SDK puts static build archives beside the loadable plugin DLLs.
+    # Keep the complete runtime plugin set without distributing build inputs.
+    $pluginSource = Join-Path $gstreamerRoot 'lib\gstreamer-1.0'
+    $plugins = @(Get-ChildItem -LiteralPath $pluginSource -Filter '*.dll' -File -Recurse)
+    if (!$plugins.Count) { throw 'GStreamer runtime plugin DLLs are missing.' }
+    $pluginDestination = Join-Path $Destination 'gstreamer-1.0'
+    foreach ($plugin in $plugins) {
+        $relative = $plugin.FullName.Substring($pluginSource.Length + 1)
+        $target = Join-Path $pluginDestination $relative
+        New-Item -ItemType Directory -Force -Path (Split-Path $target -Parent) | Out-Null
+        Copy-Item -LiteralPath $plugin.FullName -Destination $target
+    }
     Copy-Item -LiteralPath (Join-Path $gstreamerRoot 'libexec\gstreamer-1.0\gst-plugin-scanner.exe') -Destination $Destination
     $crt = Join-Path $env:VCToolsRedistDir 'x64\Microsoft.VC143.CRT'
     foreach ($name in @('msvcp140.dll','vcruntime140.dll','vcruntime140_1.dll')) {
