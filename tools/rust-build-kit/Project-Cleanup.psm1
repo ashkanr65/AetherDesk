@@ -72,14 +72,28 @@ function Test-CleanupTaskActive($Task) {
     }
     if ($Task.status -notin @('active','cleanup-deferred')) { return $false }
     if (!$Task.ownerPid) { return $true } # Manual/chat tasks require explicit completion.
-    try { $process=Get-Process -Id $Task.ownerPid -ErrorAction Stop; return $process.StartTime.ToUniversalTime().Ticks -eq ([DateTime]$Task.ownerStartedUtc).ToUniversalTime().Ticks }
-    catch [Microsoft.PowerShell.Commands.ProcessCommandException] { return $false }
-    catch { return $true } # Uncertain ownership never authorizes deletion.
+    return Test-ProjectProcessAlive $Task.ownerPid $Task.ownerStartedUtc
 }
 function Test-ProjectProcessAlive([int]$ProcessId,$StartedUtc) {
-    try { $p=Get-Process -Id $ProcessId -ErrorAction Stop;return $p.StartTime.ToUniversalTime().Ticks -eq ([DateTime]$StartedUtc).ToUniversalTime().Ticks }
-    catch [Microsoft.PowerShell.Commands.ProcessCommandException] {return $false}
-    catch {return $true}
+    if (!$StartedUtc) { return $true }
+    try {
+        $expected = ([DateTime]$StartedUtc).ToUniversalTime()
+        $process = Get-Process -Id $ProcessId -ErrorAction Stop
+        return $process.StartTime.ToUniversalTime().Ticks -eq $expected.Ticks
+    } catch [Microsoft.PowerShell.Commands.ProcessCommandException] {
+        return $false
+    } catch {
+        # Get-Process cannot read StartTime for some Windows services. CIM can
+        # distinguish a recycled PID while keeping unknown processes protected.
+        try {
+            $process = Get-CimInstance -ClassName Win32_Process -Filter "ProcessId = $ProcessId" -ErrorAction Stop
+            if (!$process.CreationDate) { return $true }
+            $started = $process.CreationDate.ToUniversalTime()
+            return [Math]::Abs(($started - $expected).Ticks) -lt [TimeSpan]::TicksPerMillisecond
+        } catch {
+            return $true
+        }
+    }
 }
 function Register-ProjectProcess {
     param([string]$TaskId,[string]$Token)

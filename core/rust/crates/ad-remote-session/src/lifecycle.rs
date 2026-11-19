@@ -119,6 +119,10 @@ impl<C: AgentConnection> RemoteSessionLifecycle<C> {
     pub fn state(&self) -> LifecycleState {
         self.state
     }
+    pub fn deployment(&self) -> Option<&AgentDeployment> {
+        self.deployment.as_ref()
+    }
+
     pub fn newly_created(&self) -> bool {
         self.endpoint.as_ref().is_some_and(|e| e.newly_created)
     }

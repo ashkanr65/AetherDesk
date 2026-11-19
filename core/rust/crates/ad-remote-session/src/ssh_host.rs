@@ -108,26 +108,12 @@ impl AgentConnection for SshAgentHost {
         session_id: Uuid,
         parameters: Option<&SessionParameters>,
     ) -> Result<AgentEndpoint, LifecycleError> {
-        let remote_path = safe_remote_path(&deployment.remote_path)?;
         let session_options = parameters
             .map(agent_options)
             .transpose()?
             .unwrap_or_default();
-        let executable = format!(
-            "\"$HOME\"/{remote_path}",
-            remote_path = shell_quote(remote_path)
-        );
-        let command = if deployment.bundled_runtime {
-            let directory = remote_path
-                .strip_suffix("/ad-agent")
-                .ok_or(LifecycleError::InvalidEndpoint)?;
-            format!(
-                "PATH=\"$HOME\"/{libs}${{PATH:+:$PATH}} LD_LIBRARY_PATH=\"$HOME\"/{libs}${{LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}} GST_PLUGIN_PATH=\"$HOME\"/{libs} GST_PLUGIN_SYSTEM_PATH_1_0=\"$HOME\"/{libs} GST_PLUGIN_SCANNER=\"$HOME\"/{libs}/gst-plugin-scanner {executable} --launch --session-id {session_id}{session_options}",
-                libs = shell_quote(&format!("{directory}/libs")),
-            )
-        } else {
-            format!("{executable} --launch --session-id {session_id}{session_options}")
-        };
+        let agent = agent_command(deployment)?;
+        let command = format!("{agent} --launch --session-id {session_id}{session_options}");
         let command = if let Some(startup) = &self.startup {
             format!(
                 "{}{}",
@@ -303,11 +289,50 @@ fn hex_nibble(value: u8) -> Result<u8, LifecycleError> {
     }
 }
 
+/// Commands run by the deployed Linux agent for an application view.
+#[derive(Clone, Copy)]
+pub enum ApplicationHelper {
+    Environment,
+    WindowMirror,
+}
+
+impl AgentDeployment {
+    pub fn application_helper_command(
+        &self,
+        helper: ApplicationHelper,
+        session_id: Uuid,
+    ) -> Result<String, LifecycleError> {
+        let flag = match helper {
+            ApplicationHelper::Environment => "--application-environment",
+            ApplicationHelper::WindowMirror => "--window-mirror",
+        };
+        let agent = agent_command(self)?;
+        Ok(format!("exec env {agent} {flag} --session-id {session_id}"))
+    }
+}
+
+// The version is shared by several builds, so it cannot identify their libraries.
+fn agent_command(deployment: &AgentDeployment) -> Result<String, LifecycleError> {
+    let remote_path = safe_remote_path(&deployment.remote_path)?;
+    let directory = remote_path
+        .strip_suffix("/ad-agent")
+        .ok_or(LifecycleError::InvalidEndpoint)?;
+    let executable = format!("\"$HOME\"/{}", shell_quote(remote_path));
+    if !deployment.bundled_runtime {
+        return Ok(executable);
+    }
+    let libs = format!("\"$HOME\"/{}", shell_quote(&format!("{directory}/libs")));
+    Ok(format!(
+        "PATH={libs}${{PATH:+:$PATH}} LD_LIBRARY_PATH={libs}${{LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}} GST_PLUGIN_PATH={libs} GST_PLUGIN_SYSTEM_PATH_1_0={libs} GST_PLUGIN_SCANNER={libs}/gst-plugin-scanner {executable}"
+    ))
+}
+
 fn safe_remote_path(path: &str) -> Result<&str, LifecycleError> {
     if path.is_empty()
         || path.starts_with('/')
-        || path.contains('\0')
-        || path.contains('\n')
+        || !path
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || b".-_/".contains(&byte))
         || path
             .split('/')
             .any(|part| part.is_empty() || part == "." || part == "..")

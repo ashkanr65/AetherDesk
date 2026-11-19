@@ -186,6 +186,10 @@ impl RemoteClient {
                 return Err(error.to_string());
             }
         };
+        let deployment = lifecycle
+            .deployment()
+            .cloned()
+            .ok_or("Remote session has no verified agent deployment")?;
         let status = Arc::new(Mutex::new(Status {
             state: "connected",
             error: None,
@@ -206,7 +210,7 @@ impl RemoteClient {
             window_target: Some(crate::remote_applications::Target {
                 ssh,
                 session: session_id,
-                version: agent_version.trim().to_owned(),
+                deployment,
                 runtime: tokio::runtime::Handle::current(),
             }),
             commands,

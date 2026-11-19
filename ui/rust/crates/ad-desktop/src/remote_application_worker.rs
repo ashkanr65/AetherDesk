@@ -1,4 +1,5 @@
 //! Bounded request/response capture over this tab's authenticated SSH transport.
+use ad_remote_session::{ssh_host::ApplicationHelper, AgentDeployment};
 use ad_stream_protocol::window_stream::{self as wire, Reply, Request, WindowInfo};
 use eframe::egui;
 use parking_lot::Mutex;
@@ -19,14 +20,12 @@ pub(super) use frames::Frame;
 pub(crate) struct Target {
     pub ssh: Arc<ad_ssh::SshSession>,
     pub session: uuid::Uuid,
-    pub version: String,
+    pub deployment: AgentDeployment,
     pub runtime: tokio::runtime::Handle,
 }
 impl Target {
     pub(crate) async fn shell_environment(&self) -> Result<String, String> {
-        let command = self
-            .command()?
-            .replace("--window-mirror", "--application-environment");
+        let command = self.helper_command(ApplicationHelper::Environment)?;
         // The helper can precede the WM's atomic environment publication.
         let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
         loop {
@@ -47,6 +46,12 @@ impl Target {
                 }
                 return Ok(format!("{value}; "));
             }
+            if matches!(output.exit_status, 126 | 127) {
+                return Err(
+                    "The deployed host agent could not run the application environment helper."
+                        .into(),
+                );
+            }
             if tokio::time::Instant::now() >= deadline {
                 return Err(
                     "Application environment did not become ready. Check the host agent log."
@@ -56,24 +61,17 @@ impl Target {
             tokio::time::sleep(Duration::from_millis(150)).await;
         }
     }
+    fn helper_command(&self, helper: ApplicationHelper) -> Result<String, String> {
+        self.deployment
+            .application_helper_command(helper, self.session)
+            .map_err(|error| error.to_string())
+    }
+
     fn command(&self) -> Result<String, String> {
-        command(&self.version, self.session)
+        self.helper_command(ApplicationHelper::WindowMirror)
     }
 }
-fn command(version: &str, session: uuid::Uuid) -> Result<String, String> {
-    if version.is_empty()
-        || version.len() > 64
-        || version == "."
-        || version == ".."
-        || !version
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b".-_".contains(&b))
-    {
-        return Err("Invalid remote application runtime version".into());
-    }
-    let directory = format!("\"$HOME/.aetherdesk/agent/{version}\"");
-    Ok(format!("exec env LD_LIBRARY_PATH={directory}/libs PATH={directory}/libs:\"$PATH\" {directory}/ad-agent --window-mirror --session-id {session}"))
-}
+
 #[derive(Clone)]
 pub(super) struct PopupState {
     pub info: wire::Popup,
@@ -272,11 +270,50 @@ mod tests {
     }
     #[test]
     fn application_helper_command_is_session_bound_and_rejects_shell_fragments() {
-        let session = uuid::Uuid::nil();
-        let text = command("0.1.2", session).unwrap();
-        assert!(text.contains("--window-mirror --session-id 00000000-0000-0000-0000-000000000000"));
-        for bad in ["../other", "\";touch x", "a b", "$(id)", "", ".."] {
-            assert!(command(bad, session).is_err());
+        let session = uuid::Uuid::new_v4();
+        let mut deployment = AgentDeployment {
+            version: "0.1.3".into(),
+            remote_path: format!(
+                ".aetherdesk/agent/0.1.3/bundles/{}/ad-agent",
+                "ab".repeat(32)
+            ),
+            sha256: [1; 32],
+            uploaded: true,
+            bundled_runtime: true,
+        };
+        let bundle = deployment.remote_path.strip_suffix("/ad-agent").unwrap();
+        for (mode, flag) in [
+            (ApplicationHelper::Environment, "--application-environment"),
+            (ApplicationHelper::WindowMirror, "--window-mirror"),
+        ] {
+            let text = deployment
+                .application_helper_command(mode, session)
+                .unwrap();
+            assert!(text.starts_with("exec env "));
+            assert!(text.contains(&format!("LD_LIBRARY_PATH=\"$HOME\"/'{bundle}/libs'")));
+            assert!(text.ends_with(&format!(
+                "\"$HOME\"/'{bundle}/ad-agent' {flag} --session-id {session}"
+            )));
+            assert!(!text.contains(".aetherdesk/agent/0.1.3/ad-agent"));
+        }
+        // An explicitly deployed legacy path is still valid.
+        deployment.remote_path = ".aetherdesk/agent/0.1.3/ad-agent".into();
+        assert!(deployment
+            .application_helper_command(ApplicationHelper::Environment, session)
+            .unwrap()
+            .contains(&deployment.remote_path));
+        for bad in [
+            "../other",
+            "evil;touch/ad-agent",
+            "a b/ad-agent",
+            "$(id)/ad-agent",
+            "",
+            "..",
+        ] {
+            deployment.remote_path = bad.into();
+            assert!(deployment
+                .application_helper_command(ApplicationHelper::WindowMirror, session)
+                .is_err());
         }
     }
     #[tokio::test]

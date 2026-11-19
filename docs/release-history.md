@@ -2,6 +2,14 @@
 
 See [the current release notes](../RELEASE-NOTES.md) for the latest version.
 
+## AetherDesk 0.1.3 - build 12
+
+- Keep Remote Desktop connected when a clipboard transfer contains an unsupported format, invalid data, or an outdated revision. Discard the failed transfer and continue accepting clipboard updates.
+
+- Reduce the Windows package size by shipping GStreamer runtime plugins without its static build libraries.
+
+The host-side fix applies to new sessions using the updated agent. Existing sessions retain their running agent and applications.
+
 ## AetherDesk 0.1.3 - build 11
 
 Build 11 reduces background terminal-scanning CPU load, handles occupied desktops clearly, and stages host-agent updates safely.
