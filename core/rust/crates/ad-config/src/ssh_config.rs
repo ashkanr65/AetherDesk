@@ -16,6 +16,23 @@ pub struct X11ForwardingConfig {
     pub screen_number: u32,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum WireGuardMode {
+    Automatic,
+    WindowsOnly,
+    Required,
+}
+impl WireGuardMode {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Automatic => "Automatic",
+            Self::WindowsOnly => "Windows network only",
+            Self::Required => "Require WireGuard",
+        }
+    }
+}
+
 /// SSH connection configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SshConfig {
@@ -27,6 +44,8 @@ pub struct SshConfig {
     /// Path to a WireGuard client config; secrets are never copied into profiles.
     #[serde(default)]
     pub wireguard_config_path: Option<String>,
+    #[serde(default)]
+    pub wireguard_mode: Option<WireGuardMode>,
     /// Passphrase used to decrypt the private key. This field is runtime-only
     /// for desktop clients and must never be serialized into a saved profile.
     #[serde(default, skip_serializing)]
@@ -54,6 +73,7 @@ impl Default for SshConfig {
             password: None,
             key_path: None,
             wireguard_config_path: None,
+            wireguard_mode: None,
             key_passphrase: None,
             trust_new_host_key: false,
             confirmed_host_fingerprint: None,

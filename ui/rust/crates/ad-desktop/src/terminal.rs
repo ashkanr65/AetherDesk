@@ -1,4 +1,5 @@
 //! Native terminal screen: byte-stream parsing is independent of UI repaint.
+use crate::terminal_settings::{MAX_FONT_SIZE, MIN_FONT_SIZE};
 use eframe::egui::{self, Color32, Event, Key, Modifiers};
 #[path = "terminal_selection.rs"]
 mod selection;
@@ -48,6 +49,8 @@ pub struct Terminal {
     selection_tick: Option<f64>,
     settings: crate::terminal_settings::Settings,
     settings_version: u64,
+    zoom_offset: f32,
+    zoom_wheel_fraction: f32,
     highlighter: crate::terminal_settings::Highlighter,
     settings_draft: Option<crate::terminal_settings::Settings>,
     settings_open: bool,
@@ -84,6 +87,8 @@ impl Default for Terminal {
             settings_draft: None,
             settings,
             settings_version: 0,
+            zoom_offset: 0.0,
+            zoom_wheel_fraction: 0.0,
             settings_open: false,
             settings_error: None,
             ime_preedit: String::new(),
@@ -93,6 +98,64 @@ impl Default for Terminal {
     }
 }
 impl Terminal {
+    pub fn reset_for_connection(&mut self) {
+        *self = Self {
+            zoom_offset: self.zoom_offset,
+            ..Self::default()
+        };
+    }
+    fn font_size(&self) -> f32 {
+        (self.settings.font_size + self.zoom_offset).clamp(MIN_FONT_SIZE, MAX_FONT_SIZE)
+    }
+    fn handle_zoom_wheel(&mut self, ui: &egui::Ui, surface: egui::Rect) {
+        if !ui.rect_contains_pointer(surface) {
+            return;
+        }
+        let points_per_line = ui.ctx().options(|o| o.input_options.line_scroll_speed);
+        ui.input_mut(|input| {
+            let page_height = input.viewport_rect().height();
+            let mut consumed_y = 0.0;
+            input.events.retain(|event| {
+                let Event::MouseWheel {
+                    unit,
+                    delta,
+                    modifiers,
+                } = event
+                else {
+                    return true;
+                };
+                if !modifiers.ctrl
+                    || modifiers.shift
+                    || modifiers.alt
+                    || modifiers.mac_cmd
+                    || !delta.y.is_finite()
+                    || delta.y == 0.0
+                {
+                    return true;
+                }
+                let (lines, points) = match unit {
+                    egui::MouseWheelUnit::Line => (delta.y, delta.y * points_per_line),
+                    egui::MouseWheelUnit::Point => (delta.y / points_per_line.max(1.0), delta.y),
+                    egui::MouseWheelUnit::Page => (delta.y, delta.y * page_height),
+                };
+                consumed_y += points;
+                self.zoom_wheel_fraction += lines;
+                let steps = self.zoom_wheel_fraction.trunc();
+                self.zoom_wheel_fraction -= steps;
+                let size = (self.font_size() + steps).clamp(MIN_FONT_SIZE, MAX_FONT_SIZE);
+                self.zoom_offset = size - self.settings.font_size;
+                if (size == MIN_FONT_SIZE && self.zoom_wheel_fraction < 0.0)
+                    || (size == MAX_FONT_SIZE && self.zoom_wheel_fraction > 0.0)
+                {
+                    self.zoom_wheel_fraction = 0.0;
+                }
+                false
+            });
+            // Both scrollback and terminal mouse reporting read egui's aggregate delta.
+            // Subtract only the zoom events, preserving plain scrolls in the same frame.
+            input.raw_scroll_delta.y -= consumed_y;
+        });
+    }
     pub fn visible_text(&self) -> String {
         self.parser.screen().contents()
     }
@@ -205,7 +268,7 @@ impl Terminal {
         if crate::ui_icons::button(
             ui,
             crate::ui_icons::Icon::TerminalSettings,
-            "Terminal settings: fonts and colours; Shift + drag selects text",
+            "Terminal fonts and colours · Ctrl + wheel zooms this tab · Shift + drag selects text",
             self.settings_open,
         )
         .clicked()
@@ -296,10 +359,16 @@ impl Terminal {
                 self.settings_draft = None;
             }
         }
-        let font = egui::FontId::monospace(self.settings.font_size);
-        let cell_width = ui.fonts_mut(|fonts| fonts.glyph_width(&font, 'M')).max(1.0);
-        let cell_height = (self.settings.font_size * self.settings.line_height).ceil();
         let available = ui.available_size();
+        let (surface, _) = ui.allocate_exact_size(
+            egui::vec2(available.x, available.y.max(2.0)),
+            egui::Sense::hover(),
+        );
+        self.handle_zoom_wheel(ui, surface);
+        let font_size = self.font_size();
+        let font = egui::FontId::monospace(font_size);
+        let cell_width = ui.fonts_mut(|fonts| fonts.glyph_width(&font, 'M')).max(1.0);
+        let cell_height = (font_size * self.settings.line_height).ceil();
         let cols = ((available.x - 18.0).max(0.0) / cell_width)
             .floor()
             .clamp(2.0, 500.0) as u16;
@@ -310,10 +379,6 @@ impl Terminal {
             self.refresh_history();
             self.clear_selection();
         }
-        let (surface, _) = ui.allocate_exact_size(
-            egui::vec2(available.x, available.y.max(2.0)),
-            egui::Sense::hover(),
-        );
         let gutter = egui::Rect::from_min_max(
             egui::pos2((surface.right() - 18.0).max(surface.left()), surface.top()),
             surface.right_bottom(),
@@ -1421,6 +1486,52 @@ mod tests {
             pressed,
             modifiers,
         }
+    }
+    #[test]
+    fn ctrl_wheel_zooms_only_the_open_terminal_and_keeps_its_history_offset() {
+        let ctx = egui::Context::default();
+        ctx.options_mut(|options| options.max_passes = 1.try_into().unwrap());
+        let mut terminal = Terminal::default();
+        let rect = selection_frame(&mut terminal, &ctx, 0.0, vec![], Modifiers::NONE, true);
+        for _ in 0..100 {
+            terminal.process(b"history\r\n");
+        }
+        terminal.parser.screen_mut().set_scrollback(8);
+        terminal.process(b"\x1b[?1000h\x1b[?1006h");
+        let initial = terminal.font_size();
+        let step = if initial <= MAX_FONT_SIZE - 1.0 {
+            1.0
+        } else {
+            -1.0
+        };
+        let wheel = |y| Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Line,
+            delta: egui::vec2(0.0, y),
+            modifiers: Modifiers::CTRL,
+        };
+        // selection_frame also verifies that the mouse-reporting application receives no input.
+        for (frame, pos) in [
+            (1, rect.min - egui::vec2(20.0, 20.0)),
+            (2, rect.center()),
+            (3, rect.center()),
+        ] {
+            selection_frame(
+                &mut terminal,
+                &ctx,
+                f64::from(frame) / 10.0,
+                vec![Event::PointerMoved(pos), wheel(step * 0.5)],
+                Modifiers::CTRL,
+                true,
+            );
+            assert_eq!(
+                terminal.font_size(),
+                if frame == 3 { initial + step } else { initial }
+            );
+            assert_eq!(terminal.parser.screen().scrollback(), 8);
+        }
+        terminal.reset_for_connection();
+        assert_eq!(terminal.font_size(), initial + step);
+        assert_eq!(Terminal::default().font_size(), initial);
     }
     #[test]
     fn wheel_extends_held_selection_before_drag_threshold_and_keeps_it_on_release() {

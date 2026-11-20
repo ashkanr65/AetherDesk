@@ -238,7 +238,7 @@ impl SessionTab {
                 self.challenge = None;
                 self.status = "Connecting…".into();
                 self.pending.clear();
-                self.terminal = Terminal::default();
+                self.terminal.reset_for_connection();
                 self.pty_size = None;
                 self.remote_entries.clear();
                 self.remote_loaded_path.clear();
@@ -1053,7 +1053,12 @@ impl SessionTab {
                                 remote.controls(ui);
                             }
                             ui.add(egui::Label::new(&self.status).truncate())
-                                .on_hover_text(&self.status);
+                                .on_hover_text(
+                                    self.backend
+                                        .as_ref()
+                                        .filter(|_| self.connected)
+                                        .map_or(self.status.as_str(), |ssh| ssh.route_label()),
+                                );
                         });
                     });
             },

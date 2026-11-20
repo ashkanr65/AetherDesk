@@ -5,6 +5,9 @@ use std::{
     sync::{Mutex, OnceLock},
 };
 
+pub const MIN_FONT_SIZE: f32 = 10.0;
+pub const MAX_FONT_SIZE: f32 = 28.0;
+
 pub const ROLES: [&str; 12] = [
     "comment",
     "error",
@@ -67,7 +70,7 @@ impl Settings {
             self.font = "Bundled monospace".into();
         }
         self.font_size = if self.font_size.is_finite() {
-            self.font_size.clamp(10.0, 28.0)
+            self.font_size.clamp(MIN_FONT_SIZE, MAX_FONT_SIZE)
         } else {
             13.0
         };
@@ -449,7 +452,7 @@ pub fn edit(ui: &mut egui::Ui, settings: &mut Settings) {
                     });
                     ui.group(|ui| {
                         ui.label("Font size");
-                        tracked_slider(ui, &mut settings.font_size, 10.0..=28.0);
+                        tracked_slider(ui, &mut settings.font_size, MIN_FONT_SIZE..=MAX_FONT_SIZE);
                     });
                     ui.group(|ui| {
                         ui.label("Line height");

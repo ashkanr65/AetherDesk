@@ -1,3 +1,4 @@
+pub use ad_config::ssh_config::WireGuardMode;
 use serde_json::{json, Map, Value};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -59,7 +60,7 @@ pub struct SavedSession {
     pub desktop_environment: String,
     pub key_path: Option<String>,
     pub wireguard_config_path: Option<String>,
-    pub wireguard_enabled: bool,
+    pub wireguard_mode: WireGuardMode,
     pub startup_enabled: bool,
     pub startup_commands: String,
     pub startup_timeout: u64,
@@ -120,6 +121,15 @@ impl SavedSession {
         let wireguard_config_path =
             optional_text(map, "wireguardConfigPath")?.filter(|p| !p.trim().is_empty());
         let wireguard_enabled = boolean(map, "wireguardEnabled", wireguard_config_path.is_some())?;
+        let wireguard_mode = match map.get("wireguardMode") {
+            Some(value) => {
+                serde_json::from_value(value.clone()).map_err(|_| "Invalid WireGuard mode")?
+            }
+            None if !wireguard_enabled && wireguard_config_path.is_some() => {
+                WireGuardMode::WindowsOnly
+            }
+            None => WireGuardMode::Automatic,
+        };
         let startup_commands = optional_text(map, "startupCommands")?.unwrap_or_default();
         let startup_timeout = match map.get("startupTimeout") {
             None | Some(Value::Null) => 30,
@@ -155,7 +165,7 @@ impl SavedSession {
             )?,
             key_path: optional_text(map, "keyPath")?,
             wireguard_config_path,
-            wireguard_enabled,
+            wireguard_mode,
             startup_enabled: boolean(map, "startupEnabled", false)?,
             startup_commands,
             startup_timeout,
@@ -172,7 +182,7 @@ impl SavedSession {
     }
     pub fn to_json(&self) -> Value {
         let mut value = json!({
-            "version":2, "id":self.id,"name":self.name,"host":self.host,"port":self.port,
+            "wireguardMode":self.wireguard_mode,"version":2, "id":self.id,"name":self.name,"host":self.host,"port":self.port,
             "username":if self.remember_username {self.username.as_str()} else {""},
             "connectionType":self.connection_type.name(),
             "authentication":self.authentication,"desktopEnvironment":self.desktop_environment,
@@ -187,7 +197,7 @@ impl SavedSession {
         }
         if let Some(config) = &self.wireguard_config_path {
             value["wireguardConfigPath"] = json!(config);
-            value["wireguardEnabled"] = json!(self.wireguard_enabled);
+            value["wireguardEnabled"] = json!(self.wireguard_mode != WireGuardMode::WindowsOnly);
         }
         value
     }
@@ -246,22 +256,23 @@ mod tests {
     #[test]
     fn wireguard_enablement_is_per_profile_and_disabled_files_survive_reload() {
         let enabled=SavedSession::from_json(&json!({"id":"one","name":"VPN","host":"server","wireguardConfigPath":"C:/vpn/peer.conf"})).unwrap();
-        assert!(enabled.wireguard_enabled); // old profiles retain their choice
+        assert_eq!(enabled.wireguard_mode, WireGuardMode::Automatic); // old profiles retain their choice
         let mut disabled = enabled.clone();
         disabled.id = "two".into();
-        disabled.wireguard_enabled = false;
+        disabled.wireguard_mode = WireGuardMode::WindowsOnly;
         let restored = SavedSession::from_json(&disabled.to_json()).unwrap();
-        assert!(!restored.wireguard_enabled);
+        assert_eq!(restored.wireguard_mode, WireGuardMode::WindowsOnly);
         assert_eq!(
             restored.wireguard_config_path,
             enabled.wireguard_config_path
         );
-        assert!(enabled.wireguard_enabled);
+        assert_eq!(enabled.wireguard_mode, WireGuardMode::Automatic);
         disabled.wireguard_config_path = None;
-        assert!(
-            !SavedSession::from_json(&disabled.to_json())
+        assert_eq!(
+            SavedSession::from_json(&disabled.to_json())
                 .unwrap()
-                .wireguard_enabled
+                .wireguard_mode,
+            WireGuardMode::WindowsOnly
         );
     }
     #[test]

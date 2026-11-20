@@ -1,5 +1,5 @@
 //! Transient form secrets never enter SavedSession or the JSON profile store.
-use ad_desktop_model::profiles::{ConnectionType, SavedSession};
+use ad_desktop_model::profiles::{ConnectionType, SavedSession, WireGuardMode};
 use eframe::egui;
 use tokio::sync::mpsc;
 use zeroize::Zeroizing;
@@ -41,6 +41,14 @@ impl From<SavedSession> for Draft {
         }
     }
 }
+fn help(ui: &mut egui::Ui, text: &str) {
+    let marker =
+        ui.add(egui::Label::new(egui::RichText::new("!").strong()).sense(egui::Sense::hover()));
+    if marker.hovered() {
+        marker.on_hover_text(text);
+    }
+}
+
 impl Draft {
     fn keeps_existing_secret(&self) -> bool {
         let a = &self.original;
@@ -57,6 +65,15 @@ impl Draft {
     }
     fn validate(&self) -> Result<(), String> {
         crate::profile_store::validate(&self.profile)?;
+        if self.profile.wireguard_mode == WireGuardMode::Required
+            && self
+                .profile
+                .wireguard_config_path
+                .as_deref()
+                .is_none_or(|p| p.trim().is_empty())
+        {
+            return Err("Select a WireGuard configuration for Require WireGuard.".into());
+        }
         if self.profile.startup_enabled {
             ad_ssh::StartupScript {
                 commands: self.profile.startup_commands.clone(),
@@ -97,7 +114,6 @@ impl Draft {
             match receiver.try_recv() {
                 Ok(Ok(Some(path))) => {
                     self.profile.wireguard_config_path = Some(path);
-                    self.profile.wireguard_enabled = true;
                     self.picker = None;
                 }
                 Ok(Ok(None)) => self.picker = None,
@@ -166,6 +182,9 @@ impl Draft {
                         ui.label("Host"); ui.text_edit_singleline(&mut p.host); ui.end_row();
                         ui.label("Port"); ui.add(egui::DragValue::new(&mut p.port).range(1..=65535)); ui.end_row();
                         ui.label("Username"); ui.text_edit_singleline(&mut p.username); ui.end_row();
+                        ui.label("");
+                        ui.add_enabled(!p.remember_password, egui::Checkbox::new(&mut p.remember_username, "Remember username"));
+                        ui.end_row();
                         ui.label("Connection");
                         egui::ComboBox::from_id_salt("connection-kind").selected_text(p.connection_type.label()).show_ui(ui, |ui| {
                             for kind in [ConnectionType::SshTerminal, ConnectionType::SftpOnly, ConnectionType::SshX11, ConnectionType::RemoteDesktop, ConnectionType::RemoteApplications] {
@@ -182,28 +201,40 @@ impl Draft {
                         }
                         ui.label(if p.authentication == "sshKey" { "Key passphrase" } else { "Password" });
                         ui.add(egui::TextEdit::singleline(&mut *self.secret).password(true).hint_text(if self.existing_credential { "Saved (leave blank to keep)" } else { "Enter password / passphrase" })); ui.end_row();
+                        ui.label("");
+                        ui.horizontal_wrapped(|ui| {
+                            ui.checkbox(&mut p.remember_password, if p.authentication == "sshKey" { "Save passphrase" } else { "Save password" });
+                            ui.add_enabled(p.remember_password, egui::Checkbox::new(&mut p.master_password_protected, "Use master password"));
+                            help(ui, "Saved secrets are encrypted for your Windows account, outside the session file. Use a master password to add protection. Saving a secret also remembers its username.");
+                        }); ui.end_row();
+                        if p.remember_password { p.remember_username = true; } else { p.master_password_protected = false; }
+                        if p.master_password_protected {
+                            ui.label("Master password"); ui.add(egui::TextEdit::singleline(&mut *self.master).password(true)); ui.end_row();
+                        }
                         ui.label("WireGuard (this session)");
                         let row_width=ui.available_width();
                         ui.allocate_ui_with_layout(egui::vec2(row_width,28.0),egui::Layout::left_to_right(egui::Align::Center),|ui| {
                             let browse_width=ui.fonts_mut(|fonts| fonts.layout_no_wrap("Browse".into(),egui::TextStyle::Button.resolve(ui.style()),ui.visuals().text_color()).size().x)+2.0*ui.spacing().button_padding.x;
                             let path_width=(ui.available_width()-browse_width-28.0-2.0*ui.spacing().item_spacing.x).max(40.0);
-                            if ui.add_sized([path_width,ui.spacing().interact_size.y],egui::TextEdit::singleline(p.wireguard_config_path.get_or_insert_with(String::new)).hint_text("Optional .conf file").desired_width(path_width)).changed() {
-                                p.wireguard_enabled=p.wireguard_config_path.as_ref().is_some_and(|p|!p.trim().is_empty());
-                            }
+                            ui.add_sized([path_width,ui.spacing().interact_size.y],egui::TextEdit::singleline(p.wireguard_config_path.get_or_insert_with(String::new)).hint_text("Optional .conf file").desired_width(path_width));
                             if ui.add_sized([browse_width,28.0],egui::Button::new("Browse")).clicked() {
                                 let (sender,receiver)=mpsc::channel(1);self.picker=Some(receiver);
                                 let context=ctx.clone();
                                 std::thread::spawn(move|| {let _=sender.blocking_send(crate::file_picker::wireguard());context.request_repaint();});
                             }
                             if ui.add_enabled_ui(p.wireguard_config_path.as_ref().is_some_and(|p|!p.trim().is_empty()),|ui| crate::ui_icons::button(ui,crate::ui_icons::Icon::Remove,"Remove WireGuard configuration",false)).inner.clicked() {
-                                p.wireguard_config_path=None;p.wireguard_enabled=false;
+                                p.wireguard_config_path=None;
                             }
                         }); ui.end_row();
-                        if p.wireguard_config_path.as_ref().is_some_and(|p|!p.trim().is_empty()) {
-                            ui.label("");
-                                ui.checkbox(&mut p.wireguard_enabled,"Enable for this session only");
-                            ui.end_row();
-                        }
+                        ui.label("Network mode");
+                        ui.horizontal(|ui| {
+                            egui::ComboBox::from_id_salt("wireguard-mode").selected_text(p.wireguard_mode.label()).show_ui(ui, |ui| {
+                                for mode in [WireGuardMode::Automatic, WireGuardMode::WindowsOnly, WireGuardMode::Required] {
+                                    ui.selectable_value(&mut p.wireguard_mode, mode, mode.label());
+                                }
+                            });
+                            help(ui, "Automatic tries the Windows network first, including an active Windows VPN. If the host is unreachable it can start the saved tunnel. Require WireGuard uses a matching Windows tunnel or the saved configuration.");
+                        }); ui.end_row();
                         if p.connection_type == ConnectionType::RemoteDesktop {
                             ui.label("Desktop");
                             egui::ComboBox::from_id_salt("desktop-kind").selected_text(&p.desktop_environment).show_ui(ui, |ui| {
@@ -214,7 +245,7 @@ impl Draft {
                         }
                     });
                     ui.separator();
-                    ui.checkbox(&mut self.profile.startup_enabled, "Run startup commands");
+                    ui.horizontal(|ui| {ui.checkbox(&mut self.profile.startup_enabled, "Run startup commands"); help(ui,"Runs Bash on this host for each new connection. A retained desktop or application session runs it only when first created. Exports and the working directory are inherited. Commands are saved with this connection.");});
                     ui.add_enabled_ui(self.profile.startup_enabled, |ui| {
                         egui::ScrollArea::vertical().id_salt("startup-script-scroll").max_height(130.0).show(ui, |ui| {
                             ui.add(egui::TextEdit::multiline(&mut self.profile.startup_commands)
@@ -228,18 +259,7 @@ impl Draft {
                         });
                         ui.checkbox(&mut self.profile.startup_continue_on_error, "Continue connecting if commands fail");
                     });
-                    ui.add(egui::Label::new("Runs Bash on this host for each new connection. A retained desktop or application session runs it only when first created. Exports and the working directory are inherited. Commands are saved with this connection.").wrap());
-                    ui.separator();
-                    ui.checkbox(&mut self.profile.remember_username, "Remember username");
-                    ui.checkbox(&mut self.profile.remember_password, "Save password / key passphrase securely");
-                    if self.profile.remember_password {
-                        self.profile.remember_username = true;
-                        ui.checkbox(&mut self.profile.master_password_protected, "Protect saved secret with a master password");
-                        if self.profile.master_password_protected {
-                            ui.horizontal(|ui| { ui.label("Master password"); ui.add(egui::TextEdit::singleline(&mut *self.master).password(true)); });
-                        }
-                    } else { self.profile.master_password_protected = false; }
-                    ui.label("Saved passwords are encrypted for your Windows account, outside the session file.");
+
                 });
                 if busy { ui.horizontal(|ui| { ui.spinner(); ui.label("Saving encrypted credential…"); }); }
                 if let Some(error) = &self.error { ui.colored_label(ui.visuals().error_fg_color, error); }
@@ -346,7 +366,16 @@ mod tests {
             "Label/Browse misaligned: {label:?} / {browse:?}"
         );
         assert!((path.center().y - browse.center().y).abs() < 1.0);
-        assert!(texts["Enable for this session only"].top() > browse.bottom());
+        assert!(texts["Automatic"].top() > browse.bottom());
+        assert!(texts["Remember username"].top() > texts["Username"].bottom());
+        assert!(texts["Save password"].top() > texts["Password"].bottom());
+        assert!(
+            (texts["Save password"].center().y - texts["Use master password"].center().y).abs()
+                < 1.0
+        );
+        assert!(!texts
+            .keys()
+            .any(|s| s.starts_with("Runs Bash") || s.starts_with("Saved secrets")));
         let cancel = texts["Cancel"];
         let save = texts["Save connection"];
         let open = texts["Save and open"];

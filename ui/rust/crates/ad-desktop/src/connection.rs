@@ -1,6 +1,6 @@
 //! Own each connection independently. No network operation runs on the UI thread.
 const SHELL_INTEGRATION: &str = r#"printf '\r\033[2K'; __aetherdesk_cd(){ if [ -n "${2-}" ]; then printf '\033]777;%s;begin\007' "$2"; fi; cd -- "$1"; __ad_cd_status=$?; if [ -n "${2-}" ]; then printf '\033]777;%s;end\007' "$2"; fi; return "$__ad_cd_status"; }; if [ -n "${BASH_VERSION:-}" ]; then case ":${HISTIGNORE-}:" in *": __aetherdesk_cd *:"*) ;; *) HISTIGNORE="${HISTIGNORE:+$HISTIGNORE:} __aetherdesk_cd *";; esac; __aetherdesk_emit_cwd(){ local __ad_status=$? __ad_path=$PWD; __ad_path=${__ad_path//\%/%25}; __ad_path=${__ad_path//;/%3B}; __ad_path=${__ad_path//\?/%3F}; __ad_path=${__ad_path//#/%23}; printf '\033]7;file://%s%s\007' "${HOSTNAME:-localhost}" "$__ad_path"; if [ -n "${__aetherdesk_prompt_token:-}" ]; then local __ad_ready; __ad_ready=$(printf '\033]777;%s;prompt\007' "$__aetherdesk_prompt_token"); case "${PS1-}" in *"$__ad_ready"*) ;; *) PS1="\[${__ad_ready}\]${PS1-}";; esac; fi; return "$__ad_status"; }; if declare -p PROMPT_COMMAND 2>/dev/null | grep -q '^declare -a' && ((BASH_VERSINFO[0] < 5 || (BASH_VERSINFO[0] == 5 && BASH_VERSINFO[1] < 1))); then __ad_prompt_commands=("${PROMPT_COMMAND[@]}"); unset PROMPT_COMMAND; printf -v PROMPT_COMMAND '%s\n' "${__ad_prompt_commands[@]}"; unset __ad_prompt_commands; fi; case "${PROMPT_COMMAND[*]:-}" in *'__aetherdesk_emit_cwd'*) ;; *) if declare -p PROMPT_COMMAND 2>/dev/null | grep -q '^declare -a'; then PROMPT_COMMAND=("${PROMPT_COMMAND[@]}" __aetherdesk_emit_cwd); else PROMPT_COMMAND="${PROMPT_COMMAND:+$PROMPT_COMMAND$'\n'}__aetherdesk_emit_cwd"; fi ;; esac; fi"#;
-use ad_desktop_model::profiles::{ConnectionType, SavedSession};
+use ad_desktop_model::profiles::{ConnectionType, SavedSession, WireGuardMode};
 use ad_ssh::{FileProgress, RemoteFileRequest, RemoteFileResult, SshClient, SshConfig};
 use eframe::egui;
 use std::{path::PathBuf, sync::Arc, time::Duration};
@@ -285,10 +285,10 @@ fn connection_config(
         host: profile.host.trim().into(),
         port,
         username: credentials.username.clone(),
-        wireguard_config_path: profile
-            .wireguard_config_path
-            .clone()
-            .filter(|p| profile.wireguard_enabled && !p.is_empty()),
+        wireguard_config_path: profile.wireguard_config_path.clone().filter(|p| {
+            profile.wireguard_mode != WireGuardMode::WindowsOnly && !p.trim().is_empty()
+        }),
+        wireguard_mode: Some(profile.wireguard_mode),
         confirmed_host_fingerprint: credentials.confirmed_fingerprint.clone(),
         trust_new_host_key: credentials.confirmed_fingerprint.is_some(),
         ..Default::default()
@@ -941,7 +941,7 @@ mod tests {
             confirmed_fingerprint: None,
         };
         let sibling = profile.clone();
-        profile.wireguard_enabled = false;
+        profile.wireguard_mode = WireGuardMode::WindowsOnly;
         assert!(connection_config(&profile, &credentials)
             .unwrap()
             .wireguard_config_path

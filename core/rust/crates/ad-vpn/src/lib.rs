@@ -82,6 +82,16 @@ pub async fn connect(
     connect_config(config, host.to_string(), port, cancel).await
 }
 
+/// Read the configured local tunnel addresses when Windows has a differently named VPN.
+pub async fn interface_addresses(path: &str) -> Result<Vec<IpAddr>> {
+    let text = Zeroizing::new(tokio::fs::read_to_string(path).await?);
+    Ok(Config::parse(&text)?
+        .addresses
+        .iter()
+        .map(|net| net.addr())
+        .collect())
+}
+
 async fn connect_config(
     config: Config,
     host: String,

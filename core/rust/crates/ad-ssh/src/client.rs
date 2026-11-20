@@ -4,7 +4,10 @@
 #[path = "isolation_tests.rs"]
 mod isolation_tests;
 
+#[path = "network_route.rs"]
+mod network_route;
 pub use ad_config::{SshConfig, X11ForwardingConfig};
+use network_route::Route;
 #[path = "remote_file.rs"]
 mod remote_file;
 #[path = "resumable_file.rs"]
@@ -129,7 +132,7 @@ impl SshClient {
         if self.config.x11.is_some() {
             self.connect_with_bulk_transport().await
         } else {
-            self.connect_single().await
+            self.connect_single(None).await
         }
     }
 
@@ -144,8 +147,8 @@ impl SshClient {
             #[cfg(test)]
             pinned_test_key: self.pinned_test_key.clone(),
         };
-        let mut session = interactive.connect_single().await?;
-        let bulk = match self.connect_single().await {
+        let mut session = interactive.connect_single(None).await?;
+        let bulk = match self.connect_single(Some(&session.route)).await {
             Ok(bulk) => bulk,
             Err(error) => {
                 session.close_single().await?;
@@ -157,7 +160,7 @@ impl SshClient {
         Ok(session)
     }
 
-    async fn connect_single(&self) -> CoreResult<SshSession> {
+    async fn connect_single(&self, route: Option<&Route>) -> CoreResult<SshSession> {
         info!(
             "Connecting to SSH server at {}:{}",
             self.config.host, self.config.port
@@ -195,25 +198,15 @@ impl SshClient {
 
         // Connect to the server
         let connect_timeout = Duration::from_secs(self.config.timeout_secs.max(1));
-        let mut session = match timeout(connect_timeout, async {
-            let stream: Box<dyn ConnectionStream> =
-                if let Some(path) = &self.config.wireguard_config_path {
-                    Box::new(
-                        ad_vpn::connect(
-                            path,
-                            &self.config.host,
-                            self.config.port,
-                            lifetime.0.clone(),
-                        )
-                        .await?,
-                    )
-                } else {
-                    let stream =
-                        TcpStream::connect((self.config.host.as_str(), self.config.port)).await?;
-                    stream.set_nodelay(true)?;
-                    Box::new(stream)
-                };
-            ssh_client::connect_stream(Arc::new(config), stream, handler).await
+        let (mut session, route) = match timeout(connect_timeout, async {
+            let (stream, selected) = network_route::open(&self.config, route, lifetime.0.clone())
+                .await
+                .map_err(|e| CoreError::ConnectionError(e.to_string()))?;
+            info!("SSH transport selected: {}", selected.label());
+            let handle = ssh_client::connect_stream(Arc::new(config), stream, handler)
+                .await
+                .map_err(|e| CoreError::ConnectionError(e.to_string()))?;
+            Ok::<_, CoreError>((handle, selected))
         })
         .await
         {
@@ -324,6 +317,7 @@ impl SshClient {
             session,
             self.config.x11.clone(),
             lifetime,
+            route,
             HostIdentity {
                 host: self.config.host.clone(),
                 port: self.config.port,
@@ -459,6 +453,7 @@ pub struct SshSession {
     lifetime: Arc<SessionLifetime>,
     bulk: Option<Arc<SshSession>>,
     host_identity: HostIdentity,
+    route: Route,
     temporary_root: Arc<parking_lot::Mutex<Option<String>>>,
     cleanup_task: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
 }
@@ -469,6 +464,7 @@ impl SshSession {
         session: ssh_client::Handle<ClientHandler>,
         x11: Option<X11ForwardingConfig>,
         lifetime: Arc<SessionLifetime>,
+        route: Route,
         host_identity: HostIdentity,
     ) -> Self {
         Self {
@@ -480,9 +476,14 @@ impl SshSession {
             lifetime,
             bulk: None,
             host_identity,
+            route,
             temporary_root: Default::default(),
             cleanup_task: Default::default(),
         }
+    }
+
+    pub fn route_label(&self) -> &str {
+        self.route.label()
     }
 
     /// Get the connection ID
