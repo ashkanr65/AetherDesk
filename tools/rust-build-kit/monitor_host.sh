@@ -20,7 +20,7 @@ slow)
         printf 'ERR\tusers\tLogin records unavailable\n'
     fi
     printf 'USERS_END\nDISKS_BEGIN\n'
-    df -Pk -- "$HOME" 2>/dev/null || printf 'ERR\tdisks\tLocal filesystem statistics unavailable\n'
+    df -Pk -- / "${HOME:-/}" 2>/dev/null || printf 'ERR\tdisks\tLocal filesystem statistics unavailable\n'
     printf 'DISKS_END\n'
     ;;
 homes)

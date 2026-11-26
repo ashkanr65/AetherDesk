@@ -132,17 +132,7 @@ impl Applications {
     pub(crate) fn open_window(&mut self, ctx: &egui::Context, window: u32) {
         if self.managed && !self.view {
             if let Some(client) = &self.cursor_client {
-                // Also initialize wl_pointer on retained application-only
-                // sessions whose older compositor never sent the first enter.
-                // No button or modifier is injected, and existing views do not
-                // repeatedly reposition the host pointer.
-                if let Err(error) = client.send(crate::remote::Request::Input {
-                    event: ad_stream_protocol::InputMessage::PointerMove {
-                        x: 0,
-                        y: 0,
-                        monitor: 0,
-                    },
-                }) {
+                if let Err(error) = client.initialize_application_pointer() {
                     self.error = Some(error);
                     return;
                 }
@@ -355,8 +345,14 @@ mod tests {
                 monitor: 0
             })
         ));
-        // Re-selecting an already-open view must not jump the host cursor.
+        // Neither reselecting a window nor opening its dialog may move the shared pointer.
         app.open_window(&ctx, 42);
+        assert!(matches!(requests.try_recv(), Ok(Request::Select(42))));
+        let mut dialog = Applications::new(None, uuid::Uuid::new_v4()).with_client(client.clone());
+        dialog.managed = true;
+        dialog.worker = app.worker.take();
+        dialog.open_window(&ctx, 43);
+        assert!(matches!(requests.try_recv(), Ok(Request::Select(43))));
         assert!(
             tokio::time::timeout(Duration::from_millis(20), client.test_next_input())
                 .await

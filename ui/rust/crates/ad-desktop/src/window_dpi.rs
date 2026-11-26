@@ -178,6 +178,31 @@ mod native {
     const RECOVER: u32 = WM_APP + 0x3d2;
     const RESTORE: u32 = WM_APP + 0x3d3;
     const RECOVERY_TIMER: usize = 0x4144_4450;
+    const APPLICATION_POPUP: *const u16 =
+        windows_sys::w!("AetherDesk.WindowGeometry.ApplicationPopup");
+
+    pub(crate) fn exclude_application_popup(hwnd: isize) -> Result<(), String> {
+        let hwnd = hwnd as HWND;
+        // The flag belongs to this HWND for its entire lifetime. The egui
+        // viewport can outlive its popup binding for a frame while it closes.
+        if unsafe { GetPropW(hwnd, APPLICATION_POPUP) }.is_null()
+            && unsafe { SetPropW(hwnd, APPLICATION_POPUP, 1 as HANDLE) } == 0
+        {
+            return Err(format!(
+                "Cannot exclude the application popup from window recovery: {}",
+                std::io::Error::last_os_error()
+            ));
+        }
+        Ok(())
+    }
+
+    fn can_recover(hwnd: HWND) -> bool {
+        // Winit can retain WS_CAPTION even for visually undecorated windows.
+        unsafe {
+            GetPropW(hwnd, APPLICATION_POPUP).is_null()
+                && GetWindowLongW(hwnd, GWL_STYLE) as u32 & WS_CAPTION == WS_CAPTION
+        }
+    }
     struct WindowState {
         transition: Transition,
         previous: WNDPROC,
@@ -454,9 +479,9 @@ mod native {
         unsafe { CallWindowProcW(previous, hwnd, message, wparam, lparam) }
     }
     unsafe extern "system" fn install_window(hwnd: HWND, _: LPARAM) -> BOOL {
-        // EnumThreadWindows restricts this to our own GUI thread. Menu windows
-        // have no caption and retain their explicit owner-relative placement.
-        if unsafe { GetWindowLongW(hwnd, GWL_STYLE) } as u32 & WS_CAPTION != WS_CAPTION {
+        // Apply recovery only to normal windows. Popup geometry is owned by
+        // its view, including when the window still carries WS_CAPTION.
+        if !can_recover(hwnd) {
             return 1;
         }
         if WINDOWS.with(|windows| windows.borrow().contains_key(&(hwnd as isize))) {
@@ -532,9 +557,9 @@ mod native {
     }
     unsafe fn recover_window(hwnd: HWND, topology_changed: bool) {
         use windows_sys::Win32::Graphics::Gdi::*;
-        if unsafe { IsWindowVisible(hwnd) } == 0
-            || unsafe { GetWindowLongW(hwnd, GWL_STYLE) } as u32 & WS_CAPTION != WS_CAPTION
-        {
+        // Recheck the role when servicing messages already queued for this
+        // window before its native popup binding was available.
+        if unsafe { IsWindowVisible(hwnd) } == 0 || !can_recover(hwnd) {
             unsafe {
                 KillTimer(hwnd, RECOVERY_TIMER);
             }
@@ -701,6 +726,57 @@ mod native {
     mod tests {
         use super::*;
         use std::cell::Cell;
+        #[test]
+        fn captioned_application_popup_skips_new_and_queued_window_recovery() {
+            let hwnd = unsafe {
+                CreateWindowExW(
+                    0,
+                    windows_sys::w!("STATIC"),
+                    windows_sys::w!("Application menu"),
+                    WS_POPUP | WS_CAPTION,
+                    100,
+                    100,
+                    49,
+                    20,
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut(),
+                    std::ptr::null(),
+                )
+            };
+            assert!(!hwnd.is_null());
+            struct Cleanup(HWND);
+            impl Drop for Cleanup {
+                fn drop(&mut self) {
+                    unsafe { DestroyWindow(self.0) };
+                }
+            }
+            let _cleanup = Cleanup(hwnd);
+            unsafe { ShowWindow(hwnd, SW_SHOWNOACTIVATE) };
+            let bounds = || {
+                let mut rect: RECT = unsafe { std::mem::zeroed() };
+                assert_ne!(unsafe { GetWindowRect(hwnd, &mut rect) }, 0);
+                [rect.left, rect.top, rect.right, rect.bottom]
+            };
+            let initial = bounds();
+            let title_height = (32 * unsafe { GetDpiForWindow(hwnd) }.max(96) / 96) as i32;
+            assert!(!super::super::usable_bounds(initial, title_height));
+            assert!(can_recover(hwnd));
+            let is_tracked = || WINDOWS.with(|w| w.borrow().contains_key(&(hwnd as isize)));
+
+            exclude_application_popup(hwnd as isize).unwrap();
+            unsafe { install_window(hwnd, 0) };
+            assert!(!is_tracked());
+
+            // Simulate a recovery message queued before the popup was marked.
+            unsafe { RemovePropW(hwnd, APPLICATION_POPUP) };
+            unsafe { install_window(hwnd, 0) };
+            assert!(is_tracked());
+            exclude_application_popup(hwnd as isize).unwrap();
+            unsafe { SendMessageW(hwnd, RECOVER, 0, 0) };
+            assert_eq!(bounds(), initial);
+        }
+
         #[test]
         fn native_restore_repairs_saved_placement_and_collapsed_windows_without_ending_sessions() {
             let class: Vec<_> = "STATIC".encode_utf16().chain([0]).collect();
@@ -1141,6 +1217,9 @@ mod native {
         }
     }
 }
+#[cfg(windows)]
+pub(crate) use native::exclude_application_popup;
+
 pub(super) fn install() {
     #[cfg(windows)]
     native::install();

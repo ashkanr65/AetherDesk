@@ -73,16 +73,17 @@ fetch libdrm-2.4.120 3bf55363f76c7250946441ab51d3a6cc0ae518055c0ff017324ab76cdef
   https://dri.freedesktop.org/libdrm/libdrm-2.4.120.tar.xz \
   https://ftp.osuosl.org/pub/blfs/conglomeration/libdrm/libdrm-2.4.120.tar.xz
 build libdrm-2.4.120 -Dauto_features=disabled -Dtests=false
-fetch xwayland-24.1.10 459762be8ea046c94386687d77a87add6073868bee14f02913eafebb945b7aa0 \
-  https://www.x.org/releases/individual/xserver/xwayland-24.1.10.tar.xz \
-  https://ftp.osuosl.org/pub/blfs/conglomeration/xwayland/xwayland-24.1.10.tar.xz
-patch -d xwayland-24.1.10 -p1 < "$script_dir/xwayland-monitors.patch"
+# 24.1.11 corrected pointer hit testing for synthetic X11 slave devices.
+fetch xwayland-24.1.15 7311b4bcda22cfc19cb99680eb1c35cfc1ea885981310639f0429fe2948c122e \
+  https://www.x.org/releases/individual/xserver/xwayland-24.1.15.tar.xz \
+  https://ftp.osuosl.org/pub/blfs/conglomeration/xwayland/xwayland-24.1.15.tar.xz
+patch -d xwayland-24.1.15 -p1 < "$script_dir/xwayland-monitors.patch"
 # Smithay's Pixman compositor uses shared-memory buffers, without a GPU/GLX.
-build xwayland-24.1.10 -Dglamor=false -Dglx=false -Ddri3=false -Ddrm=false \
+build xwayland-24.1.15 -Dglamor=false -Dglx=false -Ddri3=false -Ddrm=false \
   -Dxwayland_ei=false -Dlibdecor=false -Dxvfb=false -Dxselinux=false \
   -Ddocs=false -Ddevel-docs=false -Dxkb_dir=/usr/share/X11/xkb -Dxkb_bin_dir=/usr/bin
 "$prefix/bin/Xwayland" -version
-install -Dm644 xwayland-24.1.10/COPYING "$prefix/share/licenses/aetherdesk-xwayland/Xwayland-COPYING"
+install -Dm644 xwayland-24.1.15/COPYING "$prefix/share/licenses/aetherdesk-xwayland/Xwayland-COPYING"
 install -Dm644 libxcvt-0.1.3/COPYING "$prefix/share/licenses/aetherdesk-xwayland/libxcvt-COPYING"
 install -Dm644 libdrm-2.4.120.tar.xz "$prefix/share/licenses/aetherdesk-xwayland/libdrm-source.tar.xz"
 }

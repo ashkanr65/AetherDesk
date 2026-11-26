@@ -483,17 +483,36 @@ impl Panel {
             items.push((Icon::Users,users.clone(),format!("Recorded login sessions: {users} · {}\nA suffix counts sessions, not active application use.",state(slow_stale)),160.0,None));
         }
         if self.store.visibility[5] {
-            let disk = slow
-                .and_then(|s| s.disks.first())
-                .map(|(mount, _, used, free)| {
-                    format!(
-                        "{mount}: {:.0}%",
-                        100.0 * *used as f64 / (*used as f64 + *free as f64).max(1.0)
-                    )
-                })
-                .unwrap_or_else(|| "—".into());
-            let home = slow.map(|s| s.home.as_str()).unwrap_or("");
-            items.push((Icon::Storage,disk,format!("Filesystem containing {home} · {}\nOpen Monitoring for capacity and per-user home-folder usage.",state(slow_stale)),145.0,None));
+            let disks = slow
+                .map(|sample| sample.disks.as_slice())
+                .unwrap_or_default();
+            let reading = state(slow_stale);
+            let home = slow.map(|sample| sample.home.as_str()).unwrap_or_default();
+            if disks.is_empty() {
+                items.push((
+                    Icon::Storage,
+                    "—".into(),
+                    format!("Filesystem storage · {reading}"),
+                    145.0,
+                    None,
+                ));
+            }
+            for (mount, _, used, free) in disks {
+                let percent = 100.0 * *used as f64 / (*used as f64 + *free as f64).max(1.0);
+                let available = *free as f64 / 1048576.0;
+                let label = if mount == "/" {
+                    "Root filesystem".into()
+                } else {
+                    format!("Filesystem containing {home}")
+                };
+                items.push((
+                    Icon::Storage,
+                    format!("{mount}: {percent:.0}%"),
+                    format!("{label} · {reading}\n{available:.1} GiB available"),
+                    if mount == "/" { 90.0 } else { 145.0 },
+                    None,
+                ));
+            }
         }
         if self.store.visibility[5] {
             if let Some(Data::System(homes)) = self

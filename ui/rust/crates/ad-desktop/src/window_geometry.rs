@@ -2,6 +2,9 @@
 use eframe::egui;
 #[path = "window_dpi.rs"]
 mod dpi;
+#[cfg(windows)]
+pub(crate) use dpi::exclude_application_popup;
+
 pub(crate) fn stabilize_native_moves() {
     dpi::install();
 }

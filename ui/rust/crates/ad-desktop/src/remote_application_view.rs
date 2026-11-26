@@ -402,6 +402,12 @@ impl Applications {
         );
         let native = self.popup_native.entry(info.window).or_default();
         native.bind(&token);
+        #[cfg(windows)]
+        if let Some(hwnd) = native.handle() {
+            if let Err(error) = crate::window_geometry::exclude_application_popup(hwnd) {
+                self.error = Some(error);
+            }
+        }
         // The main title is obtained from the source; menu captions are hidden
         // from the taskbar and never used for identity or keyboard ownership.
         native.set_caption(caption);
@@ -462,7 +468,17 @@ impl Applications {
             );
         }
         let scrolling = crate::remote_mouse::scroll_interaction(ui, response, image, false);
-        if (response.hovered() && ui.input(|i| i.pointer.any_pressed())) || scrolling {
+        let events = ui.input(|i| i.events.clone());
+        let hit_rect = image.intersect(response.interact_rect);
+        let hit =
+            |pos| hit_rect.contains(pos) && ui.ctx().layer_id_at(pos) == Some(response.layer_id);
+        // The pointer can leave the widget between a press and the next repaint.
+        // Activate from the event's location, just as we route the actual button.
+        let pressed_here = events.iter().any(|event| {
+            matches!(event,
+            egui::Event::PointerButton { pressed: true, pos, .. } if hit(*pos))
+        });
+        if pressed_here || scrolling {
             response.request_focus();
             if activate {
                 self.send(Request::Focus);
@@ -470,7 +486,7 @@ impl Applications {
         }
         let keyboard_focus = response.has_focus() && ui.input(|i| i.focused);
         // Menus receive hover events while the application keeps keyboard focus.
-        if !keyboard_focus && !response.hovered() && self.buttons.is_empty() {
+        if !keyboard_focus && !pressed_here && !response.hovered() && self.buttons.is_empty() {
             return false;
         }
         let mut keypad = crate::remote_keypad::Batch::default();
@@ -520,9 +536,15 @@ impl Applications {
                 transient_for: None,
             };
             let (x, y) = super::point(pos, image, &w);
-            (x.saturating_add(offset.0), y.saturating_add(offset.1))
+            // A captured drag may end beyond the image, including its last pixel.
+            (
+                x.clamp(0, (size.0 as i32 - 1).max(0))
+                    .saturating_add(offset.0),
+                y.clamp(0, (size.1 as i32 - 1).max(0))
+                    .saturating_add(offset.1),
+            )
         };
-        for event in ui.input(|i| i.events.clone()) {
+        for event in events {
             if keyboard_focus
                 && matches!(&event, egui::Event::Key { key: egui::Key::Escape, pressed: true, modifiers, .. } if modifiers.ctrl && modifiers.alt)
                 && !self.keys.contains(&100)
@@ -586,7 +608,8 @@ impl Applications {
                     }
                 }
                 egui::Event::PointerMoved(pos)
-                    if (response.hovered() && image.contains(pos)) || !self.buttons.is_empty() =>
+                    if ((!activate || keyboard_focus) && response.hovered() && hit(pos))
+                        || !self.buttons.is_empty() =>
                 {
                     motion = Some(point(pos));
                 }
@@ -595,7 +618,12 @@ impl Applications {
                     button,
                     pressed,
                     modifiers,
-                } if image.contains(pos) || !self.buttons.is_empty() => {
+                } if (pressed && hit(pos))
+                    || (!pressed
+                        && self
+                            .buttons
+                            .contains(&crate::remote_mouse::gui_button(button))) =>
+                {
                     self.sync_modifiers(modifiers);
                     let (x, y) = point(pos);
                     motion = None;
@@ -967,6 +995,79 @@ mod tests {
                 }
             });
         }
+    }
+    #[test]
+    fn press_in_image_and_release_outside_in_one_frame_still_delivers_the_click() {
+        let ctx = egui::Context::default();
+        ctx.options_mut(|o| o.max_passes = 1.try_into().unwrap());
+        let (commands, mut requests) = tokio::sync::mpsc::channel(32);
+        let mut app = Applications::new(None, uuid::Uuid::new_v4());
+        app.worker = Some(Worker {
+            commands,
+            state: std::sync::Arc::new(parking_lot::Mutex::new(State::default())),
+            cancel: tokio_util::sync::CancellationToken::new(),
+        });
+        let mut image = egui::Rect::NOTHING;
+        for step in 0..2 {
+            let mut events = Vec::new();
+            if step == 1 {
+                for (pos, pressed) in [
+                    (image.center(), true),
+                    (image.max + egui::vec2(30.0, 30.0), false),
+                ] {
+                    events.push(egui::Event::PointerMoved(pos));
+                    events.push(egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed,
+                        modifiers: egui::Modifiers::NONE,
+                    });
+                }
+            }
+            let _ = ctx.run(
+                egui::RawInput {
+                    focused: true,
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(500.0, 300.0),
+                    )),
+                    events,
+                    ..Default::default()
+                },
+                |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| {
+                        let (rect, response) = ui.allocate_exact_size(
+                            egui::vec2(100.0, 60.0),
+                            egui::Sense::click_and_drag(),
+                        );
+                        image = rect;
+                        app.application_input(ui, &response, rect, (100, 60), (0, 0), true, true);
+                    });
+                },
+            );
+        }
+        let actions: Vec<_> = std::iter::from_fn(|| requests.try_recv().ok())
+            .filter(|r| matches!(r, Request::Focus | Request::Button { .. }))
+            .collect();
+        assert!(matches!(
+            actions.as_slice(),
+            [
+                Request::Focus,
+                Request::Button {
+                    button: 1,
+                    pressed: true,
+                    x: 50,
+                    y: 30
+                },
+                Request::Button {
+                    button: 1,
+                    pressed: false,
+                    x: 99,
+                    y: 59
+                }
+            ]
+        ));
+        assert!(app.buttons.is_empty());
     }
     #[test]
     fn scrolling_activates_the_application_before_ordered_motion_and_wheel() {

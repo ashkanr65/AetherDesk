@@ -192,7 +192,11 @@ fn batch_commands(
     let mut batch = vec![first];
     while batch.len() < 64 {
         match commands.try_recv() {
-            Ok(next) if wire::batchable(&next) => batch.push(next),
+            // The host stops a batch on its first rejected input. A new
+            // activation must survive stale motion from before the click.
+            Ok(next) if wire::batchable(&next) && !matches!(next, Request::Focus) => {
+                batch.push(next)
+            }
             Ok(next) => {
                 *pending = Some(next);
                 break;
@@ -268,6 +272,38 @@ mod tests {
         assert!(!wire::batchable(&Request::InputBatch(input)));
         assert!(!wire::batchable(&Request::Launch("xterm".into())));
     }
+    #[test]
+    fn a_click_starts_a_fresh_batch_even_with_stale_motion_queued() {
+        let (tx, mut rx) = mpsc::channel(8);
+        tx.try_send(Request::Focus).unwrap();
+        for pressed in [true, false] {
+            tx.try_send(Request::Button {
+                button: 1,
+                pressed,
+                x: 8,
+                y: 9,
+            })
+            .unwrap();
+        }
+        let mut pending = None;
+        assert!(matches!(
+            batch_commands(Request::Move { x: 1, y: 2 }, &mut rx, &mut pending),
+            Request::Move { .. }
+        ));
+        let focus = pending.take().unwrap();
+        let Request::InputBatch(commands) = batch_commands(focus, &mut rx, &mut pending) else {
+            panic!("click must follow its activation")
+        };
+        assert!(matches!(
+            commands.as_slice(),
+            [
+                wire::WindowInput::Focus,
+                wire::WindowInput::Button { pressed: true, .. },
+                wire::WindowInput::Button { pressed: false, .. }
+            ]
+        ));
+    }
+
     #[test]
     fn application_helper_command_is_session_bound_and_rejects_shell_fragments() {
         let session = uuid::Uuid::new_v4();

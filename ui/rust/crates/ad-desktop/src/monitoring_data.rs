@@ -287,9 +287,10 @@ pub fn parse_system(text: &str, slow: bool) -> Result<System, String> {
                     if let (Ok(total), Ok(used), Ok(available)) =
                         (f[1].parse(), f[2].parse(), f[3].parse())
                     {
-                        sample
-                            .disks
-                            .push((f[5..].join(" "), total, used, available));
+                        let mount = f[5..].join(" ");
+                        if !sample.disks.iter().any(|(name, ..)| name == &mount) {
+                            sample.disks.push((mount, total, used, available));
+                        }
                     }
                 }
             }
@@ -547,13 +548,16 @@ mod tests {
         assert_eq!(fast.memory, Some((100, 40, 20, 15)));
         assert_eq!(cpu_percent((1000, 200), (1100, 225)), Some(75.0));
         assert_eq!(cpu_percent((1000, 200), (1, 0)), None);
-        let slow=parse_system("AETHER_MONITOR_V1\nUSERS_BEGIN\nuser1 pts/0 2025-01-02 09:00 (host)\nuser1 pts/1 2025-01-02 09:01\nUSERS_END\nDISKS_BEGIN\nFilesystem 1024-blocks Used Available Capacity Mounted on\n/dev/sda 100 50 45 53% /space dir\nDISKS_END\n",true).unwrap();
+        let slow=parse_system("AETHER_MONITOR_V1\nUSERS_BEGIN\nuser1 pts/0 2025-01-02 09:00 (host)\nuser1 pts/1 2025-01-02 09:01\nUSERS_END\nDISKS_BEGIN\nFilesystem 1024-blocks Used Available Capacity Mounted on\n/dev/root 70 70 0 100% /\n/dev/sda 100 50 45 53% /space dir\n/dev/root 70 70 0 100% /\nDISKS_END\n",true).unwrap();
         let homes = parse_system("AETHER_MONITOR_V1\nHOME_DIR\tAB\t/home/AB\nHOME_DIR\tCD\t/home/CD\nHOME_SIZE\t128\t/home/AB\nERR\thomes\tpartial\n", true).unwrap();
         assert_eq!(homes.homes[0].kib, Some(128));
         assert_eq!(homes.homes[1].kib, None);
         assert!(homes.homes_error.is_some());
         assert_eq!(slow.users.len(), 2);
-        assert_eq!(slow.disks[0].0, "/space dir");
+        assert_eq!(
+            slow.disks,
+            [("/".into(), 70, 70, 0), ("/space dir".into(), 100, 50, 45)]
+        );
         assert!(parse_system("Linux error", false).is_err());
     }
 }

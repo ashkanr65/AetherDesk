@@ -659,6 +659,24 @@ pub(super) fn verify_menus(mirror: &mut Mirror, controller: &RustConnection, win
         .unwrap()
         .check()
         .unwrap();
+    // Some toolkits keep X keyboard focus on a separate proxy while XFWM
+    // reports the real client as active. Pointer input remains hit-tested.
+    controller
+        .set_input_focus(InputFocus::PARENT, foreign, 0u32)
+        .unwrap()
+        .check()
+        .unwrap();
+    assert!(!mirror.application_has_focus().unwrap());
+    for pressed in [true, false] {
+        mirror
+            .handle(wire::Request::Button {
+                button: 1,
+                pressed,
+                x: menu_image.x + 40,
+                y: menu_image.y + 20,
+            })
+            .unwrap();
+    }
     controller
         .set_input_focus(InputFocus::PARENT, window, 0u32)
         .unwrap()

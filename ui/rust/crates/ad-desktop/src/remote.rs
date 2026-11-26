@@ -99,6 +99,7 @@ pub struct RemoteClient {
     latest: Arc<FrameSlot>,
     task: Mutex<Option<JoinHandle<()>>>,
     newly_created: bool,
+    application_pointer_initialized: Mutex<bool>,
 }
 impl RemoteClient {
     pub async fn start(
@@ -219,6 +220,7 @@ impl RemoteClient {
             latest: latest.clone(),
             task: Mutex::new(None),
             newly_created: lifecycle.newly_created(),
+            application_pointer_initialized: Mutex::new(false),
         });
         let task = tokio::spawn(async move {
             let result = run_session(
@@ -276,6 +278,7 @@ impl RemoteClient {
             }),
             task: Mutex::new(None),
             newly_created: false,
+            application_pointer_initialized: Mutex::new(false),
         })
     }
 
@@ -291,6 +294,20 @@ impl RemoteClient {
     }
     pub fn newly_created(&self) -> bool {
         self.newly_created
+    }
+    pub(crate) fn initialize_application_pointer(&self) -> Result<(), String> {
+        // Older retained compositors need one pointer enter. All application
+        // windows share the same host seat, including dialogs opened mid-drag.
+        let mut initialized = self.application_pointer_initialized.lock();
+        if !*initialized {
+            self.input.push(InputMessage::PointerMove {
+                x: 0,
+                y: 0,
+                monitor: 0,
+            })?;
+            *initialized = true;
+        }
+        Ok(())
     }
     pub(crate) fn window_target(&self) -> Option<crate::remote_applications::Target> {
         self.window_target.clone()

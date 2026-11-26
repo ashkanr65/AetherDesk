@@ -5,6 +5,7 @@ pub mod endpoint;
 pub mod log_capture;
 mod lossless;
 pub mod server;
+pub mod sessions_root;
 pub mod supervisor;
 
 pub use server::{AgentServer, AgentServerConfig, AgentServerEndpoint, AgentServerError};

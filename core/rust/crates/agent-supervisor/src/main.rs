@@ -35,7 +35,17 @@ enum Mode {
 }
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+async fn main() -> std::process::ExitCode {
+    match run().await {
+        Ok(()) => std::process::ExitCode::SUCCESS,
+        Err(error) => {
+            eprintln!("Error: {error}");
+            std::process::ExitCode::FAILURE
+        }
+    }
+}
+
+async fn run() -> Result<(), Box<dyn std::error::Error>> {
     if std::env::args().nth(1).as_deref() == Some("--application-environment") {
         let args: Vec<_> = std::env::args().skip(2).collect();
         if args.len() != 2 || args[0] != "--session-id" {
@@ -66,29 +76,31 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
     let options = parse_options(std::env::args_os().skip(1))?;
+    let directory = session_directory(options.session_id)?;
+    agent_supervisor::sessions_root::prepare(
+        directory.parent().ok_or("Missing sessions directory")?,
+    )
+    .await?;
     match options.mode {
-        Mode::Launch => launch(options).await?,
-        Mode::Watch => watch(options).await?,
-        Mode::Serve => serve(options).await?,
+        Mode::Launch => launch(options, directory).await?,
+        Mode::Watch => watch(options, directory).await?,
+        Mode::Serve => serve(options, directory).await?,
     }
     Ok(())
 }
 
-async fn launch(options: Options) -> Result<(), Box<dyn std::error::Error>> {
-    let session_directory = session_directory(options.session_id)?;
+async fn launch(
+    options: Options,
+    session_directory: PathBuf,
+) -> Result<(), Box<dyn std::error::Error>> {
     // Keep the lock outside the removable session directory. Concurrent tabs
     // must never start competing brokers or race a confirmed-failed cleanup.
-    tokio::fs::create_dir_all(
-        session_directory
-            .parent()
-            .ok_or("Missing sessions directory")?,
-    )
-    .await?;
     let lock = std::fs::OpenOptions::new()
         .read(true)
         .write(true)
         .create(true)
         .truncate(false)
+        .custom_flags(libc::O_NOFOLLOW)
         .mode(0o600)
         .open(session_directory.with_file_name(format!(".{}.launch-lock", options.session_id)))?;
     let lock_deadline = Instant::now() + Duration::from_secs(25);
@@ -103,8 +115,7 @@ async fn launch(options: Options) -> Result<(), Box<dyn std::error::Error>> {
             }
         }
     }
-    tokio::fs::create_dir_all(&session_directory).await?;
-    tokio::fs::set_permissions(&session_directory, std::fs::Permissions::from_mode(0o700)).await?;
+    prepare_private_session(&session_directory).await?;
     let endpoint_path = session_directory.join("endpoint");
     if agent_supervisor::endpoint::viewer_connected(&endpoint_path).await? {
         println!("{}", ad_stream_protocol::SESSION_BUSY_MARKER);
@@ -132,8 +143,7 @@ async fn launch(options: Options) -> Result<(), Box<dyn std::error::Error>> {
 
     // Confirmed-failed legacy cleanup removes the old directory only after
     // stopping its compositor. Recreate it while still holding the launch lock.
-    tokio::fs::create_dir_all(&session_directory).await?;
-    tokio::fs::set_permissions(&session_directory, std::fs::Permissions::from_mode(0o700)).await?;
+    prepare_private_session(&session_directory).await?;
 
     let executable = std::env::current_exe()?;
     let log_path = session_directory.join("agent.log");
@@ -204,14 +214,17 @@ fn detach_from_login(command: &mut Command) {
     }
 }
 
-async fn serve(options: Options) -> Result<(), Box<dyn std::error::Error>> {
+async fn serve(
+    options: Options,
+    session_directory: PathBuf,
+) -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt()
         .with_env_filter(
             EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
         )
         .with_ansi(false)
         .init();
-    let session_directory = session_directory(options.session_id)?;
+    prepare_private_session(&session_directory).await?;
     let runtime_directory = session_directory.join("runtime");
     tokio::fs::create_dir_all(&runtime_directory).await?;
     tokio::fs::set_permissions(&runtime_directory, std::fs::Permissions::from_mode(0o700)).await?;
@@ -242,10 +255,9 @@ async fn serve(options: Options) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-async fn watch(options: Options) -> Result<(), Box<dyn std::error::Error>> {
+async fn watch(options: Options, directory: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
     use std::os::unix::process::ExitStatusExt;
     let executable = std::env::current_exe()?;
-    let directory = session_directory(options.session_id)?;
     let log = std::sync::Arc::new(std::sync::Mutex::new(
         agent_supervisor::log_capture::HostLog::open(&directory)?,
     ));
@@ -440,6 +452,15 @@ fn desktop_application(desktop: &str) -> Result<ApplicationSpec, String> {
         ("XDG_SESSION_TYPE".into(), "x11".into()),
     ];
     Ok(application)
+}
+
+async fn prepare_private_session(path: &Path) -> std::io::Result<()> {
+    match tokio::fs::DirBuilder::new().mode(0o700).create(path).await {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+        Err(e) => return Err(e),
+    }
+    agent_supervisor::sessions_root::set_private_mode(path).await
 }
 
 fn session_directory(session_id: Uuid) -> Result<PathBuf, String> {

@@ -86,11 +86,12 @@ Test runs once without saving it.
 - Settings are saved separately in `monitoring.json` in AetherDesk's application
   data directory. A damaged settings file is preserved rather than overwritten.
 
-## Home storage
+## Storage
 
-The periodic check queries only the filesystem containing the account's home
-folder, using `df -Pk -- "$HOME"`. If `/home` shares `/`, the bar correctly names
-that filesystem `/`; it does not invent a separate /home volume.
+The periodic check queries the root filesystem and the filesystem containing the
+account's home folder, using `df -Pk -- / "$HOME"`. The compact bar and Monitoring
+panel show each mount once. A home folder on the root filesystem appears under
+`/`.
 
 **Scan home folders** explicitly scans the first 64 direct directories under
 `/home`, without following directory symlinks or crossing filesystems. The whole

@@ -793,13 +793,33 @@ impl Mirror {
             .check()?;
         self.connection.flush()?;
         let deadline = Instant::now() + Duration::from_millis(250);
-        while !self.application_has_focus()? {
+        while !self.pointer_activation(id)? {
             if Instant::now() >= deadline {
                 return Err(FocusChanged.into());
             }
             std::thread::sleep(Duration::from_millis(5));
         }
         Ok(())
+    }
+    fn pointer_activation(&self, id: u32) -> Result<bool, Error> {
+        // XFWM can activate the selected client while an input method or a
+        // toolkit focus proxy owns keyboard focus. Buttons and wheel still
+        // require an independent hit test against the client or an owned menu.
+        if self.detached.is_none() && self.active()? == id {
+            return Ok(true);
+        }
+        self.application_has_focus()
+    }
+    fn pointer_window(&mut self) -> Result<u32, Error> {
+        let id = self.selected.as_ref().ok_or("No application selected")?.id;
+        if self.detached.is_some() {
+            return self.require_focus();
+        }
+        if self.pointer_activation(id)? {
+            Ok(id)
+        } else {
+            Err(FocusChanged.into())
+        }
     }
     fn require_focus(&mut self) -> Result<u32, Error> {
         let id = self.selected.as_ref().ok_or("No application selected")?.id;
@@ -871,8 +891,7 @@ impl Mirror {
         }
         Ok(self.detached.is_none() && (active == id || menus.iter().any(|m| m.0 == active)))
     }
-    fn motion(&mut self, x: i32, y: i32) -> Result<(), Error> {
-        let id = self.require_focus()?;
+    fn motion(&mut self, id: u32, x: i32, y: i32) -> Result<(), Error> {
         if self.selected.as_ref().is_some_and(|s| s.metadata_dirty) {
             let info = self.info(id)?;
             let selected = self.selected.as_mut().unwrap();
@@ -1088,14 +1107,26 @@ impl Mirror {
                     self.keys.remove(&code);
                 }
             }
-            Move { x, y } => self.motion(x, y)?,
+            Move { x, y } => match self.pointer_window() {
+                Ok(id) => self.motion(id, x, y)?,
+                // An idle hover from the previous view can already be in
+                // flight. It must neither move the pointer nor tell the new
+                // view to release a click that the host has since accepted.
+                Err(e)
+                    if self.detached.is_none()
+                        && e.is::<FocusChanged>()
+                        && self.keys.is_empty()
+                        && self.buttons.is_empty() => {}
+                Err(e) => return Err(e),
+            },
             Button {
                 button,
                 pressed,
                 x,
                 y,
             } => {
-                self.motion(x, y)?;
+                let id = self.pointer_window()?;
+                self.motion(id, x, y)?;
                 let code = x_button(button)?;
                 if pressed {
                     // Activation/raising is asynchronous. Do not click an
@@ -1128,7 +1159,7 @@ impl Mirror {
                 horizontal,
                 vertical,
             } => {
-                self.require_focus()?;
+                self.pointer_window()?;
                 self.wait_pointer_target()?;
                 for (index, value, positive, negative) in
                     [(0, vertical, 4, 5), (1, horizontal, 7, 6)]

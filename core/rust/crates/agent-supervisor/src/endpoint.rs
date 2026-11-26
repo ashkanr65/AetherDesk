@@ -278,22 +278,17 @@ async fn archive_reaped(directory: &Path, endpoint: &AgentServerEndpoint) -> Res
         return Ok(false);
     };
     let metadata = tokio::fs::symlink_metadata(directory).await?;
-    let parent = tokio::fs::symlink_metadata(
-        directory
-            .parent()
-            .ok_or_else(|| Error::other("Missing desktop parent"))?,
-    )
-    .await?;
     if !metadata.is_dir() || !private(&metadata) {
         return Err(Error::other(
             "Desktop directory is not private; leaving it unchanged",
         ));
     }
-    if !parent.is_dir() || parent.uid() != metadata.uid() || parent.mode() & 0o022 != 0 {
-        return Err(Error::other(
-            "Desktop parent is not protected; leaving it unchanged",
-        ));
-    }
+    crate::sessions_root::validate(
+        directory
+            .parent()
+            .ok_or_else(|| Error::other("Missing desktop parent"))?,
+    )
+    .await?;
     let session = directory
         .file_name()
         .and_then(|v| v.to_str())

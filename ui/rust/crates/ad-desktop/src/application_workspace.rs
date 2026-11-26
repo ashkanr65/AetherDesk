@@ -202,7 +202,16 @@ impl Workspace {
                 || self.views.contains_key(id)
                 || self.recently_closed.contains_key(id)
         });
-        for window in windows.iter().filter(|w| w.transient_for.is_none()) {
+        // Managed dialogs are distinct host windows. The parent may reject
+        // every click until the user answers its dialog in its own view.
+        // Override-redirect menus are already drawn by the parent's mirror.
+        for window in &windows {
+            if window
+                .transient_for
+                .is_some_and(|parent| !self.views.contains_key(&parent))
+            {
+                continue;
+            }
             if self.views.len() < 8 && self.seen.insert(window.id) {
                 let mut view = Applications::new(
                     self.directory.target.clone(),
